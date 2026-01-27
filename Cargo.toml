@@ -1,0 +1,29 @@
+[package]
+name = "unsafe-budget"
+version = "0.1.0"
+edition = "2021"
+description = "keeps the unsafety demons out. an unsafe code budget gate for CI pipelines."
+license = "MIT"
+repository = "https://github.com/cyberwitchery/unsafe-gate"
+keywords = ["unsafe", "security", "lint", "ci", "audit"]
+categories = ["development-tools", "command-line-utilities"]
+default-run = "unsafe-budget"
+
+[[bin]]
+name = "cargo-unsafe-budget"
+path = "src/main.rs"
+
+[[bin]]
+name = "unsafe-budget"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+cargo_metadata = "0.19"
+thiserror = "2"
+
+[dev-dependencies]
+tempfile = "3"
