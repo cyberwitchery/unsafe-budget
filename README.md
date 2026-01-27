@@ -110,6 +110,7 @@ println!("total unsafe: {}", result.totals.overall_unsafe);
 ## documentation
 
 - [getting started](docs/getting-started.md)
+- [ci integration](docs/ci-integration.md)
 - [architecture](docs/architecture.md)
 - [usage guide](docs/usage.md)
 - [analyzers](docs/analyzers.md)
