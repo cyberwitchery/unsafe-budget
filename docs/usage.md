@@ -14,7 +14,7 @@ options:
 
 | flag | description |
 |------|-------------|
-| `--format <text\|json>` | output format (default: text) |
+| `--format <text\|json\|sarif>` | output format (default: text) |
 | `--analyzer <id>` | analyzer to use (default: auto) |
 | `--workspace-only` | skip dependencies |
 | `--include-deps` | include dependencies (default) |
@@ -24,7 +24,7 @@ options:
 | `--all-features` | enable all features |
 | `--no-default-features` | disable default features |
 | `--all-targets` | build all targets |
-| `--manifest-path <path>` | path to Cargo.toml or go.mod |
+| `--manifest-path <path>` | path to Cargo.toml, go.mod, or .sarif file |
 | `--config <path>` | path to config file |
 
 ### check
@@ -132,4 +132,29 @@ unsafe-budget scan --format json | jq '.units[] | select(.unsafe_count > 10)'
 ```bash
 unsafe-budget scan --analyzer cargo_geiger
 unsafe-budget scan --analyzer go_geiger
+unsafe-budget scan --analyzer sarif --manifest-path results.sarif
+```
+
+### sarif output
+
+```bash
+# emit sarif from a scan (use --details for line-level results)
+unsafe-budget scan --format sarif --details
+
+# emit sarif from a check (violations become error-level results)
+unsafe-budget check --format sarif --details
+
+# ingest sarif, apply budget, emit sarif
+unsafe-budget check --analyzer sarif --manifest-path results.sarif --format sarif --details
+```
+
+### go project
+
+```bash
+# auto-detected from go.mod
+cd my-go-project
+unsafe-budget scan
+
+# explicit
+unsafe-budget scan --analyzer go_geiger --details
 ```

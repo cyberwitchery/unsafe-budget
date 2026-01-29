@@ -1,5 +1,10 @@
 # changelog
 
+## [0.1.1] - 2026-01-29
+
+- SARIF 2.1.0 output format (`--format sarif`) for GitHub Code Scanning and IDE integration
+- built-in SARIF analyzer (`--analyzer sarif`) to ingest `.sarif` files from any static analysis tool
+
 ## [0.1.0] - 2026-01-27
 
 initial release
@@ -14,4 +19,5 @@ initial release
 - baseline file (`unsafe-budget.lock`) for tracking unsafe counts over time
 - configuration via `unsafe-budget.toml`
 
+[0.1.1]: https://github.com/cyberwitchery/unsafe-gate/releases/tag/v0.1.1
 [0.1.0]: https://github.com/cyberwitchery/unsafe-gate/releases/tag/v0.1.0

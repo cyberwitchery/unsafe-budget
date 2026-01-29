@@ -2,6 +2,7 @@ pub mod cargo_geiger;
 pub mod go_geiger;
 pub mod plugin;
 pub mod rustc;
+pub mod sarif;
 
 use crate::error::{Error, Result};
 use crate::model::{ScanOpts, ScanResult};
@@ -31,6 +32,7 @@ pub struct AnalyzerInfo {
 pub const RUSTC_UNSAFE_LINT: &str = "rustc_unsafe_lint";
 pub const CARGO_GEIGER: &str = "cargo_geiger";
 pub const GO_GEIGER: &str = "go_geiger";
+pub const SARIF: &str = "sarif";
 
 /// Get an analyzer by ID.
 pub fn get_analyzer(id: &str) -> Result<Box<dyn Analyzer>> {
@@ -38,6 +40,7 @@ pub fn get_analyzer(id: &str) -> Result<Box<dyn Analyzer>> {
         RUSTC_UNSAFE_LINT => Ok(Box::new(rustc::RustcAnalyzer)),
         CARGO_GEIGER => Ok(Box::new(cargo_geiger::CargoGeigerAnalyzer)),
         GO_GEIGER => Ok(Box::new(go_geiger::GoGeigerAnalyzer)),
+        SARIF => Ok(Box::new(sarif::SarifAnalyzer)),
         _ => {
             // Check for external plugin
             let plugins = plugin::discover_plugins();
@@ -107,6 +110,12 @@ pub fn list_analyzers() -> Vec<AnalyzerInfo> {
             builtin: true,
             path: None,
         },
+        AnalyzerInfo {
+            id: SARIF.into(),
+            language: "any".into(),
+            builtin: true,
+            path: None,
+        },
     ];
 
     analyzers.extend(plugin::discover_plugins());
@@ -139,6 +148,13 @@ mod tests {
     }
 
     #[test]
+    fn test_get_analyzer_sarif() {
+        let analyzer = get_analyzer(SARIF).unwrap();
+        assert_eq!(analyzer.id(), "sarif");
+        assert_eq!(analyzer.language(), "unknown");
+    }
+
+    #[test]
     fn test_get_analyzer_unknown() {
         let result = get_analyzer("unknown_analyzer");
         assert!(result.is_err());
@@ -155,13 +171,14 @@ mod tests {
     fn test_list_analyzers_has_builtins() {
         let analyzers = list_analyzers();
 
-        // Should have at least the 3 built-in analyzers
-        assert!(analyzers.len() >= 3);
+        // Should have at least the 4 built-in analyzers
+        assert!(analyzers.len() >= 4);
 
         let ids: Vec<_> = analyzers.iter().map(|a| a.id.as_str()).collect();
         assert!(ids.contains(&"rustc_unsafe_lint"));
         assert!(ids.contains(&"cargo_geiger"));
         assert!(ids.contains(&"go_geiger"));
+        assert!(ids.contains(&"sarif"));
     }
 
     #[test]

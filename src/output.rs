@@ -10,6 +10,7 @@ pub enum Format {
     #[default]
     Text,
     Json,
+    Sarif,
 }
 
 impl std::str::FromStr for Format {
@@ -19,6 +20,7 @@ impl std::str::FromStr for Format {
         match s.to_lowercase().as_str() {
             "text" => Ok(Format::Text),
             "json" => Ok(Format::Json),
+            "sarif" => Ok(Format::Sarif),
             _ => Err(format!("unknown format: {}", s)),
         }
     }
@@ -30,6 +32,10 @@ pub fn print_scan(result: &ScanResult, format: Format) -> io::Result<()> {
     match format {
         Format::Text => print_scan_text(&mut out, result),
         Format::Json => print_json(&mut out, result),
+        Format::Sarif => {
+            let sarif = crate::sarif::scan_to_sarif(result);
+            print_json(&mut out, &sarif)
+        }
     }
 }
 
@@ -43,6 +49,10 @@ pub fn print_check(
     match format {
         Format::Text => print_check_text(&mut out, result, baseline),
         Format::Json => print_json(&mut out, result),
+        Format::Sarif => {
+            let sarif = crate::sarif::check_to_sarif(result);
+            print_json(&mut out, &sarif)
+        }
     }
 }
 
@@ -51,7 +61,7 @@ pub fn print_plugins(plugins: &[AnalyzerInfo], format: Format) -> io::Result<()>
     let mut out = io::stdout().lock();
     match format {
         Format::Text => print_plugins_text(&mut out, plugins),
-        Format::Json => {
+        Format::Json | Format::Sarif => {
             let list: Vec<_> = plugins
                 .iter()
                 .map(|p| {
@@ -314,8 +324,10 @@ mod tests {
     fn test_format_parse() {
         assert_eq!("text".parse::<Format>().unwrap(), Format::Text);
         assert_eq!("json".parse::<Format>().unwrap(), Format::Json);
+        assert_eq!("sarif".parse::<Format>().unwrap(), Format::Sarif);
         assert_eq!("TEXT".parse::<Format>().unwrap(), Format::Text);
         assert_eq!("JSON".parse::<Format>().unwrap(), Format::Json);
+        assert_eq!("SARIF".parse::<Format>().unwrap(), Format::Sarif);
         assert!("invalid".parse::<Format>().is_err());
     }
 

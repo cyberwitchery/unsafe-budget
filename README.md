@@ -23,10 +23,11 @@ unsafe-budget check
 ## features
 
 - **multi-language**: rust (rustc lint, cargo-geiger) and go (go-geiger)
+- **sarif support**: emit SARIF 2.1.0 for github code scanning, or ingest SARIF from any tool
 - **auto-detection**: detects project type from `Cargo.toml` or `go.mod`
 - **two modes**: ratchet (baseline comparison) or caps (explicit limits)
 - **plugin system**: extend with custom analyzers via `unsafe-budget-plugin-*` executables
-- **ci-friendly**: deterministic output, json format, meaningful exit codes
+- **ci-friendly**: deterministic output, json/sarif format, meaningful exit codes
 
 ## usage
 
@@ -57,6 +58,7 @@ cargo unsafe-budget update
 
 ```bash
 unsafe-budget scan --format json          # json output
+unsafe-budget scan --format sarif --details # sarif output for code scanning
 unsafe-budget scan --analyzer cargo_geiger # explicit analyzer
 unsafe-budget scan --workspace-only       # skip dependencies
 unsafe-budget scan --details              # show line-level occurrences
@@ -92,6 +94,7 @@ my_crate = 10
 | `rustc_unsafe_lint` | rust | `cargo check -Wunsafe_code` |
 | `cargo_geiger` | rust | `cargo-geiger` |
 | `go_geiger` | go | `go-geiger` |
+| `sarif` | any | reads `.sarif` files |
 
 ## library usage
 

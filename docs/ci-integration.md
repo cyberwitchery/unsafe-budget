@@ -157,6 +157,49 @@ use exit code 2 to distinguish budget failures from other errors:
   continue-on-error: false  # fail the job on violation
 ```
 
+## sarif + github code scanning
+
+upload results to github code scanning for inline annotations on pull requests:
+
+```yaml
+name: unsafe-budget sarif
+
+on: [push, pull_request]
+
+jobs:
+  unsafe-budget:
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: install unsafe-budget
+        run: cargo install unsafe-budget
+
+      - name: scan and emit sarif
+        run: unsafe-budget scan --format sarif --details > results.sarif
+
+      - name: upload sarif
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: results.sarif
+```
+
+### ingesting sarif from other tools
+
+use the sarif analyzer to apply budget logic to output from any sarif-producing tool:
+
+```yaml
+- name: run clippy and produce sarif
+  run: cargo clippy --message-format=json | clippy-sarif > clippy.sarif
+
+- name: check unsafe budget from sarif
+  run: unsafe-budget check --analyzer sarif --manifest-path clippy.sarif
+```
+
 ## tips
 
 - commit `unsafe-budget.lock` to your repository

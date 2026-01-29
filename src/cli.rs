@@ -32,7 +32,7 @@ pub struct ScanArgs {
     #[arg(long, default_value = "text")]
     pub format: Format,
 
-    /// Analyzer to use (rustc_unsafe_lint, cargo_geiger, go_geiger, or auto)
+    /// Analyzer to use (rustc_unsafe_lint, cargo_geiger, go_geiger, sarif, or auto)
     #[arg(long, default_value = "auto")]
     pub analyzer: String,
 

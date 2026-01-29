@@ -43,16 +43,93 @@ analyzer for go projects.
 **backend**: `go-geiger ./...`
 
 **features**:
-- counts `unsafe.Pointer`, `unsafe.Sizeof`, etc.
-- distinguishes workspace vs vendor/module cache
+- counts `unsafe.Pointer`, `unsafe.Sizeof`, `unsafe.Offsetof`, `unsafe.Alignof`, and other unsafe operations
+- distinguishes workspace vs vendor/module cache dependencies
 - provides line-level occurrence details
 - requires go-geiger installation
+
+**workspace vs dependency detection**:
+- files under `vendor/` or the Go module cache (`go/pkg/mod/`) are classified as dependencies
+- all other files are treated as workspace code
 
 **usage**:
 ```bash
 go install github.com/preeve9534/go-geiger@latest
 unsafe-budget scan --analyzer go_geiger
 ```
+
+**example** (scanning a go project):
+```bash
+# auto-detects go from go.mod
+cd my-go-project
+unsafe-budget scan
+
+# explicit analyzer selection
+unsafe-budget scan --analyzer go_geiger
+
+# with details
+unsafe-budget scan --analyzer go_geiger --details
+
+# skip dependencies (vendor/ and module cache)
+unsafe-budget scan --analyzer go_geiger --workspace-only
+```
+
+**example output**:
+```
+unsafe-budget scan
+==================
+Analyzer: go_geiger
+Language: go
+
+Totals:
+  Workspace: 3 unsafe
+  Dependencies: 12 unsafe
+  Overall: 15 unsafe
+
+Per-unit breakdown:
+  UNIT                           KIND           UNSAFE
+  ----------------------------------------------------
+  github.com/pkg/errors          dep                12
+  mypackage                      workspace           3
+```
+
+### sarif
+
+language-agnostic analyzer that reads SARIF 2.1.0 files produced by any
+static analysis tool.
+
+**backend**: reads a `.sarif` file from disk
+
+**features**:
+- ingests SARIF output from any tool (clippy, go-geiger, semgrep, codeql, etc.)
+- infers language from the SARIF tool driver name
+- groups results into units based on file paths
+- provides line-level occurrence details from SARIF locations
+- no external tools required beyond the one that produced the SARIF file
+
+**usage**:
+```bash
+# first, produce a sarif file with your tool of choice
+clippy-sarif > results.sarif
+
+# then analyze it with unsafe-budget
+unsafe-budget scan --analyzer sarif --manifest-path results.sarif
+
+# apply budget checking
+unsafe-budget check --analyzer sarif --manifest-path results.sarif
+
+# output as sarif again (round-trip)
+unsafe-budget scan --analyzer sarif --manifest-path results.sarif --format sarif --details
+```
+
+**unit grouping**: results are grouped by the parent directory of each
+artifact URI. for example, `src/lib.rs` and `src/main.rs` both map to
+the unit `src`.
+
+**language inference**: the language is inferred from the SARIF tool
+driver name. names containing "rust", "cargo", or "clippy" map to
+`rust`; names containing "go" map to `go`; names containing "gcc" or
+"clang" map to `c`; everything else maps to `unknown`.
 
 ## auto-detection
 
