@@ -22,13 +22,13 @@ jobs:
           tool: cargo-cyclonedx
 
       - name: generate sbom
-        run: cargo cyclonedx --format json --output-file sbom.cdx.json
+        run: cargo cyclonedx --format json --override-filename "sbom-${{ github.ref_name }}.cdx"
 
       - name: upload sbom
         uses: actions/upload-artifact@v4
         with:
           name: sbom-${{ github.ref_name }}
-          path: sbom.cdx.json
+          path: "sbom-${{ github.ref_name }}.cdx.json"
 
       - name: publish to crates.io
         run: cargo publish
