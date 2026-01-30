@@ -52,6 +52,15 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
 
+  unsafe-budget:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo install unsafe-budget
+      - run: cargo unsafe-budget check
+
   deny:
     runs-on: ubuntu-latest
     steps:
@@ -73,7 +82,7 @@ jobs:
           fail_ci_if_error: false
 
   success:
-    needs: [fmt, clippy, test, doc, deny, coverage]
+    needs: [fmt, clippy, test, doc, deny, coverage, unsafe-budget]
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -84,7 +93,8 @@ jobs:
              [[ "${{ needs.test.result }}" != "success" ]] ||
              [[ "${{ needs.doc.result }}" != "success" ]] ||
              [[ "${{ needs.deny.result }}" != "success" ]] ||
-             [[ "${{ needs.coverage.result }}" != "success" ]]; then
+             [[ "${{ needs.coverage.result }}" != "success" ]] ||
+             [[ "${{ needs.unsafe-budget.result }}" != "success" ]]; then
             echo "one or more jobs failed"
             exit 1
           fi
