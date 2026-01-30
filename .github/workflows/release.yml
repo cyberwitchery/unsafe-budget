@@ -16,6 +16,20 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      - name: install sbom tool
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-cyclonedx
+
+      - name: generate sbom
+        run: cargo cyclonedx --format json --output-file sbom.cdx.json
+
+      - name: upload sbom
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-${{ github.ref_name }}
+          path: sbom.cdx.json
+
       - name: publish to crates.io
         run: cargo publish
         env:
