@@ -2,6 +2,46 @@
 
 ## github actions
 
+### using the official action (recommended)
+
+```yaml
+name: unsafe-budget
+
+on: [push, pull_request]
+
+jobs:
+  unsafe-budget:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: cyberwitchery/unsafe-budget@v1
+        with:
+          mode: check
+```
+
+the action downloads a pre-built release binary for the current runner and
+runs `unsafe-budget` directly (no `cargo install` required).
+
+inputs:
+
+- `mode`: `scan`, `check`, `update`, or `plugins` (default: `check`)
+- `args`: additional cli args (default: empty)
+- `version`: release tag or `latest` (default: `latest`)
+- `repository`: release source repo (default: `cyberwitchery/unsafe-budget`)
+- `working-directory`: execution directory (default: `.`)
+
+example with extra flags:
+
+```yaml
+- uses: cyberwitchery/unsafe-budget@v1
+  with:
+    mode: check
+    args: --analyzer cargo_geiger --workspace-only
+```
+
+### installing via cargo
+
 ```yaml
 name: unsafe-budget
 

@@ -20,6 +20,14 @@ unsafe-budget update
 unsafe-budget check
 ```
 
+github actions can also run via the pre-built binary action:
+
+```yaml
+- uses: cyberwitchery/unsafe-budget@v1
+  with:
+    mode: check
+```
+
 ## features
 
 - **multi-language**: rust (rustc lint, cargo-geiger) and go (go-geiger)

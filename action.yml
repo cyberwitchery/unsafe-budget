@@ -1,0 +1,138 @@
+name: unsafe-budget
+description: Run unsafe-budget in CI without cargo install by using release binaries
+author: cyberwitchery
+
+inputs:
+  mode:
+    description: Command to run (scan, check, update, or plugins)
+    required: false
+    default: check
+  args:
+    description: Additional CLI arguments passed to unsafe-budget
+    required: false
+    default: ""
+  version:
+    description: Release tag to install (for example v0.1.1), or "latest"
+    required: false
+    default: latest
+  repository:
+    description: Repository to download release assets from
+    required: false
+    default: cyberwitchery/unsafe-budget
+  working-directory:
+    description: Working directory where unsafe-budget is executed
+    required: false
+    default: .
+
+runs:
+  using: composite
+  steps:
+    - name: Detect target triple
+      id: detect
+      shell: bash
+      run: |
+        set -euo pipefail
+        case "${RUNNER_OS}" in
+          Linux)
+            case "${RUNNER_ARCH}" in
+              X64) target="x86_64-unknown-linux-gnu" ;;
+              *)
+                echo "unsupported Linux architecture: ${RUNNER_ARCH}" >&2
+                exit 1
+                ;;
+            esac
+            bin_name="unsafe-budget"
+            ;;
+          macOS)
+            case "${RUNNER_ARCH}" in
+              X64) target="x86_64-apple-darwin" ;;
+              ARM64) target="aarch64-apple-darwin" ;;
+              *)
+                echo "unsupported macOS architecture: ${RUNNER_ARCH}" >&2
+                exit 1
+                ;;
+            esac
+            bin_name="unsafe-budget"
+            ;;
+          Windows)
+            case "${RUNNER_ARCH}" in
+              X64) target="x86_64-pc-windows-msvc" ;;
+              *)
+                echo "unsupported Windows architecture: ${RUNNER_ARCH}" >&2
+                exit 1
+                ;;
+            esac
+            bin_name="unsafe-budget.exe"
+            ;;
+          *)
+            echo "unsupported runner OS: ${RUNNER_OS}" >&2
+            exit 1
+            ;;
+        esac
+
+        echo "target=${target}" >> "${GITHUB_OUTPUT}"
+        echo "bin_name=${bin_name}" >> "${GITHUB_OUTPUT}"
+
+    - name: Resolve version
+      id: version
+      shell: bash
+      env:
+        INPUT_VERSION: ${{ inputs.version }}
+        INPUT_REPOSITORY: ${{ inputs.repository }}
+      run: |
+        set -euo pipefail
+        if [ "${INPUT_VERSION}" != "latest" ]; then
+          echo "tag=${INPUT_VERSION}" >> "${GITHUB_OUTPUT}"
+          exit 0
+        fi
+
+        api_url="https://api.github.com/repos/${INPUT_REPOSITORY}/releases/latest"
+        tag="$(
+          curl -fsSL "${api_url}" \
+            | sed -n 's/.*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p' \
+            | head -n 1
+        )"
+
+        if [ -z "${tag}" ]; then
+          echo "failed to resolve latest release tag from ${api_url}" >&2
+          exit 1
+        fi
+
+        echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
+
+    - name: Download and install unsafe-budget
+      shell: bash
+      env:
+        INPUT_REPOSITORY: ${{ inputs.repository }}
+        TAG: ${{ steps.version.outputs.tag }}
+        TARGET: ${{ steps.detect.outputs.target }}
+        BIN_NAME: ${{ steps.detect.outputs.bin_name }}
+      run: |
+        set -euo pipefail
+        archive="unsafe-budget-${TAG}-${TARGET}.tar.gz"
+        url="https://github.com/${INPUT_REPOSITORY}/releases/download/${TAG}/${archive}"
+
+        download_dir="${RUNNER_TEMP}/unsafe-budget-download"
+        extract_dir="${RUNNER_TEMP}/unsafe-budget-extract"
+        install_dir="${RUNNER_TEMP}/unsafe-budget-bin"
+        mkdir -p "${download_dir}" "${extract_dir}" "${install_dir}"
+
+        curl -fsSL -o "${download_dir}/${archive}" "${url}"
+        tar -xzf "${download_dir}/${archive}" -C "${extract_dir}"
+
+        bin_path="$(find "${extract_dir}" -type f -name "${BIN_NAME}" | head -n 1)"
+        if [ -z "${bin_path}" ]; then
+          echo "failed to find ${BIN_NAME} in downloaded archive" >&2
+          exit 1
+        fi
+
+        cp "${bin_path}" "${install_dir}/${BIN_NAME}"
+        chmod +x "${install_dir}/${BIN_NAME}"
+        echo "${install_dir}" >> "${GITHUB_PATH}"
+
+    - name: Run unsafe-budget
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        set -euo pipefail
+        unsafe-budget "${{ inputs.mode }}" ${{ inputs.args }}

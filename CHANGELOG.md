@@ -5,6 +5,7 @@
 - add release SBOM generation and upload (CycloneDX)
 - publish pre-built release binaries for Linux/macOS/Windows on version tags
 - add optional threshold warnings for near-budget units (`[warnings].threshold`)
+- add a GitHub composite action (`cyberwitchery/unsafe-budget@v1`) for CI usage
 
 ## [0.1.1] - 2026-01-29
 
