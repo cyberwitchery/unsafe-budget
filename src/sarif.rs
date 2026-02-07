@@ -361,6 +361,7 @@ mod tests {
                 actual: 1,
                 delta: 1,
             }],
+            warnings: vec![],
             passed: false,
         };
 
@@ -403,6 +404,7 @@ mod tests {
         let check = CheckResult {
             scan,
             violations: vec![],
+            warnings: vec![],
             passed: true,
         };
 

@@ -41,6 +41,9 @@ same options as `scan`. exit codes:
 - 1: runtime error
 - 2: budget violation
 
+when warnings are configured, near-budget units are reported as warnings without
+changing the exit code.
+
 ### update
 
 write/update baseline from current scan:
@@ -86,6 +89,10 @@ other_crate = 5
 
 [caps.deps]
 libc = 500  # override default for specific dep
+
+# warning configuration (optional)
+[warnings]
+threshold = 0.8  # warn when usage reaches 80% of budget
 ```
 
 ## baseline file

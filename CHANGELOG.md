@@ -4,6 +4,7 @@
 
 - add release SBOM generation and upload (CycloneDX)
 - publish pre-built release binaries for Linux/macOS/Windows on version tags
+- add optional threshold warnings for near-budget units (`[warnings].threshold`)
 
 ## [0.1.1] - 2026-01-29
 

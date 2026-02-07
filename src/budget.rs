@@ -1,7 +1,7 @@
 use crate::config::{Baseline, Caps, Config, Mode};
 use crate::error::{Error, Result};
-use crate::model::{CheckResult, ScanResult, UnitKind, Violation};
-use std::collections::HashMap;
+use crate::model::{CheckResult, ScanResult, Unit, UnitKind, Violation, Warning};
+use std::collections::{HashMap, HashSet};
 
 /// Check scan results against baseline/caps based on config mode.
 pub fn check(
@@ -23,12 +23,90 @@ pub fn check(
         }
     };
 
+    let warnings = compute_warnings(scan, baseline, config, &violations)?;
+
     let passed = violations.is_empty();
     Ok(CheckResult {
         scan: scan.clone(),
         violations,
+        warnings,
         passed,
     })
+}
+
+fn compute_warnings(
+    scan: &ScanResult,
+    baseline: Option<&Baseline>,
+    config: &Config,
+    violations: &[Violation],
+) -> Result<Vec<Warning>> {
+    let threshold = match &config.warnings {
+        Some(w) => w.threshold,
+        None => return Ok(Vec::new()),
+    };
+
+    if !(0.0..=1.0).contains(&threshold) {
+        return Err(Error::Config(format!(
+            "warnings.threshold must be between 0.0 and 1.0, got {}",
+            threshold
+        )));
+    }
+
+    let violating_units: HashSet<&str> = violations.iter().map(|v| v.unit.as_str()).collect();
+    let mut warnings = Vec::new();
+
+    for unit in &scan.units {
+        if config.ignore_units.contains(&unit.name) {
+            continue;
+        }
+        if violating_units.contains(unit.name.as_str()) {
+            continue;
+        }
+
+        let Some(budget) = budget_for_unit(unit, baseline, config) else {
+            continue;
+        };
+        if budget == 0 {
+            continue;
+        }
+
+        let usage_ratio = unit.unsafe_count as f64 / budget as f64;
+        if usage_ratio >= threshold {
+            warnings.push(Warning {
+                unit: unit.name.clone(),
+                kind: unit.kind,
+                budget,
+                actual: unit.unsafe_count,
+            });
+        }
+    }
+
+    warnings.sort_by(|a, b| {
+        let a_remaining = a.budget.saturating_sub(a.actual);
+        let b_remaining = b.budget.saturating_sub(b.actual);
+        a_remaining
+            .cmp(&b_remaining)
+            .then_with(|| b.actual.cmp(&a.actual))
+            .then_with(|| a.unit.cmp(&b.unit))
+    });
+
+    Ok(warnings)
+}
+
+fn budget_for_unit(unit: &Unit, baseline: Option<&Baseline>, config: &Config) -> Option<u64> {
+    match config.mode {
+        Mode::Ratchet => baseline
+            .and_then(|b| b.get_unit(&unit.name))
+            .map(|u| u.unsafe_count)
+            .or(Some(0)),
+        Mode::Caps => {
+            let caps = config.caps.as_ref()?;
+            match unit.kind {
+                UnitKind::Workspace => caps.workspace.get(&unit.name).copied(),
+                UnitKind::Dep => caps.deps.get(&unit.name).copied().or(caps.default),
+            }
+        }
+    }
 }
 
 /// Check against ratchet baseline - fail if any unit exceeds its baseline count.
@@ -201,6 +279,7 @@ mod tests {
         let result = check(&scan, Some(&baseline), &config).unwrap();
         assert!(result.passed);
         assert!(result.violations.is_empty());
+        assert!(result.warnings.is_empty());
     }
 
     #[test]
@@ -290,6 +369,7 @@ mod tests {
 
         let result = check(&scan, None, &config).unwrap();
         assert!(result.passed);
+        assert!(result.warnings.is_empty());
     }
 
     #[test]
@@ -366,6 +446,84 @@ mod tests {
         let config = Config {
             mode: Mode::Caps,
             caps: None,
+            ..Config::default()
+        };
+
+        let result = check(&scan, None, &config);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_caps_threshold_warning_triggered() {
+        let scan = make_scan(vec![("my_crate", UnitKind::Workspace, 8)]);
+        let config = Config {
+            mode: Mode::Caps,
+            caps: Some(Caps {
+                default: None,
+                workspace: [("my_crate".into(), 10)].into_iter().collect(),
+                deps: HashMap::new(),
+            }),
+            warnings: Some(crate::config::Warnings { threshold: 0.8 }),
+            ..Config::default()
+        };
+
+        let result = check(&scan, None, &config).unwrap();
+        assert!(result.passed);
+        assert_eq!(result.warnings.len(), 1);
+        assert_eq!(result.warnings[0].unit, "my_crate");
+        assert_eq!(result.warnings[0].budget, 10);
+        assert_eq!(result.warnings[0].actual, 8);
+    }
+
+    #[test]
+    fn test_caps_threshold_warning_not_triggered_below_threshold() {
+        let scan = make_scan(vec![("my_crate", UnitKind::Workspace, 7)]);
+        let config = Config {
+            mode: Mode::Caps,
+            caps: Some(Caps {
+                default: None,
+                workspace: [("my_crate".into(), 10)].into_iter().collect(),
+                deps: HashMap::new(),
+            }),
+            warnings: Some(crate::config::Warnings { threshold: 0.8 }),
+            ..Config::default()
+        };
+
+        let result = check(&scan, None, &config).unwrap();
+        assert!(result.warnings.is_empty());
+    }
+
+    #[test]
+    fn test_threshold_warning_not_emitted_for_violation() {
+        let scan = make_scan(vec![("my_crate", UnitKind::Workspace, 11)]);
+        let config = Config {
+            mode: Mode::Caps,
+            caps: Some(Caps {
+                default: None,
+                workspace: [("my_crate".into(), 10)].into_iter().collect(),
+                deps: HashMap::new(),
+            }),
+            warnings: Some(crate::config::Warnings { threshold: 0.8 }),
+            ..Config::default()
+        };
+
+        let result = check(&scan, None, &config).unwrap();
+        assert!(!result.passed);
+        assert_eq!(result.violations.len(), 1);
+        assert!(result.warnings.is_empty());
+    }
+
+    #[test]
+    fn test_threshold_warning_invalid_threshold_fails() {
+        let scan = make_scan(vec![("my_crate", UnitKind::Workspace, 8)]);
+        let config = Config {
+            mode: Mode::Caps,
+            caps: Some(Caps {
+                default: None,
+                workspace: [("my_crate".into(), 10)].into_iter().collect(),
+                deps: HashMap::new(),
+            }),
+            warnings: Some(crate::config::Warnings { threshold: 1.1 }),
             ..Config::default()
         };
 

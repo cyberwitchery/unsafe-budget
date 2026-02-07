@@ -85,6 +85,9 @@ ignore_units = ["test_crate"]
 default = 100
 [caps.workspace]
 my_crate = 10
+
+[warnings]
+threshold = 0.8
 ```
 
 ## built-in analyzers

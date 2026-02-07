@@ -1,6 +1,6 @@
 use crate::analyzer::AnalyzerInfo;
 use crate::config::Baseline;
-use crate::model::{CheckResult, ScanResult, Unit, Violation};
+use crate::model::{CheckResult, ScanResult, Unit, Violation, Warning};
 use std::collections::HashMap;
 use std::io::{self, Write};
 
@@ -189,24 +189,35 @@ fn print_check_text(
         .iter()
         .map(|v| (v.unit.as_str(), v))
         .collect();
+    let warning_set: HashMap<&str, &Warning> = result
+        .warnings
+        .iter()
+        .map(|w| (w.unit.as_str(), w))
+        .collect();
 
     if result.scan.units.is_empty() {
         writeln!(out, "No units found.")?;
         return Ok(());
     }
 
-    // Sort: violations first (by delta desc), then others by count desc
+    // Sort: violations first, then warnings, then others by count desc
     let mut units: Vec<&Unit> = result.scan.units.iter().collect();
     units.sort_by(|a, b| {
         let a_viol = violation_set.contains_key(a.name.as_str());
         let b_viol = violation_set.contains_key(b.name.as_str());
+        let a_warn = warning_set.contains_key(a.name.as_str());
+        let b_warn = warning_set.contains_key(b.name.as_str());
         match (a_viol, b_viol) {
             (true, false) => std::cmp::Ordering::Less,
             (false, true) => std::cmp::Ordering::Greater,
-            _ => b
-                .unsafe_count
-                .cmp(&a.unsafe_count)
-                .then(a.name.cmp(&b.name)),
+            _ => match (a_warn, b_warn) {
+                (true, false) => std::cmp::Ordering::Less,
+                (false, true) => std::cmp::Ordering::Greater,
+                _ => b
+                    .unsafe_count
+                    .cmp(&a.unsafe_count)
+                    .then(a.name.cmp(&b.name)),
+            },
         }
     });
 
@@ -229,7 +240,14 @@ fn print_check_text(
 
     for unit in units {
         let is_violation = violation_set.contains_key(unit.name.as_str());
-        let status = if is_violation { "FAIL" } else { "ok" };
+        let is_warning = warning_set.contains_key(unit.name.as_str());
+        let status = if is_violation {
+            "FAIL"
+        } else if is_warning {
+            "WARN"
+        } else {
+            "ok"
+        };
 
         if baseline.is_some() {
             let delta = deltas.get(&unit.name).copied().unwrap_or(0);
@@ -263,6 +281,27 @@ fn print_check_text(
                 out,
                 "  - {}: {} unsafe (budget: {}, delta: +{})",
                 v.unit, v.actual, v.baseline, v.delta
+            )?;
+        }
+    }
+
+    if !result.warnings.is_empty() {
+        writeln!(out)?;
+        writeln!(out, "Warnings ({}):", result.warnings.len())?;
+        for w in &result.warnings {
+            let pct = if w.budget == 0 {
+                0.0
+            } else {
+                (w.actual as f64 / w.budget as f64) * 100.0
+            };
+            writeln!(
+                out,
+                "  - {}: {} unsafe ({:.0}% of budget {}, remaining: {})",
+                w.unit,
+                w.actual,
+                pct,
+                w.budget,
+                w.budget.saturating_sub(w.actual)
             )?;
         }
     }
@@ -426,6 +465,7 @@ mod tests {
         let check = CheckResult {
             scan,
             violations: vec![],
+            warnings: vec![],
             passed: true,
         };
 
@@ -450,6 +490,7 @@ mod tests {
                 actual: 10,
                 delta: 5,
             }],
+            warnings: vec![],
             passed: false,
         };
 
@@ -460,6 +501,31 @@ mod tests {
         assert!(output.contains("Status: FAILED"));
         assert!(output.contains("Violations (1)"));
         assert!(output.contains("my_crate: 10 unsafe (budget: 5, delta: +5)"));
+    }
+
+    #[test]
+    fn test_print_check_text_with_warnings() {
+        let scan = make_scan_result();
+        let check = CheckResult {
+            scan,
+            violations: vec![],
+            warnings: vec![Warning {
+                unit: "my_crate".into(),
+                kind: UnitKind::Workspace,
+                budget: 12,
+                actual: 10,
+            }],
+            passed: true,
+        };
+
+        let mut buf = Vec::new();
+        print_check_text(&mut buf, &check, None).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+
+        assert!(output.contains("Status: PASSED"));
+        assert!(output.contains("Warnings (1):"));
+        assert!(output.contains("my_crate: 10 unsafe"));
+        assert!(output.contains("WARN"));
     }
 
     #[test]

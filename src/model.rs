@@ -215,6 +215,22 @@ pub struct Violation {
     pub delta: i64,
 }
 
+/// a budget warning.
+///
+/// records when a unit is near its configured budget threshold but has not
+/// exceeded it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Warning {
+    /// name of the warned unit.
+    pub unit: String,
+    /// whether this is a workspace member or dependency.
+    pub kind: UnitKind,
+    /// the allowed count (from baseline or cap).
+    pub budget: u64,
+    /// the actual count found.
+    pub actual: u64,
+}
+
 /// result of a budget check.
 ///
 /// combines the scan result with any violations found.
@@ -224,6 +240,9 @@ pub struct CheckResult {
     pub scan: ScanResult,
     /// list of violations (empty if passed).
     pub violations: Vec<Violation>,
+    /// list of threshold warnings (empty if none configured or triggered).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<Warning>,
     /// whether the check passed (no violations).
     pub passed: bool,
 }

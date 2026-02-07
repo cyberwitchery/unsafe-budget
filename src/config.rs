@@ -25,6 +25,13 @@ pub struct Caps {
     pub deps: HashMap<String, u64>,
 }
 
+/// Warning configuration for near-budget usage.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Warnings {
+    /// Warn when usage reaches this fraction of budget, e.g. 0.8 for 80%.
+    pub threshold: f64,
+}
+
 /// Main configuration from unsafe-budget.toml.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -38,6 +45,8 @@ pub struct Config {
     pub ignore_units: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub caps: Option<Caps>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warnings: Option<Warnings>,
 }
 
 fn default_true() -> bool {
@@ -52,6 +61,7 @@ impl Default for Config {
             workspace_only: false,
             ignore_units: Vec::new(),
             caps: None,
+            warnings: None,
         }
     }
 }
@@ -168,6 +178,9 @@ my_crate = 5
 
 [caps.deps]
 libc = 100
+
+[warnings]
+threshold = 0.8
 "#;
         let config: Config = toml::from_str(toml).unwrap();
         assert_eq!(config.mode, Mode::Caps);
@@ -175,10 +188,11 @@ libc = 100
         assert!(config.workspace_only);
         assert_eq!(config.ignore_units, vec!["foo", "bar"]);
 
-        let caps = config.caps.unwrap();
+        let caps = config.caps.as_ref().unwrap();
         assert_eq!(caps.default, Some(10));
         assert_eq!(caps.workspace.get("my_crate"), Some(&5));
         assert_eq!(caps.deps.get("libc"), Some(&100));
+        assert_eq!(config.warnings.as_ref().unwrap().threshold, 0.8);
     }
 
     #[test]
