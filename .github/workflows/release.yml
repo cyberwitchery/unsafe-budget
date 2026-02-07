@@ -8,32 +8,82 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+permissions:
+  contents: write
+
 jobs:
-  publish:
-    runs-on: ubuntu-latest
+  release:
+    name: release ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            bin_ext: ""
+            publish_crates: true
+          - os: macos-13
+            target: x86_64-apple-darwin
+            bin_ext: ""
+            publish_crates: false
+          - os: macos-14
+            target: aarch64-apple-darwin
+            bin_ext: ""
+            publish_crates: false
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bin_ext: ".exe"
+            publish_crates: false
     steps:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: build release binaries
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: package binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive_base="unsafe-budget-${{ github.ref_name }}-${{ matrix.target }}"
+          stage_dir="dist/${archive_base}"
+          mkdir -p "${stage_dir}"
+          cp "target/${{ matrix.target }}/release/unsafe-budget${{ matrix.bin_ext }}" "${stage_dir}/"
+          cp "target/${{ matrix.target }}/release/cargo-unsafe-budget${{ matrix.bin_ext }}" "${stage_dir}/"
+          cp README.md LICENSE "${stage_dir}/"
+          tar -czf "dist/${archive_base}.tar.gz" -C dist "${archive_base}"
+
+      - name: upload packaged binaries
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.tar.gz
 
       - name: install sbom tool
+        if: matrix.publish_crates
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-cyclonedx
 
       - name: generate sbom
+        if: matrix.publish_crates
         run: |
           (cd /tmp && cargo cyclonedx --manifest-path "$GITHUB_WORKSPACE/Cargo.toml" \
             --format json \
             --override-filename "sbom-${{ github.ref_name }}.cdx")
+          cp "/tmp/sbom-${{ github.ref_name }}.cdx.json" "dist/"
 
       - name: upload sbom
-        uses: actions/upload-artifact@v4
+        if: matrix.publish_crates
+        uses: softprops/action-gh-release@v2
         with:
-          name: sbom-${{ github.ref_name }}
-          path: "/tmp/sbom-${{ github.ref_name }}.cdx.json"
+          files: dist/*.cdx.json
 
       - name: publish to crates.io
+        if: matrix.publish_crates
         run: cargo publish
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}

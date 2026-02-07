@@ -3,6 +3,7 @@
 ## [unreleased]
 
 - add release SBOM generation and upload (CycloneDX)
+- publish pre-built release binaries for Linux/macOS/Windows on version tags
 
 ## [0.1.1] - 2026-01-29
 
