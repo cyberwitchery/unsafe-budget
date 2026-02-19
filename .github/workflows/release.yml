@@ -50,17 +50,17 @@ jobs:
         run: |
           set -euo pipefail
           archive_base="unsafe-budget-${{ github.ref_name }}-${{ matrix.target }}"
-          stage_dir="/tmp/dist/${archive_base}"
+          stage_dir="${RUNNER_TEMP}/dist/${archive_base}"
           mkdir -p "${stage_dir}"
           cp "target/${{ matrix.target }}/release/unsafe-budget${{ matrix.bin_ext }}" "${stage_dir}/"
           cp "target/${{ matrix.target }}/release/cargo-unsafe-budget${{ matrix.bin_ext }}" "${stage_dir}/"
           cp README.md LICENSE "${stage_dir}/"
-          tar -czf "/tmp/dist/${archive_base}.tar.gz" -C /tmp/dist "${archive_base}"
+          tar -czf "${RUNNER_TEMP}/dist/${archive_base}.tar.gz" -C "${RUNNER_TEMP}/dist" "${archive_base}"
 
       - name: upload packaged binaries
         uses: softprops/action-gh-release@v2
         with:
-          files: /tmp/dist/*.tar.gz
+          files: ${{ runner.temp }}/dist/*.tar.gz
 
       - name: install sbom tool
         if: matrix.publish_crates
