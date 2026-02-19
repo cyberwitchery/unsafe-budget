@@ -74,13 +74,30 @@ jobs:
           (cd /tmp && cargo cyclonedx --manifest-path "$GITHUB_WORKSPACE/Cargo.toml" \
             --format json \
             --override-filename "sbom-${{ github.ref_name }}.cdx")
-          cp "/tmp/sbom-${{ github.ref_name }}.cdx.json" "dist/"
+
+      - name: collect sbom files
+        if: matrix.publish_crates
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/unsafe-budget-sbom
+          find /tmp -maxdepth 1 -type f -name "sbom-${{ github.ref_name }}.cdx.json" \
+            -exec mv {} /tmp/unsafe-budget-sbom/ \;
+          find "$GITHUB_WORKSPACE" -type f -name "sbom-${{ github.ref_name }}.cdx.json" \
+            -exec mv {} /tmp/unsafe-budget-sbom/ \;
 
       - name: upload sbom
         if: matrix.publish_crates
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-${{ github.ref_name }}
+          path: "/tmp/unsafe-budget-sbom/sbom-${{ github.ref_name }}.cdx.json"
+          if-no-files-found: error
+
+      - name: attach sbom to release
+        if: matrix.publish_crates
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/*.cdx.json
+          files: /tmp/unsafe-budget-sbom/sbom-${{ github.ref_name }}.cdx.json
 
       - name: publish to crates.io
         if: matrix.publish_crates
