@@ -14,14 +14,12 @@ pub struct PluginAnalyzer {
 }
 
 impl Analyzer for PluginAnalyzer {
-    fn id(&self) -> &'static str {
-        // Leak the string to get a 'static lifetime
-        // This is fine since plugins are long-lived
-        Box::leak(self.id.clone().into_boxed_str())
+    fn id(&self) -> &str {
+        &self.id
     }
 
-    fn language(&self) -> &'static str {
-        Box::leak(self.language.clone().into_boxed_str())
+    fn language(&self) -> &str {
+        &self.language
     }
 
     fn run(&self, opts: &ScanOpts) -> Result<ScanResult> {

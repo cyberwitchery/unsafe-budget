@@ -8,11 +8,11 @@ use std::process::{Command, Stdio};
 pub struct CargoGeigerAnalyzer;
 
 impl Analyzer for CargoGeigerAnalyzer {
-    fn id(&self) -> &'static str {
+    fn id(&self) -> &str {
         "cargo_geiger"
     }
 
-    fn language(&self) -> &'static str {
+    fn language(&self) -> &str {
         "rust"
     }
 

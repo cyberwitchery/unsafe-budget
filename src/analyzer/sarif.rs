@@ -14,11 +14,11 @@ use std::path::PathBuf;
 pub struct SarifAnalyzer;
 
 impl Analyzer for SarifAnalyzer {
-    fn id(&self) -> &'static str {
+    fn id(&self) -> &str {
         "sarif"
     }
 
-    fn language(&self) -> &'static str {
+    fn language(&self) -> &str {
         "unknown"
     }
 

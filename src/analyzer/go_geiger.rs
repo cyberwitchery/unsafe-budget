@@ -9,11 +9,11 @@ use std::process::{Command, Stdio};
 pub struct GoGeigerAnalyzer;
 
 impl Analyzer for GoGeigerAnalyzer {
-    fn id(&self) -> &'static str {
+    fn id(&self) -> &str {
         "go_geiger"
     }
 
-    fn language(&self) -> &'static str {
+    fn language(&self) -> &str {
         "go"
     }
 

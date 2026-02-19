@@ -10,10 +10,10 @@ use crate::model::{ScanOpts, ScanResult};
 /// Trait for unsafe code analyzers.
 pub trait Analyzer {
     /// Unique identifier for this analyzer.
-    fn id(&self) -> &'static str;
+    fn id(&self) -> &str;
 
     /// Language this analyzer targets.
-    fn language(&self) -> &'static str;
+    fn language(&self) -> &str;
 
     /// Run the analysis with the given options.
     fn run(&self, opts: &ScanOpts) -> Result<ScanResult>;

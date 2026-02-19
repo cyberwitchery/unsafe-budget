@@ -10,11 +10,11 @@ use std::process::{Command, Stdio};
 pub struct RustcAnalyzer;
 
 impl Analyzer for RustcAnalyzer {
-    fn id(&self) -> &'static str {
+    fn id(&self) -> &str {
         "rustc_unsafe_lint"
     }
 
-    fn language(&self) -> &'static str {
+    fn language(&self) -> &str {
         "rust"
     }
 
