@@ -3,7 +3,7 @@ use crate::model::{Scope, Totals, Unit, UnitKind};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Budget enforcement mode.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -25,6 +25,30 @@ pub struct Caps {
     pub deps: HashMap<String, u64>,
 }
 
+/// A single occurrence to ignore when counting unsafe code.
+///
+/// Matches a specific file and line number in the scan output. The `reason`
+/// field is optional documentation for reviewers.
+///
+/// # Example (unsafe-budget.toml)
+///
+/// ```toml
+/// [[ignore]]
+/// file = "src/ffi.rs"
+/// line = 42
+/// reason = "ffi boundary, reviewed 2026-04-12"
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct IgnoreEntry {
+    /// File path relative to the project root.
+    pub file: PathBuf,
+    /// Line number (1-indexed).
+    pub line: u32,
+    /// Optional human-readable reason for the ignore.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
 /// Warning configuration for near-budget usage.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Warnings {
@@ -43,6 +67,13 @@ pub struct Config {
     pub workspace_only: bool,
     #[serde(default)]
     pub ignore_units: Vec<String>,
+    /// Specific occurrences to exclude from counts.
+    ///
+    /// Each entry matches a file path and line number. Matched occurrences are
+    /// removed before budgets are checked, so they do not count toward any unit's
+    /// unsafe total.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ignore: Vec<IgnoreEntry>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub caps: Option<Caps>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -60,6 +91,7 @@ impl Default for Config {
             include_deps: true,
             workspace_only: false,
             ignore_units: Vec::new(),
+            ignore: Vec::new(),
             caps: None,
             warnings: None,
         }
@@ -193,6 +225,36 @@ threshold = 0.8
         assert_eq!(caps.workspace.get("my_crate"), Some(&5));
         assert_eq!(caps.deps.get("libc"), Some(&100));
         assert_eq!(config.warnings.as_ref().unwrap().threshold, 0.8);
+    }
+
+    #[test]
+    fn test_config_ignore_parse() {
+        let toml = r#"
+[[ignore]]
+file = "src/ffi.rs"
+line = 42
+reason = "ffi boundary"
+
+[[ignore]]
+file = "src/platform.rs"
+line = 7
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert_eq!(config.ignore.len(), 2);
+
+        assert_eq!(config.ignore[0].file, std::path::PathBuf::from("src/ffi.rs"));
+        assert_eq!(config.ignore[0].line, 42);
+        assert_eq!(config.ignore[0].reason.as_deref(), Some("ffi boundary"));
+
+        assert_eq!(config.ignore[1].file, std::path::PathBuf::from("src/platform.rs"));
+        assert_eq!(config.ignore[1].line, 7);
+        assert!(config.ignore[1].reason.is_none());
+    }
+
+    #[test]
+    fn test_config_ignore_empty_by_default() {
+        let config = Config::default();
+        assert!(config.ignore.is_empty());
     }
 
     #[test]

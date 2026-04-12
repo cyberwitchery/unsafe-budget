@@ -89,6 +89,16 @@ mode = "ratchet"  # or "caps"
 include_deps = true
 ignore_units = ["test_crate"]
 
+# ignore specific occurrences by file + line (optional reason for reviewers)
+[[ignore]]
+file = "src/ffi.rs"
+line = 42
+reason = "ffi boundary, reviewed 2026-04-12"
+
+[[ignore]]
+file = "src/platform/windows.rs"
+line = 7
+
 [caps]
 default = 100
 [caps.workspace]
