@@ -30,7 +30,7 @@ initial release
 - baseline file (`unsafe-budget.lock`) for tracking unsafe counts over time
 - configuration via `unsafe-budget.toml`
 
-[0.2.0]: https://github.com/cyberwitchery/unsafe-gate/releases/tag/v0.2.0
-[0.1.1]: https://github.com/cyberwitchery/unsafe-gate/releases/tag/v0.1.1
-[0.1.0]: https://github.com/cyberwitchery/unsafe-gate/releases/tag/v0.1.0
-[unreleased]: https://github.com/cyberwitchery/unsafe-gate/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/cyberwitchery/unsafe-budget/releases/tag/v0.2.0
+[0.1.1]: https://github.com/cyberwitchery/unsafe-budget/releases/tag/v0.1.1
+[0.1.0]: https://github.com/cyberwitchery/unsafe-budget/releases/tag/v0.1.0
+[unreleased]: https://github.com/cyberwitchery/unsafe-budget/compare/v0.2.0...HEAD
