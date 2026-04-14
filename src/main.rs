@@ -1,11 +1,12 @@
+use std::collections::HashMap;
 use std::process::ExitCode;
 
 use unsafe_budget::analyzer::{detect_analyzer, get_analyzer, list_analyzers, Analyzer};
 use unsafe_budget::budget;
 use unsafe_budget::cli::{self, Command, ScanArgs};
-use unsafe_budget::config::{Baseline, BaselineUnit, Config};
+use unsafe_budget::config::{Baseline, BaselineUnit, Config, IgnoreEntry};
 use unsafe_budget::error::Result;
-use unsafe_budget::model::{ScanOpts, ScanResult};
+use unsafe_budget::model::{ScanOpts, ScanResult, Totals, UnitKind};
 use unsafe_budget::output::{self, Format};
 
 fn main() -> ExitCode {
@@ -36,6 +37,8 @@ fn cmd_scan(args: ScanArgs) -> Result<ExitCode> {
 
     let mut result = analyzer.run(&opts)?;
 
+    result = apply_ignore_filter(result, &config.ignore);
+
     // Filter details if not requested
     if !args.details {
         result.details.clear();
@@ -51,6 +54,7 @@ fn cmd_check(args: ScanArgs) -> Result<ExitCode> {
     let analyzer = get_analyzer_for_args(&args, &opts)?;
 
     let result = analyzer.run(&opts)?;
+    let result = apply_ignore_filter(result, &config.ignore);
 
     // Load baseline for ratchet mode
     let baseline = match config.mode {
@@ -78,6 +82,7 @@ fn cmd_update(args: ScanArgs) -> Result<ExitCode> {
     let analyzer = get_analyzer_for_args(&args, &opts)?;
 
     let result = analyzer.run(&opts)?;
+    let result = apply_ignore_filter(result, &config.ignore);
 
     let baseline = build_baseline(&result, analyzer.as_ref());
     let dir = get_project_dir(&args);
@@ -149,6 +154,53 @@ fn build_scan_opts(args: &ScanArgs, config: &Config) -> ScanOpts {
         targets: args.targets.clone(),
         manifest_path: args.manifest_path.clone(),
     }
+}
+
+/// Remove occurrences that match an `[[ignore]]` config entry and recompute unit
+/// counts and totals. A match requires both the file path and line number to be
+/// equal; the `reason` field is documentation only.
+///
+/// If `ignores` is empty this is a no-op.
+fn apply_ignore_filter(mut result: ScanResult, ignores: &[IgnoreEntry]) -> ScanResult {
+    if ignores.is_empty() {
+        return result;
+    }
+
+    result.details.retain(|occ| {
+        !ignores
+            .iter()
+            .any(|rule| rule.file == occ.file && rule.line == occ.line)
+    });
+
+    // Recompute per-unit counts from the filtered details.
+    let mut counts: HashMap<&str, u64> = HashMap::new();
+    for occ in &result.details {
+        *counts.entry(occ.unit.as_str()).or_default() += 1;
+    }
+    for unit in &mut result.units {
+        unit.unsafe_count = counts.get(unit.name.as_str()).copied().unwrap_or(0);
+    }
+
+    // Recompute totals.
+    let workspace_unsafe: u64 = result
+        .units
+        .iter()
+        .filter(|u| u.kind == UnitKind::Workspace)
+        .map(|u| u.unsafe_count)
+        .sum();
+    let deps_unsafe: u64 = result
+        .units
+        .iter()
+        .filter(|u| u.kind == UnitKind::Dep)
+        .map(|u| u.unsafe_count)
+        .sum();
+    result.totals = Totals {
+        workspace_unsafe,
+        deps_unsafe,
+        overall_unsafe: workspace_unsafe + deps_unsafe,
+    };
+
+    result
 }
 
 fn build_baseline(result: &ScanResult, analyzer: &dyn Analyzer) -> Baseline {
