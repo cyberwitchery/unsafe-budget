@@ -242,11 +242,17 @@ line = 7
         let config: Config = toml::from_str(toml).unwrap();
         assert_eq!(config.ignore.len(), 2);
 
-        assert_eq!(config.ignore[0].file, std::path::PathBuf::from("src/ffi.rs"));
+        assert_eq!(
+            config.ignore[0].file,
+            std::path::PathBuf::from("src/ffi.rs")
+        );
         assert_eq!(config.ignore[0].line, 42);
         assert_eq!(config.ignore[0].reason.as_deref(), Some("ffi boundary"));
 
-        assert_eq!(config.ignore[1].file, std::path::PathBuf::from("src/platform.rs"));
+        assert_eq!(
+            config.ignore[1].file,
+            std::path::PathBuf::from("src/platform.rs")
+        );
         assert_eq!(config.ignore[1].line, 7);
         assert!(config.ignore[1].reason.is_none());
     }
