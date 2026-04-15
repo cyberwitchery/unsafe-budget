@@ -150,3 +150,227 @@ pub fn run_plugin(path: &PathBuf, opts: &ScanOpts) -> Result<ScanResult> {
 
     Ok(result)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use std::sync::Mutex;
+    use tempfile::TempDir;
+
+    // discover_plugins reads PATH and probe_plugin_language spawns children
+    // that inherit the environment. Serialize tests that touch either to
+    // avoid races from concurrent set_var calls.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn make_file(dir: &std::path::Path, name: &str, mode: u32) -> PathBuf {
+        let p = dir.join(name);
+        fs::write(&p, "").unwrap();
+        fs::set_permissions(&p, fs::Permissions::from_mode(mode)).unwrap();
+        p
+    }
+
+    fn make_script(dir: &std::path::Path, name: &str, body: &str) -> PathBuf {
+        let p = dir.join(name);
+        fs::write(&p, format!("#!/bin/sh\n{body}")).unwrap();
+        fs::set_permissions(&p, fs::Permissions::from_mode(0o755)).unwrap();
+        p
+    }
+
+    // --- is_executable ---
+
+    #[test]
+    fn executable_file_returns_true() {
+        let tmp = TempDir::new().unwrap();
+        let p = make_file(tmp.path(), "exe", 0o755);
+        assert!(is_executable(&p));
+    }
+
+    #[test]
+    fn non_executable_file_returns_false() {
+        let tmp = TempDir::new().unwrap();
+        let p = make_file(tmp.path(), "noexe", 0o644);
+        assert!(!is_executable(&p));
+    }
+
+    #[test]
+    fn directory_returns_false() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("subdir");
+        fs::create_dir(&dir).unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(!is_executable(&dir));
+    }
+
+    #[test]
+    fn nonexistent_path_returns_false() {
+        assert!(!is_executable(&PathBuf::from("/no/such/path")));
+    }
+
+    #[test]
+    fn group_execute_only_returns_true() {
+        let tmp = TempDir::new().unwrap();
+        let p = make_file(tmp.path(), "gexe", 0o610);
+        assert!(is_executable(&p));
+    }
+
+    #[test]
+    fn other_execute_only_returns_true() {
+        let tmp = TempDir::new().unwrap();
+        let p = make_file(tmp.path(), "oexe", 0o601);
+        assert!(is_executable(&p));
+    }
+
+    // --- probe_plugin_language ---
+
+    #[test]
+    fn probe_parses_language_from_info_json() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let tmp = TempDir::new().unwrap();
+        let p = make_script(tmp.path(), "plugin", r#"echo '{"language":"python"}'"#);
+        assert_eq!(probe_plugin_language(&p), Some("python".into()));
+    }
+
+    #[test]
+    fn probe_returns_none_on_missing_field() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let tmp = TempDir::new().unwrap();
+        let p = make_script(tmp.path(), "plugin", r#"echo '{"version":"1"}'"#);
+        assert_eq!(probe_plugin_language(&p), None);
+    }
+
+    #[test]
+    fn probe_returns_none_on_non_zero_exit() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let tmp = TempDir::new().unwrap();
+        let p = make_script(tmp.path(), "plugin", "exit 1");
+        assert_eq!(probe_plugin_language(&p), None);
+    }
+
+    #[test]
+    fn probe_returns_none_for_nonexistent_binary() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        assert_eq!(
+            probe_plugin_language(&PathBuf::from("/no/such/binary")),
+            None
+        );
+    }
+
+    // --- discover_plugins ---
+
+    #[test]
+    fn discover_finds_plugin_on_path() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let tmp = TempDir::new().unwrap();
+        make_script(
+            tmp.path(),
+            "unsafe-budget-plugin-demo",
+            r#"echo '{"language":"demo-lang"}'"#,
+        );
+
+        let old_path = std::env::var("PATH").unwrap_or_default();
+        std::env::set_var("PATH", format!("{}:{old_path}", tmp.path().display()));
+
+        let plugins = discover_plugins();
+
+        std::env::set_var("PATH", &old_path);
+
+        let found = plugins.iter().find(|p| p.id == "demo");
+        assert!(found.is_some(), "plugin 'demo' should be discovered");
+        let info = found.unwrap();
+        assert_eq!(info.language, "demo-lang");
+        assert!(!info.builtin);
+        assert!(info.path.is_some());
+    }
+
+    #[test]
+    fn discover_ignores_non_executable_plugin() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let tmp = TempDir::new().unwrap();
+        make_file(tmp.path(), "unsafe-budget-plugin-noexe", 0o644);
+
+        let old_path = std::env::var("PATH").unwrap_or_default();
+        std::env::set_var("PATH", format!("{}:{old_path}", tmp.path().display()));
+
+        let plugins = discover_plugins();
+
+        std::env::set_var("PATH", &old_path);
+
+        assert!(
+            plugins.iter().all(|p| p.id != "noexe"),
+            "non-executable file should not be discovered"
+        );
+    }
+
+    #[test]
+    fn discover_ignores_files_without_prefix() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let tmp = TempDir::new().unwrap();
+        make_script(tmp.path(), "some-other-tool", r#"echo '{}'"#);
+
+        let old_path = std::env::var("PATH").unwrap_or_default();
+        std::env::set_var("PATH", format!("{}:{old_path}", tmp.path().display()));
+
+        let plugins = discover_plugins();
+
+        std::env::set_var("PATH", &old_path);
+
+        assert!(
+            plugins.iter().all(|p| p.id != "some-other-tool"),
+            "files without the plugin prefix should be ignored"
+        );
+    }
+
+    #[test]
+    fn discover_falls_back_to_unknown_language() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let tmp = TempDir::new().unwrap();
+        make_script(tmp.path(), "unsafe-budget-plugin-bad", "exit 1");
+
+        let old_path = std::env::var("PATH").unwrap_or_default();
+        std::env::set_var("PATH", format!("{}:{old_path}", tmp.path().display()));
+
+        let plugins = discover_plugins();
+
+        std::env::set_var("PATH", &old_path);
+
+        let found = plugins.iter().find(|p| p.id == "bad");
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().language, "unknown");
+    }
+
+    #[test]
+    fn discover_returns_sorted_and_deduped() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let tmp1 = TempDir::new().unwrap();
+        let tmp2 = TempDir::new().unwrap();
+        make_script(tmp1.path(), "unsafe-budget-plugin-zzz", "exit 1");
+        make_script(tmp1.path(), "unsafe-budget-plugin-aaa", "exit 1");
+        make_script(tmp2.path(), "unsafe-budget-plugin-aaa", "exit 1");
+
+        let old_path = std::env::var("PATH").unwrap_or_default();
+        std::env::set_var(
+            "PATH",
+            format!(
+                "{}:{}:{old_path}",
+                tmp1.path().display(),
+                tmp2.path().display()
+            ),
+        );
+
+        let plugins = discover_plugins();
+
+        std::env::set_var("PATH", &old_path);
+
+        let ids: Vec<&str> = plugins.iter().map(|p| p.id.as_str()).collect();
+        let aaa_count = ids.iter().filter(|&&id| id == "aaa").count();
+        assert_eq!(aaa_count, 1, "duplicates should be removed");
+
+        if let Some(aaa_pos) = ids.iter().position(|&id| id == "aaa") {
+            if let Some(zzz_pos) = ids.iter().position(|&id| id == "zzz") {
+                assert!(aaa_pos < zzz_pos, "plugins should be sorted by id");
+            }
+        }
+    }
+}
