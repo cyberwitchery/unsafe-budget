@@ -92,7 +92,7 @@ fn convert_sarif(sarif: &Sarif, opts: &ScanOpts) -> Result<ScanResult> {
     }
 
     let (units, details) = aggregate(occurrences);
-    let totals = compute_totals(&units);
+    let totals = Totals::from_units(&units);
 
     Ok(ScanResult {
         tool_version: env!("CARGO_PKG_VERSION").into(),
@@ -160,26 +160,6 @@ fn aggregate(occurrences: Vec<Occurrence>) -> (Vec<Unit>, Vec<Occurrence>) {
     });
 
     (units, details)
-}
-
-fn compute_totals(units: &[Unit]) -> Totals {
-    let workspace_unsafe: u64 = units
-        .iter()
-        .filter(|u| u.kind == UnitKind::Workspace)
-        .map(|u| u.unsafe_count)
-        .sum();
-
-    let deps_unsafe: u64 = units
-        .iter()
-        .filter(|u| u.kind == UnitKind::Dep)
-        .map(|u| u.unsafe_count)
-        .sum();
-
-    Totals {
-        workspace_unsafe,
-        deps_unsafe,
-        overall_unsafe: workspace_unsafe + deps_unsafe,
-    }
 }
 
 #[cfg(test)]

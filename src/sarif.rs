@@ -76,7 +76,7 @@ fn make_driver(version: &str, rules: Vec<sarif::ReportingDescriptor>) -> sarif::
     sarif::ToolComponent::builder()
         .name("unsafe-budget")
         .version(version.to_string())
-        .information_uri("https://github.com/cyberwitchery/unsafe-gate".to_string())
+        .information_uri("https://github.com/cyberwitchery/unsafe-budget".to_string())
         .rules(rules)
         .build()
 }

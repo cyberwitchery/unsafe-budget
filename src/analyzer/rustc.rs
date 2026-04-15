@@ -31,8 +31,7 @@ impl Analyzer for RustcAnalyzer {
         // Aggregate into units
         let (units, details) = aggregate_occurrences(occurrences, &workspace_members, opts);
 
-        // Compute totals
-        let totals = compute_totals(&units);
+        let totals = Totals::from_units(&units);
 
         Ok(ScanResult {
             tool_version: env!("CARGO_PKG_VERSION").into(),
@@ -309,27 +308,6 @@ fn aggregate_occurrences(
     (units, details)
 }
 
-/// Compute totals from units.
-fn compute_totals(units: &[Unit]) -> Totals {
-    let workspace_unsafe: u64 = units
-        .iter()
-        .filter(|u| u.kind == UnitKind::Workspace)
-        .map(|u| u.unsafe_count)
-        .sum();
-
-    let deps_unsafe: u64 = units
-        .iter()
-        .filter(|u| u.kind == UnitKind::Dep)
-        .map(|u| u.unsafe_count)
-        .sum();
-
-    Totals {
-        workspace_unsafe,
-        deps_unsafe,
-        overall_unsafe: workspace_unsafe + deps_unsafe,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -380,60 +358,6 @@ mod tests {
     fn test_extract_package_name_edge_cases() {
         assert_eq!(extract_package_name("unknown"), "unknown");
         assert_eq!(extract_package_name(""), "unknown");
-    }
-
-    #[test]
-    fn test_compute_totals_empty() {
-        let units: Vec<Unit> = vec![];
-        let totals = compute_totals(&units);
-        assert_eq!(totals.workspace_unsafe, 0);
-        assert_eq!(totals.deps_unsafe, 0);
-        assert_eq!(totals.overall_unsafe, 0);
-    }
-
-    #[test]
-    fn test_compute_totals_workspace_only() {
-        let units = vec![
-            Unit {
-                name: "crate_a".into(),
-                kind: UnitKind::Workspace,
-                unsafe_count: 5,
-            },
-            Unit {
-                name: "crate_b".into(),
-                kind: UnitKind::Workspace,
-                unsafe_count: 3,
-            },
-        ];
-        let totals = compute_totals(&units);
-        assert_eq!(totals.workspace_unsafe, 8);
-        assert_eq!(totals.deps_unsafe, 0);
-        assert_eq!(totals.overall_unsafe, 8);
-    }
-
-    #[test]
-    fn test_compute_totals_mixed() {
-        let units = vec![
-            Unit {
-                name: "my_crate".into(),
-                kind: UnitKind::Workspace,
-                unsafe_count: 10,
-            },
-            Unit {
-                name: "libc".into(),
-                kind: UnitKind::Dep,
-                unsafe_count: 100,
-            },
-            Unit {
-                name: "serde".into(),
-                kind: UnitKind::Dep,
-                unsafe_count: 5,
-            },
-        ];
-        let totals = compute_totals(&units);
-        assert_eq!(totals.workspace_unsafe, 10);
-        assert_eq!(totals.deps_unsafe, 105);
-        assert_eq!(totals.overall_unsafe, 115);
     }
 
     #[test]
