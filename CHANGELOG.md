@@ -2,7 +2,10 @@
 
 ## [unreleased]
 
+- add `[[ignore]]` config table for suppressing specific file+line occurrences
 - fix stale `information_uri` in SARIF output pointing to old repo name `unsafe-gate`
+- fix changelog release URLs (unsafe-gate → unsafe-budget)
+- fix repository URL in Cargo.toml
 
 ## [0.2.0] - 2026-02-19
 
