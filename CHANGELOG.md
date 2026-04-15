@@ -2,6 +2,8 @@
 
 ## [unreleased]
 
+- fix stale `information_uri` in SARIF output pointing to old repo name `unsafe-gate`
+
 ## [0.2.0] - 2026-02-19
 
 - add release SBOM generation and upload (CycloneDX)

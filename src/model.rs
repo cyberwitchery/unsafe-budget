@@ -142,6 +142,28 @@ pub struct Totals {
     pub overall_unsafe: u64,
 }
 
+impl Totals {
+    pub fn from_units(units: &[Unit]) -> Self {
+        let workspace_unsafe: u64 = units
+            .iter()
+            .filter(|u| u.kind == UnitKind::Workspace)
+            .map(|u| u.unsafe_count)
+            .sum();
+
+        let deps_unsafe: u64 = units
+            .iter()
+            .filter(|u| u.kind == UnitKind::Dep)
+            .map(|u| u.unsafe_count)
+            .sum();
+
+        Self {
+            workspace_unsafe,
+            deps_unsafe,
+            overall_unsafe: workspace_unsafe + deps_unsafe,
+        }
+    }
+}
+
 /// the main scan result - normalized output from any analyzer.
 ///
 /// this is the core data structure that all analyzers produce.
@@ -321,6 +343,59 @@ mod tests {
         assert_eq!(totals.workspace_unsafe, 0);
         assert_eq!(totals.deps_unsafe, 0);
         assert_eq!(totals.overall_unsafe, 0);
+    }
+
+    #[test]
+    fn test_totals_from_units_empty() {
+        let totals = Totals::from_units(&[]);
+        assert_eq!(totals.workspace_unsafe, 0);
+        assert_eq!(totals.deps_unsafe, 0);
+        assert_eq!(totals.overall_unsafe, 0);
+    }
+
+    #[test]
+    fn test_totals_from_units_workspace_only() {
+        let units = vec![
+            Unit {
+                name: "crate_a".into(),
+                kind: UnitKind::Workspace,
+                unsafe_count: 5,
+            },
+            Unit {
+                name: "crate_b".into(),
+                kind: UnitKind::Workspace,
+                unsafe_count: 3,
+            },
+        ];
+        let totals = Totals::from_units(&units);
+        assert_eq!(totals.workspace_unsafe, 8);
+        assert_eq!(totals.deps_unsafe, 0);
+        assert_eq!(totals.overall_unsafe, 8);
+    }
+
+    #[test]
+    fn test_totals_from_units_mixed() {
+        let units = vec![
+            Unit {
+                name: "my_crate".into(),
+                kind: UnitKind::Workspace,
+                unsafe_count: 10,
+            },
+            Unit {
+                name: "libc".into(),
+                kind: UnitKind::Dep,
+                unsafe_count: 100,
+            },
+            Unit {
+                name: "serde".into(),
+                kind: UnitKind::Dep,
+                unsafe_count: 5,
+            },
+        ];
+        let totals = Totals::from_units(&units);
+        assert_eq!(totals.workspace_unsafe, 10);
+        assert_eq!(totals.deps_unsafe, 105);
+        assert_eq!(totals.overall_unsafe, 115);
     }
 
     #[test]
