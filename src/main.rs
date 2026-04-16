@@ -6,7 +6,7 @@ use unsafe_budget::budget;
 use unsafe_budget::cli::{self, Command, ScanArgs};
 use unsafe_budget::config::{Baseline, BaselineUnit, Config, IgnoreEntry};
 use unsafe_budget::error::Result;
-use unsafe_budget::model::{ScanOpts, ScanResult, Totals, UnitKind};
+use unsafe_budget::model::{ScanOpts, ScanResult, Totals};
 use unsafe_budget::output::{self, Format};
 
 fn main() -> ExitCode {
@@ -182,23 +182,7 @@ fn apply_ignore_filter(mut result: ScanResult, ignores: &[IgnoreEntry]) -> ScanR
     }
 
     // Recompute totals.
-    let workspace_unsafe: u64 = result
-        .units
-        .iter()
-        .filter(|u| u.kind == UnitKind::Workspace)
-        .map(|u| u.unsafe_count)
-        .sum();
-    let deps_unsafe: u64 = result
-        .units
-        .iter()
-        .filter(|u| u.kind == UnitKind::Dep)
-        .map(|u| u.unsafe_count)
-        .sum();
-    result.totals = Totals {
-        workspace_unsafe,
-        deps_unsafe,
-        overall_unsafe: workspace_unsafe + deps_unsafe,
-    };
+    result.totals = Totals::from_units(&result.units);
 
     result
 }
