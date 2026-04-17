@@ -2,6 +2,8 @@
 
 ## [unreleased]
 
+## [0.3.0] - 2026-04-17
+
 - add `plugin_timeout_secs` config option and `--plugin-timeout` CLI flag to kill hanging plugin subprocesses
 - add `[[ignore]]` config table for suppressing specific file+line occurrences
 - fix stale `information_uri` in SARIF output pointing to old repo name `unsafe-gate`
@@ -36,7 +38,8 @@ initial release
 - baseline file (`unsafe-budget.lock`) for tracking unsafe counts over time
 - configuration via `unsafe-budget.toml`
 
+[0.3.0]: https://github.com/cyberwitchery/unsafe-budget/releases/tag/v0.3.0
 [0.2.0]: https://github.com/cyberwitchery/unsafe-budget/releases/tag/v0.2.0
 [0.1.1]: https://github.com/cyberwitchery/unsafe-budget/releases/tag/v0.1.1
 [0.1.0]: https://github.com/cyberwitchery/unsafe-budget/releases/tag/v0.1.0
-[unreleased]: https://github.com/cyberwitchery/unsafe-budget/compare/v0.2.0...HEAD
+[unreleased]: https://github.com/cyberwitchery/unsafe-budget/compare/v0.3.0...HEAD

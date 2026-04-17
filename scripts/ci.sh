@@ -25,7 +25,7 @@ fi
 
 if command -v cargo-llvm-cov >/dev/null 2>&1; then
     echo "==> coverage"
-    cargo llvm-cov --lcov --output-path lcov.info --fail-under-lines 70
+    cargo llvm-cov --no-cfg-coverage --lcov --output-path lcov.info --fail-under-lines 70
 else
     echo "warn: cargo-llvm-cov not found, skipping"
 fi

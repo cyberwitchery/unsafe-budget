@@ -30,6 +30,7 @@
 //! - [`output`] - text and json formatters
 
 pub mod analyzer;
+pub mod app;
 pub mod budget;
 pub mod cli;
 pub mod config;

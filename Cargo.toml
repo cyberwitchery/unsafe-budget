@@ -1,6 +1,6 @@
 [package]
 name = "unsafe-budget"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 description = "keeps the unsafety demons out. an unsafe code budget gate for CI pipelines."
 license = "MIT"
@@ -11,7 +11,7 @@ default-run = "unsafe-budget"
 
 [[bin]]
 name = "cargo-unsafe-budget"
-path = "src/main.rs"
+path = "src/cargo_unsafe_budget.rs"
 
 [[bin]]
 name = "unsafe-budget"
