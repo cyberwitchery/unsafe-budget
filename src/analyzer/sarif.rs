@@ -121,15 +121,43 @@ fn infer_language(tool_name: &str) -> String {
 
 /// Extract a unit name from an artifact URI.
 ///
-/// Uses the parent directory name as a grouping heuristic, e.g.
-/// `src/lib.rs` → `src`, `my_crate/src/main.rs` → `src`.
+/// Looks for a `src` path component and uses the directory immediately
+/// before it as the crate/package name. This handles Rust workspace
+/// layouts where every crate has `crate_name/src/lib.rs` — without
+/// this, all such paths would collapse into unit `"src"`.
+///
+/// Falls back to the first directory component when no `src` segment
+/// is found, or `"unknown"` for bare filenames.
 fn extract_unit_name(uri: &str) -> String {
     let path_str = uri.strip_prefix("file://").unwrap_or(uri);
     let path = std::path::Path::new(path_str);
-    path.parent()
-        .and_then(|p| p.file_name())
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| "unknown".into())
+
+    let components: Vec<_> = path
+        .components()
+        .filter_map(|c| match c {
+            std::path::Component::Normal(s) => Some(s.to_string_lossy().to_string()),
+            _ => None,
+        })
+        .collect();
+
+    // Need at least a directory and a filename.
+    if components.len() < 2 {
+        return "unknown".into();
+    }
+
+    let dirs = &components[..components.len() - 1];
+
+    // If a "src" directory appears after at least one other component,
+    // the component before it is the crate/package name.
+    for (i, dir) in dirs.iter().enumerate() {
+        if dir == "src" && i > 0 {
+            return dirs[i - 1].clone();
+        }
+    }
+
+    // No "src" found, or "src" is the first component — use the first
+    // directory as the unit name.
+    dirs[0].clone()
 }
 
 fn aggregate(occurrences: Vec<Occurrence>) -> (Vec<Unit>, Vec<Occurrence>) {
@@ -199,17 +227,30 @@ mod tests {
 
     #[test]
     fn test_extract_unit_name_nested() {
-        assert_eq!(extract_unit_name("my_crate/src/lib.rs"), "src");
+        assert_eq!(extract_unit_name("my_crate/src/lib.rs"), "my_crate");
+    }
+
+    #[test]
+    fn test_extract_unit_name_nested_deep() {
+        assert_eq!(extract_unit_name("my_crate/src/foo/bar.rs"), "my_crate");
     }
 
     #[test]
     fn test_extract_unit_name_file_uri() {
-        assert_eq!(extract_unit_name("file://path/to/src/lib.rs"), "src");
+        assert_eq!(
+            extract_unit_name("file://project/my_crate/src/lib.rs"),
+            "my_crate"
+        );
     }
 
     #[test]
     fn test_extract_unit_name_root_file() {
         assert_eq!(extract_unit_name("lib.rs"), "unknown");
+    }
+
+    #[test]
+    fn test_extract_unit_name_no_src() {
+        assert_eq!(extract_unit_name("crate_a/lib.rs"), "crate_a");
     }
 
     fn make_sarif(results: Vec<sarif::Result>) -> Sarif {
@@ -368,6 +409,25 @@ mod tests {
 
         assert_eq!(result.units.len(), 2);
         // Sorted alphabetically
+        assert_eq!(result.units[0].name, "crate_a");
+        assert_eq!(result.units[0].unsafe_count, 2);
+        assert_eq!(result.units[1].name, "crate_b");
+        assert_eq!(result.units[1].unsafe_count, 1);
+    }
+
+    #[test]
+    fn test_convert_sarif_workspace_src_paths() {
+        // Previously all of these collapsed into unit "src".
+        let sarif_log = make_sarif(vec![
+            make_sarif_result("crate_a/src/lib.rs", 10, 1, "in crate_a"),
+            make_sarif_result("crate_b/src/lib.rs", 5, 1, "in crate_b"),
+            make_sarif_result("crate_a/src/util.rs", 20, 1, "also in crate_a"),
+        ]);
+
+        let opts = ScanOpts::default();
+        let result = convert_sarif(&sarif_log, &opts).unwrap();
+
+        assert_eq!(result.units.len(), 2);
         assert_eq!(result.units[0].name, "crate_a");
         assert_eq!(result.units[0].unsafe_count, 2);
         assert_eq!(result.units[1].name, "crate_b");
