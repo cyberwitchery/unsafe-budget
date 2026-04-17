@@ -4,6 +4,7 @@
 
 ## [0.3.0] - 2026-04-17
 
+- fix SARIF analyzer collapsing all `*/src/*.rs` paths into a single "src" unit; now extracts the crate/package directory name instead
 - add `plugin_timeout_secs` config option and `--plugin-timeout` CLI flag to kill hanging plugin subprocesses
 - add `[[ignore]]` config table for suppressing specific file+line occurrences
 - fix stale `information_uri` in SARIF output pointing to old repo name `unsafe-gate`
