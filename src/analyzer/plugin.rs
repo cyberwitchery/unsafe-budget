@@ -1,8 +1,11 @@
 use crate::analyzer::{Analyzer, AnalyzerInfo};
 use crate::error::{Error, Result};
 use crate::model::{ScanOpts, ScanResult};
+use std::io::Read as _;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::time::Duration;
+use wait_timeout::ChildExt;
 
 const PLUGIN_PREFIX: &str = "unsafe-budget-plugin-";
 
@@ -100,8 +103,9 @@ fn probe_plugin_language(path: &PathBuf) -> Option<String> {
     Some(info.language)
 }
 
-/// Run an external plugin and parse its output.
-pub fn run_plugin(path: &PathBuf, opts: &ScanOpts) -> Result<ScanResult> {
+/// Build a [`Command`] for an external plugin, setting the shared flags and
+/// environment variables derived from [`ScanOpts`].
+fn build_plugin_cmd(path: &PathBuf, opts: &ScanOpts) -> Command {
     let mut cmd = Command::new(path);
     cmd.arg("--format").arg("json");
 
@@ -128,19 +132,89 @@ pub fn run_plugin(path: &PathBuf, opts: &ScanOpts) -> Result<ScanResult> {
         cmd.env("UNSAFE_BUDGET_MANIFEST_PATH", manifest);
     }
 
-    let output = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).output()?;
+    cmd
+}
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+/// Run an external plugin and parse its output.
+pub fn run_plugin(path: &PathBuf, opts: &ScanOpts) -> Result<ScanResult> {
+    let mut cmd = build_plugin_cmd(path, opts);
+
+    match opts.plugin_timeout_secs {
+        Some(secs) => run_with_timeout(&mut cmd, path, Duration::from_secs(secs)),
+        None => run_blocking(&mut cmd, path),
+    }
+}
+
+/// Run a plugin command with no timeout (original behaviour).
+fn run_blocking(cmd: &mut Command, path: &std::path::Path) -> Result<ScanResult> {
+    let output = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).output()?;
+    parse_plugin_output(path, output.status, &output.stdout, &output.stderr)
+}
+
+/// Run a plugin command with a timeout, killing the child if it exceeds the
+/// deadline.
+fn run_with_timeout(
+    cmd: &mut Command,
+    path: &std::path::Path,
+    timeout: Duration,
+) -> Result<ScanResult> {
+    let mut child = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+
+    // Drain stdout and stderr on background threads so a plugin that produces
+    // lots of output cannot deadlock by filling the OS pipe buffer.
+    let mut stdout_pipe = child.stdout.take().expect("stdout piped");
+    let mut stderr_pipe = child.stderr.take().expect("stderr piped");
+
+    let stdout_thread = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        stdout_pipe.read_to_end(&mut buf).ok();
+        buf
+    });
+    let stderr_thread = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        stderr_pipe.read_to_end(&mut buf).ok();
+        buf
+    });
+
+    match child.wait_timeout(timeout)? {
+        Some(status) => {
+            let stdout = stdout_thread.join().unwrap_or_default();
+            let stderr = stderr_thread.join().unwrap_or_default();
+            parse_plugin_output(path, status, &stdout, &stderr)
+        }
+        None => {
+            // Timed out — kill the child and clean up.
+            child.kill().ok();
+            child.wait().ok();
+            stdout_thread.join().ok();
+            stderr_thread.join().ok();
+            Err(Error::Plugin(format!(
+                "plugin {} timed out after {}s",
+                path.display(),
+                timeout.as_secs()
+            )))
+        }
+    }
+}
+
+/// Parse a completed plugin's output into a [`ScanResult`].
+fn parse_plugin_output(
+    path: &std::path::Path,
+    status: std::process::ExitStatus,
+    stdout: &[u8],
+    stderr: &[u8],
+) -> Result<ScanResult> {
+    if !status.success() {
+        let stderr_str = String::from_utf8_lossy(stderr);
         return Err(Error::Plugin(format!(
             "plugin {} exited with {}: {}",
             path.display(),
-            output.status,
-            stderr
+            status,
+            stderr_str
         )));
     }
 
-    let result: ScanResult = serde_json::from_slice(&output.stdout).map_err(|e| {
+    let result: ScanResult = serde_json::from_slice(stdout).map_err(|e| {
         Error::Plugin(format!(
             "failed to parse plugin output from {}: {}",
             path.display(),
@@ -172,8 +246,13 @@ mod tests {
     }
 
     fn make_script(dir: &std::path::Path, name: &str, body: &str) -> PathBuf {
+        use std::io::Write;
         let p = dir.join(name);
-        fs::write(&p, format!("#!/bin/sh\n{body}")).unwrap();
+        let mut f = fs::File::create(&p).unwrap();
+        f.write_all(format!("#!/bin/sh\n{body}").as_bytes())
+            .unwrap();
+        f.sync_all().unwrap();
+        drop(f);
         fs::set_permissions(&p, fs::Permissions::from_mode(0o755)).unwrap();
         p
     }
@@ -338,6 +417,45 @@ mod tests {
         let found = plugins.iter().find(|p| p.id == "bad");
         assert!(found.is_some());
         assert_eq!(found.unwrap().language, "unknown");
+    }
+
+    // --- run_with_timeout ---
+
+    #[test]
+    fn timeout_kills_slow_plugin() {
+        // Invoke `sleep` directly instead of via a script file to avoid
+        // ETXTBSY races under cargo-llvm-cov.  We must not use
+        // `/bin/sh -c "sleep 60"` either — the shell may fork sleep as a
+        // child, and killing the shell leaves the orphaned sleep holding
+        // the stdout/stderr pipes open, which hangs the drain threads.
+        let dummy_path = PathBuf::from("slow-plugin");
+        let mut cmd = Command::new("sleep");
+        cmd.arg("60");
+        let result = run_with_timeout(&mut cmd, &dummy_path, Duration::from_secs(1));
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("timed out"),
+            "expected timeout error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn timeout_allows_fast_plugin() {
+        // Same rationale as timeout_kills_slow_plugin — avoid script files
+        // and intermediate shells.
+        let dummy_path = PathBuf::from("fast-plugin");
+        let mut cmd = Command::new("/bin/echo");
+        cmd.arg("ok");
+        // The plugin exits quickly — the error here is a JSON parse failure, not
+        // a timeout, proving it ran to completion.
+        let result = run_with_timeout(&mut cmd, &dummy_path, Duration::from_secs(10));
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("failed to parse"),
+            "expected parse error (not timeout), got: {msg}"
+        );
     }
 
     #[test]

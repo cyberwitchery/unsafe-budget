@@ -78,6 +78,13 @@ pub struct Config {
     pub caps: Option<Caps>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub warnings: Option<Warnings>,
+    /// Timeout in seconds for external plugin execution.
+    ///
+    /// When set, plugin subprocesses that exceed this duration are killed and
+    /// reported as errors. Prevents hanging plugins from blocking CI pipelines
+    /// indefinitely.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plugin_timeout_secs: Option<u64>,
 }
 
 fn default_true() -> bool {
@@ -94,6 +101,7 @@ impl Default for Config {
             ignore: Vec::new(),
             caps: None,
             warnings: None,
+            plugin_timeout_secs: None,
         }
     }
 }
