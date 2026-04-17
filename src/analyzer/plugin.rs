@@ -423,11 +423,15 @@ mod tests {
 
     #[test]
     fn timeout_kills_slow_plugin() {
-        let tmp = TempDir::new().unwrap();
-        let p = make_script(tmp.path(), "slow-plugin", "sleep 60");
-        let mut cmd = Command::new(&p);
-        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-        let result = run_with_timeout(&mut cmd, &p, Duration::from_secs(1));
+        // Invoke `sleep` directly instead of via a script file to avoid
+        // ETXTBSY races under cargo-llvm-cov.  We must not use
+        // `/bin/sh -c "sleep 60"` either — the shell may fork sleep as a
+        // child, and killing the shell leaves the orphaned sleep holding
+        // the stdout/stderr pipes open, which hangs the drain threads.
+        let dummy_path = PathBuf::from("slow-plugin");
+        let mut cmd = Command::new("sleep");
+        cmd.arg("60");
+        let result = run_with_timeout(&mut cmd, &dummy_path, Duration::from_secs(1));
         let err = result.unwrap_err();
         let msg = err.to_string();
         assert!(
@@ -438,13 +442,14 @@ mod tests {
 
     #[test]
     fn timeout_allows_fast_plugin() {
-        let tmp = TempDir::new().unwrap();
-        let p = make_script(tmp.path(), "fast-plugin", "echo ok");
-        let mut cmd = Command::new(&p);
-        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+        // Same rationale as timeout_kills_slow_plugin — avoid script files
+        // and intermediate shells.
+        let dummy_path = PathBuf::from("fast-plugin");
+        let mut cmd = Command::new("/bin/echo");
+        cmd.arg("ok");
         // The plugin exits quickly — the error here is a JSON parse failure, not
         // a timeout, proving it ran to completion.
-        let result = run_with_timeout(&mut cmd, &p, Duration::from_secs(10));
+        let result = run_with_timeout(&mut cmd, &dummy_path, Duration::from_secs(10));
         let err = result.unwrap_err();
         let msg = err.to_string();
         assert!(
