@@ -111,11 +111,7 @@ fn budget_for_unit(unit: &Unit, baseline: Option<&Baseline>, config: &Config) ->
 
 /// Check against ratchet baseline - fail if any unit exceeds its baseline count.
 fn check_ratchet(scan: &ScanResult, baseline: &Baseline, config: &Config) -> Vec<Violation> {
-    let baseline_map: HashMap<&str, u64> = baseline
-        .units
-        .iter()
-        .map(|u| (u.name.as_str(), u.unsafe_count))
-        .collect();
+    let baseline_map = baseline.unit_map();
 
     let mut violations = Vec::new();
 
@@ -175,11 +171,7 @@ fn check_caps(scan: &ScanResult, caps: &Caps, config: &Config) -> Vec<Violation>
 
 /// Compute deltas between scan and baseline for reporting (non-failing).
 pub fn compute_deltas(scan: &ScanResult, baseline: &Baseline) -> HashMap<String, i64> {
-    let baseline_map: HashMap<&str, u64> = baseline
-        .units
-        .iter()
-        .map(|u| (u.name.as_str(), u.unsafe_count))
-        .collect();
+    let baseline_map = baseline.unit_map();
 
     scan.units
         .iter()

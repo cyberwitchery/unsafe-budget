@@ -187,6 +187,14 @@ impl Baseline {
     pub fn get_unit(&self, name: &str) -> Option<&BaselineUnit> {
         self.units.iter().find(|u| u.name == name)
     }
+
+    /// Build a lookup map from unit name to unsafe count.
+    pub fn unit_map(&self) -> HashMap<&str, u64> {
+        self.units
+            .iter()
+            .map(|u| (u.name.as_str(), u.unsafe_count))
+            .collect()
+    }
 }
 
 #[cfg(test)]
