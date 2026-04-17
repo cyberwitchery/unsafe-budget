@@ -246,8 +246,13 @@ mod tests {
     }
 
     fn make_script(dir: &std::path::Path, name: &str, body: &str) -> PathBuf {
+        use std::io::Write;
         let p = dir.join(name);
-        fs::write(&p, format!("#!/bin/sh\n{body}")).unwrap();
+        let mut f = fs::File::create(&p).unwrap();
+        f.write_all(format!("#!/bin/sh\n{body}").as_bytes())
+            .unwrap();
+        f.sync_all().unwrap();
+        drop(f);
         fs::set_permissions(&p, fs::Permissions::from_mode(0o755)).unwrap();
         p
     }
