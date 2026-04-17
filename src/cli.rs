@@ -79,6 +79,10 @@ pub struct ScanArgs {
     /// Show detailed occurrences
     #[arg(long)]
     pub details: bool,
+
+    /// Timeout in seconds for plugin execution (overrides config)
+    #[arg(long)]
+    pub plugin_timeout: Option<u64>,
 }
 
 #[derive(Args)]

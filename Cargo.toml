@@ -25,6 +25,7 @@ toml = "0.8"
 cargo_metadata = "0.19"
 thiserror = "2"
 serde-sarif = "0.8"
+wait-timeout = "0.2"
 
 [dev-dependencies]
 tempfile = "3"

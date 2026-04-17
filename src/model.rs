@@ -39,6 +39,8 @@ pub struct ScanOpts {
     pub targets: Vec<String>,
     /// path to Cargo.toml or go.mod.
     pub manifest_path: Option<PathBuf>,
+    /// timeout in seconds for external plugin execution.
+    pub plugin_timeout_secs: Option<u64>,
 }
 
 /// scope captured in results for reproducibility.
@@ -294,6 +296,7 @@ mod tests {
             all_targets: true,
             targets: vec!["x86_64-unknown-linux-gnu".into()],
             manifest_path: Some(PathBuf::from("/path/to/Cargo.toml")),
+            ..Default::default()
         };
 
         let scope = Scope::from(&opts);

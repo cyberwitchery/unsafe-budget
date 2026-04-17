@@ -153,6 +153,7 @@ fn build_scan_opts(args: &ScanArgs, config: &Config) -> ScanOpts {
         all_targets: args.all_targets,
         targets: args.targets.clone(),
         manifest_path: args.manifest_path.clone(),
+        plugin_timeout_secs: args.plugin_timeout.or(config.plugin_timeout_secs),
     }
 }
 
