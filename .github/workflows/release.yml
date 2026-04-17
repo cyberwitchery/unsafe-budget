@@ -50,12 +50,16 @@ jobs:
         run: |
           set -euo pipefail
           archive_base="unsafe-budget-${{ github.ref_name }}-${{ matrix.target }}"
-          stage_dir="${RUNNER_TEMP}/dist/${archive_base}"
+          dist_root="${RUNNER_TEMP}/dist"
+          if command -v cygpath >/dev/null 2>&1; then
+            dist_root="$(cygpath -u "${RUNNER_TEMP}")/dist"
+          fi
+          stage_dir="${dist_root}/${archive_base}"
           mkdir -p "${stage_dir}"
           cp "target/${{ matrix.target }}/release/unsafe-budget${{ matrix.bin_ext }}" "${stage_dir}/"
           cp "target/${{ matrix.target }}/release/cargo-unsafe-budget${{ matrix.bin_ext }}" "${stage_dir}/"
           cp README.md LICENSE "${stage_dir}/"
-          tar -czf "${RUNNER_TEMP}/dist/${archive_base}.tar.gz" -C "${RUNNER_TEMP}/dist" "${archive_base}"
+          tar -czf "${dist_root}/${archive_base}.tar.gz" -C "${dist_root}" "${archive_base}"
 
       - name: upload packaged binaries
         uses: softprops/action-gh-release@v2
