@@ -165,11 +165,7 @@ fn print_check_text(
     // Build delta map if baseline available
     let deltas: HashMap<String, i64> = baseline
         .map(|b| {
-            let baseline_map: HashMap<&str, u64> = b
-                .units
-                .iter()
-                .map(|u| (u.name.as_str(), u.unsafe_count))
-                .collect();
+            let baseline_map = b.unit_map();
             result
                 .scan
                 .units
