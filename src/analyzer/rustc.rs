@@ -262,22 +262,12 @@ fn aggregate_occurrences(
     let mut details = Vec::new();
 
     for (occ, kind) in occurrences {
-        // Skip deps if workspace_only
-        if opts.workspace_only && kind == UnitKind::Dep {
-            continue;
-        }
-
-        // Skip deps if not including deps
-        if !opts.include_deps && kind == UnitKind::Dep {
-            continue;
-        }
-
         let entry = counts.entry(occ.unit.clone()).or_insert((kind, 0));
         entry.1 += 1;
         details.push(occ);
     }
 
-    // If workspace_only, also add workspace members with 0 count if not seen
+    // Ensure workspace members appear with 0 count when deps are excluded
     if opts.workspace_only || !opts.include_deps {
         for member in workspace_members {
             counts
@@ -286,26 +276,7 @@ fn aggregate_occurrences(
         }
     }
 
-    let mut units: Vec<Unit> = counts
-        .into_iter()
-        .map(|(name, (kind, count))| Unit {
-            name,
-            kind,
-            unsafe_count: count,
-        })
-        .collect();
-
-    // Sort for deterministic output
-    units.sort_by(|a, b| a.name.cmp(&b.name));
-    details.sort_by(|a, b| {
-        a.unit
-            .cmp(&b.unit)
-            .then_with(|| a.file.cmp(&b.file))
-            .then_with(|| a.line.cmp(&b.line))
-            .then_with(|| a.col.cmp(&b.col))
-    });
-
-    (units, details)
+    super::aggregate_units(counts, details, opts)
 }
 
 #[cfg(test)]

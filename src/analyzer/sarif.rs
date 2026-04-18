@@ -91,7 +91,7 @@ fn convert_sarif(sarif: &Sarif, opts: &ScanOpts) -> Result<ScanResult> {
         }
     }
 
-    let (units, details) = aggregate(occurrences);
+    let (units, details) = aggregate(occurrences, opts);
     let totals = Totals::from_units(&units);
 
     Ok(ScanResult {
@@ -160,34 +160,17 @@ fn extract_unit_name(uri: &str) -> String {
     dirs[0].clone()
 }
 
-fn aggregate(occurrences: Vec<Occurrence>) -> (Vec<Unit>, Vec<Occurrence>) {
-    let mut counts: HashMap<String, u64> = HashMap::new();
+fn aggregate(occurrences: Vec<Occurrence>, opts: &ScanOpts) -> (Vec<Unit>, Vec<Occurrence>) {
+    let mut counts: HashMap<String, (UnitKind, u64)> = HashMap::new();
 
     for occ in &occurrences {
-        *counts.entry(occ.unit.clone()).or_insert(0) += 1;
+        let entry = counts
+            .entry(occ.unit.clone())
+            .or_insert((UnitKind::Workspace, 0));
+        entry.1 += 1;
     }
 
-    let mut units: Vec<Unit> = counts
-        .into_iter()
-        .map(|(name, count)| Unit {
-            name,
-            kind: UnitKind::Workspace,
-            unsafe_count: count,
-        })
-        .collect();
-
-    let mut details = occurrences;
-
-    units.sort_by(|a, b| a.name.cmp(&b.name));
-    details.sort_by(|a, b| {
-        a.unit
-            .cmp(&b.unit)
-            .then_with(|| a.file.cmp(&b.file))
-            .then_with(|| a.line.cmp(&b.line))
-            .then_with(|| a.col.cmp(&b.col))
-    });
-
-    (units, details)
+    super::aggregate_units(counts, occurrences, opts)
 }
 
 #[cfg(test)]
