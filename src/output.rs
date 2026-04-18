@@ -335,10 +335,15 @@ fn print_plugins_text(out: &mut impl Write, plugins: &[AnalyzerInfo]) -> io::Res
 }
 
 fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max {
+    if s.chars().count() <= max {
         s.to_string()
     } else {
-        format!("{}...", &s[..max - 3])
+        let end = s
+            .char_indices()
+            .nth(max - 3)
+            .map(|(i, _)| i)
+            .unwrap_or(s.len());
+        format!("{}...", &s[..end])
     }
 }
 
@@ -371,6 +376,15 @@ mod tests {
         assert_eq!(truncate("short", 10), "short");
         assert_eq!(truncate("exactly10!", 10), "exactly10!");
         assert_eq!(truncate("this is a long string", 10), "this is...");
+    }
+
+    #[test]
+    fn test_truncate_multibyte() {
+        // Should not panic on multi-byte characters
+        assert_eq!(truncate("日本語のパッケージ名", 8), "日本語のパ...");
+        assert_eq!(truncate("café_module_long", 10), "café_mo...");
+        // Fits exactly
+        assert_eq!(truncate("café", 10), "café");
     }
 
     #[test]

@@ -2,6 +2,7 @@
 
 ## [unreleased]
 
+- fix `truncate()` in text output panicking on unit names containing multi-byte (non-ASCII) characters
 - fix `apply_ignore_filter` silently zeroing all unit counts when the analyzer produces no detail occurrences (e.g. `cargo_geiger`); `[[ignore]]` entries are now correctly skipped when there are no line-level details to filter
 - extract shared `aggregate_units` helper in `analyzer/mod.rs` so rustc, cargo-geiger, and SARIF analyzers share one filter/sort path instead of three
 - propagate `current_dir()` failure as an error instead of silently falling back to `"."` in `get_project_dir()` and `detect_analyzer()`
