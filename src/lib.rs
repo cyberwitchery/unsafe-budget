@@ -12,7 +12,7 @@
 //! use unsafe_budget::model::ScanOpts;
 //!
 //! let opts = ScanOpts::default();
-//! let analyzer = detect_analyzer(&opts);
+//! let analyzer = detect_analyzer(&opts).unwrap();
 //! let result = analyzer.run(&opts).unwrap();
 //!
 //! println!("total unsafe: {}", result.totals.overall_unsafe);

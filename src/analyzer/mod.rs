@@ -67,26 +67,24 @@ pub fn default_analyzer() -> Box<dyn Analyzer> {
 }
 
 /// Auto-detect analyzer based on project files.
-pub fn detect_analyzer(opts: &ScanOpts) -> Box<dyn Analyzer> {
-    let dir = opts
-        .manifest_path
-        .as_ref()
-        .and_then(|p| p.parent())
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()));
+pub fn detect_analyzer(opts: &ScanOpts) -> Result<Box<dyn Analyzer>> {
+    let dir = match opts.manifest_path.as_ref().and_then(|p| p.parent()) {
+        Some(p) => p.to_path_buf(),
+        None => std::env::current_dir()?,
+    };
 
     // Check for Go project
     if dir.join("go.mod").exists() || dir.join("go.sum").exists() {
-        return Box::new(go_geiger::GoGeigerAnalyzer);
+        return Ok(Box::new(go_geiger::GoGeigerAnalyzer));
     }
 
     // Check for Rust project (default)
     if dir.join("Cargo.toml").exists() {
-        return Box::new(rustc::RustcAnalyzer);
+        return Ok(Box::new(rustc::RustcAnalyzer));
     }
 
     // Default to rustc
-    Box::new(rustc::RustcAnalyzer)
+    Ok(Box::new(rustc::RustcAnalyzer))
 }
 
 /// List all available analyzers (built-in + discovered plugins).

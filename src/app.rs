@@ -59,7 +59,7 @@ fn cmd_check(args: ScanArgs) -> Result<ExitCode> {
     // Load baseline for ratchet mode
     let baseline = match config.mode {
         crate::config::Mode::Ratchet => {
-            let dir = get_project_dir(&args);
+            let dir = get_project_dir(&args)?;
             Some(Baseline::load_from_dir(&dir)?)
         }
         crate::config::Mode::Caps => None,
@@ -85,7 +85,7 @@ fn cmd_update(args: ScanArgs) -> Result<ExitCode> {
     let result = apply_ignore_filter(result, &config.ignore);
 
     let baseline = build_baseline(&result, analyzer.as_ref());
-    let dir = get_project_dir(&args);
+    let dir = get_project_dir(&args)?;
     baseline.save_to_dir(&dir)?;
 
     if args.format == Format::Text {
@@ -108,14 +108,14 @@ fn cmd_plugins(args: crate::cli::PluginsArgs) -> Result<ExitCode> {
 
 fn get_analyzer_for_args(args: &ScanArgs, opts: &ScanOpts) -> Result<Box<dyn Analyzer>> {
     if args.analyzer == "auto" {
-        Ok(detect_analyzer(opts))
+        detect_analyzer(opts)
     } else {
         get_analyzer(&args.analyzer)
     }
 }
 
 fn load_config(args: &ScanArgs) -> Result<Config> {
-    let dir = get_project_dir(args);
+    let dir = get_project_dir(args)?;
     let config_path = args
         .config
         .clone()
@@ -124,12 +124,11 @@ fn load_config(args: &ScanArgs) -> Result<Config> {
     Config::load(&config_path)
 }
 
-fn get_project_dir(args: &ScanArgs) -> std::path::PathBuf {
-    args.manifest_path
-        .as_ref()
-        .and_then(|p| p.parent())
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()))
+fn get_project_dir(args: &ScanArgs) -> Result<std::path::PathBuf> {
+    match args.manifest_path.as_ref().and_then(|p| p.parent()) {
+        Some(p) => Ok(p.to_path_buf()),
+        None => Ok(std::env::current_dir()?),
+    }
 }
 
 fn build_scan_opts(args: &ScanArgs, config: &Config) -> ScanOpts {
