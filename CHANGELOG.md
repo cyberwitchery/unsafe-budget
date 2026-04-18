@@ -2,6 +2,7 @@
 
 ## [unreleased]
 
+- extract shared `aggregate_units` helper in `analyzer/mod.rs` so rustc, cargo-geiger, and SARIF analyzers share one filter/sort path instead of three
 - propagate `current_dir()` failure as an error instead of silently falling back to `"."` in `get_project_dir()` and `detect_analyzer()`
 
 ## [0.3.0] - 2026-04-17

@@ -141,7 +141,7 @@ fn parse_geiger_output(output: &[u8]) -> Result<GeigerReport> {
 }
 
 fn convert_report(report: &GeigerReport, opts: &ScanOpts) -> (Vec<Unit>, Vec<Occurrence>) {
-    let mut units: HashMap<String, (UnitKind, u64)> = HashMap::new();
+    let mut counts: HashMap<String, (UnitKind, u64)> = HashMap::new();
 
     for pkg in &report.packages {
         // Determine if workspace or dep based on source
@@ -153,33 +153,14 @@ fn convert_report(report: &GeigerReport, opts: &ScanOpts) -> (Vec<Unit>, Vec<Occ
             UnitKind::Dep
         };
 
-        // Skip based on options
-        if opts.workspace_only && kind == UnitKind::Dep {
-            continue;
-        }
-        if !opts.include_deps && kind == UnitKind::Dep {
-            continue;
-        }
-
         let unsafe_count = pkg.unsafety.used.total_unsafe() + pkg.unsafety.unused.total_unsafe();
 
-        let entry = units.entry(pkg.package.name.clone()).or_insert((kind, 0));
+        let entry = counts.entry(pkg.package.name.clone()).or_insert((kind, 0));
         entry.1 += unsafe_count;
     }
 
-    let mut unit_list: Vec<Unit> = units
-        .into_iter()
-        .map(|(name, (kind, count))| Unit {
-            name,
-            kind,
-            unsafe_count: count,
-        })
-        .collect();
-
-    unit_list.sort_by(|a, b| a.name.cmp(&b.name));
-
     // cargo-geiger doesn't provide line-level details in JSON output
-    (unit_list, vec![])
+    super::aggregate_units(counts, vec![], opts)
 }
 
 #[cfg(test)]

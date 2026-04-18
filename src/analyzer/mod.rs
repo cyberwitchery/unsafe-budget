@@ -5,7 +5,8 @@ pub mod rustc;
 pub mod sarif;
 
 use crate::error::{Error, Result};
-use crate::model::{ScanOpts, ScanResult};
+use crate::model::{Occurrence, ScanOpts, ScanResult, Unit, UnitKind};
+use std::collections::{HashMap, HashSet};
 
 /// Trait for unsafe code analyzers.
 pub trait Analyzer {
@@ -120,9 +121,57 @@ pub fn list_analyzers() -> Vec<AnalyzerInfo> {
     analyzers
 }
 
+/// Aggregate pre-collected unit counts and occurrences into sorted, filtered
+/// results.
+///
+/// Filters out dependency units when `opts.workspace_only` is set or
+/// `opts.include_deps` is false, converts the count map into sorted [`Unit`]
+/// values, and sorts the detail occurrences for deterministic output.
+pub(crate) fn aggregate_units(
+    counts: HashMap<String, (UnitKind, u64)>,
+    details: Vec<Occurrence>,
+    opts: &ScanOpts,
+) -> (Vec<Unit>, Vec<Occurrence>) {
+    let exclude_deps = opts.workspace_only || !opts.include_deps;
+
+    let mut units: Vec<Unit> = counts
+        .into_iter()
+        .filter(|(_, (kind, _))| !exclude_deps || *kind != UnitKind::Dep)
+        .map(|(name, (kind, count))| Unit {
+            name,
+            kind,
+            unsafe_count: count,
+        })
+        .collect();
+
+    units.sort_by(|a, b| a.name.cmp(&b.name));
+
+    let mut details = if exclude_deps && !details.is_empty() {
+        let retained: HashSet<&str> = units.iter().map(|u| u.name.as_str()).collect();
+        details
+            .into_iter()
+            .filter(|occ| retained.contains(occ.unit.as_str()))
+            .collect()
+    } else {
+        details
+    };
+
+    details.sort_by(|a, b| {
+        a.unit
+            .cmp(&b.unit)
+            .then_with(|| a.file.cmp(&b.file))
+            .then_with(|| a.line.cmp(&b.line))
+            .then_with(|| a.col.cmp(&b.col))
+    });
+
+    (units, details)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+    use std::path::PathBuf;
 
     #[test]
     fn test_get_analyzer_rustc() {
@@ -195,5 +244,140 @@ mod tests {
 
         let go_geiger = analyzers.iter().find(|a| a.id == GO_GEIGER).unwrap();
         assert!(go_geiger.builtin);
+    }
+
+    #[test]
+    fn test_aggregate_units_basic() {
+        let mut counts = HashMap::new();
+        counts.insert("alpha".to_string(), (UnitKind::Workspace, 3));
+        counts.insert("beta".to_string(), (UnitKind::Dep, 5));
+
+        let opts = ScanOpts {
+            include_deps: true,
+            ..Default::default()
+        };
+
+        let (units, details) = aggregate_units(counts, vec![], &opts);
+
+        assert_eq!(units.len(), 2);
+        assert_eq!(units[0].name, "alpha");
+        assert_eq!(units[0].unsafe_count, 3);
+        assert_eq!(units[1].name, "beta");
+        assert_eq!(units[1].unsafe_count, 5);
+        assert!(details.is_empty());
+    }
+
+    #[test]
+    fn test_aggregate_units_filters_deps_workspace_only() {
+        let mut counts = HashMap::new();
+        counts.insert("my_crate".to_string(), (UnitKind::Workspace, 2));
+        counts.insert("libc".to_string(), (UnitKind::Dep, 10));
+
+        let details = vec![
+            Occurrence {
+                unit: "my_crate".into(),
+                file: PathBuf::from("src/lib.rs"),
+                line: 1,
+                col: 1,
+                message: None,
+            },
+            Occurrence {
+                unit: "libc".into(),
+                file: PathBuf::from("lib.rs"),
+                line: 1,
+                col: 1,
+                message: None,
+            },
+        ];
+
+        let opts = ScanOpts {
+            workspace_only: true,
+            include_deps: true,
+            ..Default::default()
+        };
+
+        let (units, filtered) = aggregate_units(counts, details, &opts);
+
+        assert_eq!(units.len(), 1);
+        assert_eq!(units[0].name, "my_crate");
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].unit, "my_crate");
+    }
+
+    #[test]
+    fn test_aggregate_units_filters_deps_include_deps_false() {
+        let mut counts = HashMap::new();
+        counts.insert("my_crate".to_string(), (UnitKind::Workspace, 2));
+        counts.insert("libc".to_string(), (UnitKind::Dep, 10));
+
+        let opts = ScanOpts {
+            include_deps: false,
+            ..Default::default()
+        };
+
+        let (units, _) = aggregate_units(counts, vec![], &opts);
+
+        assert_eq!(units.len(), 1);
+        assert_eq!(units[0].name, "my_crate");
+    }
+
+    #[test]
+    fn test_aggregate_units_sorts_deterministically() {
+        let mut counts = HashMap::new();
+        counts.insert("zebra".to_string(), (UnitKind::Workspace, 1));
+        counts.insert("alpha".to_string(), (UnitKind::Workspace, 2));
+        counts.insert("middle".to_string(), (UnitKind::Workspace, 3));
+
+        let details = vec![
+            Occurrence {
+                unit: "zebra".into(),
+                file: PathBuf::from("z.rs"),
+                line: 10,
+                col: 1,
+                message: None,
+            },
+            Occurrence {
+                unit: "alpha".into(),
+                file: PathBuf::from("a.rs"),
+                line: 5,
+                col: 1,
+                message: None,
+            },
+            Occurrence {
+                unit: "alpha".into(),
+                file: PathBuf::from("a.rs"),
+                line: 1,
+                col: 1,
+                message: None,
+            },
+        ];
+
+        let opts = ScanOpts {
+            include_deps: true,
+            ..Default::default()
+        };
+
+        let (units, sorted_details) = aggregate_units(counts, details, &opts);
+
+        assert_eq!(units[0].name, "alpha");
+        assert_eq!(units[1].name, "middle");
+        assert_eq!(units[2].name, "zebra");
+
+        assert_eq!(sorted_details[0].unit, "alpha");
+        assert_eq!(sorted_details[0].line, 1);
+        assert_eq!(sorted_details[1].unit, "alpha");
+        assert_eq!(sorted_details[1].line, 5);
+        assert_eq!(sorted_details[2].unit, "zebra");
+    }
+
+    #[test]
+    fn test_aggregate_units_empty() {
+        let counts = HashMap::new();
+        let opts = ScanOpts::default();
+
+        let (units, details) = aggregate_units(counts, vec![], &opts);
+
+        assert!(units.is_empty());
+        assert!(details.is_empty());
     }
 }
