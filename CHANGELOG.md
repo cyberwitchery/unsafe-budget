@@ -2,6 +2,8 @@
 
 ## [unreleased]
 
+- propagate `current_dir()` failure as an error instead of silently falling back to `"."` in `get_project_dir()` and `detect_analyzer()`
+
 ## [0.3.0] - 2026-04-17
 
 - fix SARIF analyzer collapsing all `*/src/*.rs` paths into a single "src" unit; now extracts the crate/package directory name instead
