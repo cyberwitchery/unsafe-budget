@@ -160,9 +160,11 @@ fn build_scan_opts(args: &ScanArgs, config: &Config) -> ScanOpts {
 /// counts and totals. A match requires both the file path and line number to be
 /// equal; the `reason` field is documentation only.
 ///
-/// If `ignores` is empty this is a no-op.
+/// If `ignores` is empty this is a no-op. If the scan result has no detail
+/// occurrences (e.g. cargo_geiger only provides aggregate counts), this is also
+/// a no-op — there are no individual occurrences to match against.
 fn apply_ignore_filter(mut result: ScanResult, ignores: &[IgnoreEntry]) -> ScanResult {
-    if ignores.is_empty() {
+    if ignores.is_empty() || result.details.is_empty() {
         return result;
     }
 
@@ -194,5 +196,294 @@ fn build_baseline(result: &ScanResult, analyzer: &dyn Analyzer) -> Baseline {
         scope: result.scope.clone(),
         totals: result.totals.clone(),
         units: result.units.iter().map(BaselineUnit::from).collect(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{Occurrence, Scope, Unit, UnitKind};
+    use std::path::PathBuf;
+
+    fn make_scope() -> Scope {
+        Scope {
+            workspace_only: false,
+            include_deps: true,
+            features: vec![],
+            all_targets: false,
+            targets: vec![],
+            manifest_path: None,
+        }
+    }
+
+    fn make_result_with_details() -> ScanResult {
+        ScanResult {
+            tool_version: "0.1.0".into(),
+            analyzer_id: "rustc_unsafe_lint".into(),
+            language: "rust".into(),
+            scope: make_scope(),
+            units: vec![
+                Unit {
+                    name: "my_crate".into(),
+                    kind: UnitKind::Workspace,
+                    unsafe_count: 3,
+                },
+                Unit {
+                    name: "other_crate".into(),
+                    kind: UnitKind::Workspace,
+                    unsafe_count: 1,
+                },
+            ],
+            totals: Totals {
+                workspace_unsafe: 4,
+                deps_unsafe: 0,
+                overall_unsafe: 4,
+            },
+            details: vec![
+                Occurrence {
+                    unit: "my_crate".into(),
+                    file: PathBuf::from("src/lib.rs"),
+                    line: 10,
+                    col: 1,
+                    message: None,
+                },
+                Occurrence {
+                    unit: "my_crate".into(),
+                    file: PathBuf::from("src/lib.rs"),
+                    line: 20,
+                    col: 1,
+                    message: None,
+                },
+                Occurrence {
+                    unit: "my_crate".into(),
+                    file: PathBuf::from("src/ffi.rs"),
+                    line: 42,
+                    col: 1,
+                    message: None,
+                },
+                Occurrence {
+                    unit: "other_crate".into(),
+                    file: PathBuf::from("other/src/lib.rs"),
+                    line: 5,
+                    col: 1,
+                    message: None,
+                },
+            ],
+        }
+    }
+
+    fn make_result_without_details() -> ScanResult {
+        ScanResult {
+            tool_version: "0.1.0".into(),
+            analyzer_id: "cargo_geiger".into(),
+            language: "rust".into(),
+            scope: make_scope(),
+            units: vec![
+                Unit {
+                    name: "my_crate".into(),
+                    kind: UnitKind::Workspace,
+                    unsafe_count: 10,
+                },
+                Unit {
+                    name: "libc".into(),
+                    kind: UnitKind::Dep,
+                    unsafe_count: 200,
+                },
+            ],
+            totals: Totals {
+                workspace_unsafe: 10,
+                deps_unsafe: 200,
+                overall_unsafe: 210,
+            },
+            details: vec![],
+        }
+    }
+
+    #[test]
+    fn ignore_filter_empty_ignores_is_noop() {
+        let result = make_result_with_details();
+        let filtered = apply_ignore_filter(result.clone(), &[]);
+        assert_eq!(filtered.totals.overall_unsafe, 4);
+        assert_eq!(filtered.details.len(), 4);
+    }
+
+    #[test]
+    fn ignore_filter_removes_matching_occurrence() {
+        let result = make_result_with_details();
+        let ignores = vec![IgnoreEntry {
+            file: PathBuf::from("src/ffi.rs"),
+            line: 42,
+            reason: Some("reviewed".into()),
+        }];
+        let filtered = apply_ignore_filter(result, &ignores);
+
+        assert_eq!(filtered.details.len(), 3);
+        assert_eq!(filtered.units[0].unsafe_count, 2); // my_crate: 3 -> 2
+        assert_eq!(filtered.units[1].unsafe_count, 1); // other_crate unchanged
+        assert_eq!(filtered.totals.workspace_unsafe, 3);
+        assert_eq!(filtered.totals.overall_unsafe, 3);
+    }
+
+    #[test]
+    fn ignore_filter_removes_multiple_occurrences() {
+        let result = make_result_with_details();
+        let ignores = vec![
+            IgnoreEntry {
+                file: PathBuf::from("src/lib.rs"),
+                line: 10,
+                reason: None,
+            },
+            IgnoreEntry {
+                file: PathBuf::from("src/ffi.rs"),
+                line: 42,
+                reason: None,
+            },
+        ];
+        let filtered = apply_ignore_filter(result, &ignores);
+
+        assert_eq!(filtered.details.len(), 2);
+        assert_eq!(filtered.units[0].unsafe_count, 1); // my_crate: 3 -> 1
+        assert_eq!(filtered.units[1].unsafe_count, 1); // other_crate unchanged
+        assert_eq!(filtered.totals.overall_unsafe, 2);
+    }
+
+    #[test]
+    fn ignore_filter_nonmatching_rule_changes_nothing() {
+        let result = make_result_with_details();
+        let ignores = vec![IgnoreEntry {
+            file: PathBuf::from("src/nonexistent.rs"),
+            line: 999,
+            reason: None,
+        }];
+        let filtered = apply_ignore_filter(result, &ignores);
+
+        assert_eq!(filtered.details.len(), 4);
+        assert_eq!(filtered.totals.overall_unsafe, 4);
+    }
+
+    #[test]
+    fn ignore_filter_requires_both_file_and_line_to_match() {
+        let result = make_result_with_details();
+        // Right file, wrong line
+        let ignores = vec![IgnoreEntry {
+            file: PathBuf::from("src/ffi.rs"),
+            line: 99,
+            reason: None,
+        }];
+        let filtered = apply_ignore_filter(result, &ignores);
+
+        assert_eq!(filtered.details.len(), 4);
+        assert_eq!(filtered.totals.overall_unsafe, 4);
+    }
+
+    #[test]
+    fn ignore_filter_no_details_preserves_counts() {
+        // This is the cargo_geiger bug: aggregate counts with no details.
+        let result = make_result_without_details();
+        let ignores = vec![IgnoreEntry {
+            file: PathBuf::from("src/lib.rs"),
+            line: 10,
+            reason: None,
+        }];
+        let filtered = apply_ignore_filter(result, &ignores);
+
+        // Counts must NOT be zeroed.
+        assert_eq!(filtered.units[0].unsafe_count, 10);
+        assert_eq!(filtered.units[1].unsafe_count, 200);
+        assert_eq!(filtered.totals.workspace_unsafe, 10);
+        assert_eq!(filtered.totals.deps_unsafe, 200);
+        assert_eq!(filtered.totals.overall_unsafe, 210);
+    }
+
+    #[test]
+    fn ignore_filter_no_details_multiple_ignores_preserves_counts() {
+        let result = make_result_without_details();
+        let ignores = vec![
+            IgnoreEntry {
+                file: PathBuf::from("src/lib.rs"),
+                line: 10,
+                reason: None,
+            },
+            IgnoreEntry {
+                file: PathBuf::from("src/ffi.rs"),
+                line: 42,
+                reason: None,
+            },
+            IgnoreEntry {
+                file: PathBuf::from("vendor/libc/src/lib.rs"),
+                line: 1,
+                reason: None,
+            },
+        ];
+        let filtered = apply_ignore_filter(result, &ignores);
+
+        assert_eq!(filtered.units[0].unsafe_count, 10);
+        assert_eq!(filtered.units[1].unsafe_count, 200);
+        assert_eq!(filtered.totals.overall_unsafe, 210);
+    }
+
+    #[test]
+    fn ignore_filter_removes_all_occurrences_zeros_counts() {
+        // When details ARE present and all are filtered, counts should go to 0.
+        let result = make_result_with_details();
+        let ignores = vec![
+            IgnoreEntry {
+                file: PathBuf::from("src/lib.rs"),
+                line: 10,
+                reason: None,
+            },
+            IgnoreEntry {
+                file: PathBuf::from("src/lib.rs"),
+                line: 20,
+                reason: None,
+            },
+            IgnoreEntry {
+                file: PathBuf::from("src/ffi.rs"),
+                line: 42,
+                reason: None,
+            },
+            IgnoreEntry {
+                file: PathBuf::from("other/src/lib.rs"),
+                line: 5,
+                reason: None,
+            },
+        ];
+        let filtered = apply_ignore_filter(result, &ignores);
+
+        assert!(filtered.details.is_empty());
+        assert_eq!(filtered.units[0].unsafe_count, 0);
+        assert_eq!(filtered.units[1].unsafe_count, 0);
+        assert_eq!(filtered.totals.overall_unsafe, 0);
+    }
+
+    #[test]
+    fn ignore_filter_recomputes_dep_totals() {
+        let mut result = make_result_with_details();
+        // Add a dep unit with a detail occurrence.
+        result.units.push(Unit {
+            name: "dep_crate".into(),
+            kind: UnitKind::Dep,
+            unsafe_count: 1,
+        });
+        result.details.push(Occurrence {
+            unit: "dep_crate".into(),
+            file: PathBuf::from("dep/src/lib.rs"),
+            line: 3,
+            col: 1,
+            message: None,
+        });
+        result.totals = Totals::from_units(&result.units);
+
+        let ignores = vec![IgnoreEntry {
+            file: PathBuf::from("dep/src/lib.rs"),
+            line: 3,
+            reason: None,
+        }];
+        let filtered = apply_ignore_filter(result, &ignores);
+
+        assert_eq!(filtered.units[2].unsafe_count, 0); // dep_crate filtered
+        assert_eq!(filtered.totals.deps_unsafe, 0);
+        assert_eq!(filtered.totals.workspace_unsafe, 4); // unchanged
+        assert_eq!(filtered.totals.overall_unsafe, 4);
     }
 }
