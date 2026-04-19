@@ -2,6 +2,7 @@
 
 ## [unreleased]
 
+- fix `infer_language` in SARIF analyzer producing false Go classifications for tools whose names contain "go" as a substring (e.g. django, errgo); now requires "go" at a word boundary
 - refactor `go_geiger` analyzer to use the shared `aggregate_units` helper, consistent with the other analyzers
 - fix `truncate()` in text output panicking on unit names containing multi-byte (non-ASCII) characters
 - fix `apply_ignore_filter` silently zeroing all unit counts when the analyzer produces no detail occurrences (e.g. `cargo_geiger`); `[[ignore]]` entries are now correctly skipped when there are no line-level details to filter

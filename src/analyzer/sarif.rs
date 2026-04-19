@@ -98,12 +98,33 @@ fn convert_sarif(sarif: &Sarif, opts: &ScanOpts) -> Result<ScanResult> {
     ))
 }
 
+/// Check whether `word` appears in `haystack` at a left word boundary:
+/// either at the start of the string or immediately after a non-alphanumeric
+/// character. This prevents substring false positives such as "cargo" or
+/// "django" matching "go".
+fn has_leading_word(haystack: &str, word: &str) -> bool {
+    let mut start = 0;
+    while start + word.len() <= haystack.len() {
+        match haystack[start..].find(word) {
+            Some(pos) => {
+                let abs = start + pos;
+                if abs == 0 || !haystack.as_bytes()[abs - 1].is_ascii_alphanumeric() {
+                    return true;
+                }
+                start = abs + 1;
+            }
+            None => break,
+        }
+    }
+    false
+}
+
 /// Infer language from the SARIF tool driver name.
 fn infer_language(tool_name: &str) -> String {
     let lower = tool_name.to_lowercase();
     if lower.contains("rust") || lower.contains("cargo") || lower.contains("clippy") {
         "rust".into()
-    } else if lower.contains("go") {
+    } else if has_leading_word(&lower, "go") {
         "go".into()
     } else if lower.contains("gcc") || lower.contains("clang") {
         "c".into()
@@ -188,6 +209,19 @@ mod tests {
     fn test_infer_language_c() {
         assert_eq!(infer_language("clang-tidy"), "c");
         assert_eq!(infer_language("GCC"), "c");
+    }
+
+    #[test]
+    fn test_infer_language_go_not_substring() {
+        // Tool names containing "go" as a substring must not match.
+        assert_eq!(infer_language("django"), "unknown");
+        assert_eq!(infer_language("errgo"), "unknown");
+        assert_eq!(infer_language("mango-lint"), "unknown");
+    }
+
+    #[test]
+    fn test_infer_language_go_after_separator() {
+        assert_eq!(infer_language("my-go-linter"), "go");
     }
 
     #[test]
