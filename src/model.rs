@@ -222,6 +222,31 @@ pub struct ScanResult {
     pub details: Vec<Occurrence>,
 }
 
+impl ScanResult {
+    /// Build a `ScanResult` from pre-aggregated parts.
+    ///
+    /// Sets `tool_version` to this crate's version, computes `totals` from
+    /// `units`, and derives `scope` from `opts`.
+    pub fn from_parts(
+        analyzer_id: impl Into<String>,
+        language: impl Into<String>,
+        opts: &ScanOpts,
+        units: Vec<Unit>,
+        details: Vec<Occurrence>,
+    ) -> Self {
+        let totals = Totals::from_units(&units);
+        Self {
+            tool_version: env!("CARGO_PKG_VERSION").into(),
+            analyzer_id: analyzer_id.into(),
+            language: language.into(),
+            scope: Scope::from(opts),
+            units,
+            totals,
+            details,
+        }
+    }
+}
+
 /// a budget violation.
 ///
 /// records when a unit exceeds its allowed unsafe count.

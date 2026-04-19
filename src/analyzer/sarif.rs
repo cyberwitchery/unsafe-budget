@@ -6,7 +6,7 @@
 
 use crate::analyzer::Analyzer;
 use crate::error::{Error, Result};
-use crate::model::{Occurrence, ScanOpts, ScanResult, Scope, Totals, Unit, UnitKind};
+use crate::model::{Occurrence, ScanOpts, ScanResult, Unit, UnitKind};
 use serde_sarif::sarif::Sarif;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -92,17 +92,10 @@ fn convert_sarif(sarif: &Sarif, opts: &ScanOpts) -> Result<ScanResult> {
     }
 
     let (units, details) = aggregate(occurrences, opts);
-    let totals = Totals::from_units(&units);
 
-    Ok(ScanResult {
-        tool_version: env!("CARGO_PKG_VERSION").into(),
-        analyzer_id: "sarif".into(),
-        language,
-        scope: Scope::from(opts),
-        units,
-        totals,
-        details,
-    })
+    Ok(ScanResult::from_parts(
+        "sarif", language, opts, units, details,
+    ))
 }
 
 /// Infer language from the SARIF tool driver name.

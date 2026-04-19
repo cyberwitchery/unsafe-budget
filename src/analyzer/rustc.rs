@@ -1,6 +1,6 @@
 use crate::analyzer::Analyzer;
 use crate::error::{Error, Result};
-use crate::model::{Occurrence, ScanOpts, ScanResult, Scope, Totals, Unit, UnitKind};
+use crate::model::{Occurrence, ScanOpts, ScanResult, Unit, UnitKind};
 use cargo_metadata::{Message, MetadataCommand};
 use std::collections::{HashMap, HashSet};
 use std::io::BufRead;
@@ -31,17 +31,13 @@ impl Analyzer for RustcAnalyzer {
         // Aggregate into units
         let (units, details) = aggregate_occurrences(occurrences, &workspace_members, opts);
 
-        let totals = Totals::from_units(&units);
-
-        Ok(ScanResult {
-            tool_version: env!("CARGO_PKG_VERSION").into(),
-            analyzer_id: self.id().into(),
-            language: self.language().into(),
-            scope: Scope::from(opts),
+        Ok(ScanResult::from_parts(
+            self.id(),
+            self.language(),
+            opts,
             units,
-            totals,
             details,
-        })
+        ))
     }
 }
 

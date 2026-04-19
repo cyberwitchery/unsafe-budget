@@ -1,6 +1,6 @@
 use crate::analyzer::Analyzer;
 use crate::error::{Error, Result};
-use crate::model::{Occurrence, ScanOpts, ScanResult, Scope, Totals, Unit, UnitKind};
+use crate::model::{Occurrence, ScanOpts, ScanResult, Unit, UnitKind};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::process::{Command, Stdio};
@@ -20,17 +20,14 @@ impl Analyzer for CargoGeigerAnalyzer {
         let output = run_cargo_geiger(opts)?;
         let report = parse_geiger_output(&output)?;
         let (units, details) = convert_report(&report, opts);
-        let totals = Totals::from_units(&units);
 
-        Ok(ScanResult {
-            tool_version: env!("CARGO_PKG_VERSION").into(),
-            analyzer_id: self.id().into(),
-            language: self.language().into(),
-            scope: Scope::from(opts),
+        Ok(ScanResult::from_parts(
+            self.id(),
+            self.language(),
+            opts,
             units,
-            totals,
             details,
-        })
+        ))
     }
 }
 
