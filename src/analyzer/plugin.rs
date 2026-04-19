@@ -2,7 +2,7 @@ use crate::analyzer::{Analyzer, AnalyzerInfo};
 use crate::error::{Error, Result};
 use crate::model::{ScanOpts, ScanResult};
 use std::io::Read as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 use wait_timeout::ChildExt;
@@ -68,7 +68,7 @@ pub fn discover_plugins() -> Vec<AnalyzerInfo> {
 
 /// Check if a path is executable.
 #[cfg(unix)]
-fn is_executable(path: &PathBuf) -> bool {
+fn is_executable(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
     path.is_file()
         && std::fs::metadata(path)
@@ -77,12 +77,12 @@ fn is_executable(path: &PathBuf) -> bool {
 }
 
 #[cfg(not(unix))]
-fn is_executable(path: &PathBuf) -> bool {
+fn is_executable(path: &Path) -> bool {
     path.is_file()
 }
 
 /// Try to get plugin language by running with --info.
-fn probe_plugin_language(path: &PathBuf) -> Option<String> {
+fn probe_plugin_language(path: &Path) -> Option<String> {
     let output = Command::new(path)
         .arg("--info")
         .stdout(Stdio::piped())
@@ -105,7 +105,7 @@ fn probe_plugin_language(path: &PathBuf) -> Option<String> {
 
 /// Build a [`Command`] for an external plugin, setting the shared flags and
 /// environment variables derived from [`ScanOpts`].
-fn build_plugin_cmd(path: &PathBuf, opts: &ScanOpts) -> Command {
+fn build_plugin_cmd(path: &Path, opts: &ScanOpts) -> Command {
     let mut cmd = Command::new(path);
     cmd.arg("--format").arg("json");
 
@@ -136,7 +136,7 @@ fn build_plugin_cmd(path: &PathBuf, opts: &ScanOpts) -> Command {
 }
 
 /// Run an external plugin and parse its output.
-pub fn run_plugin(path: &PathBuf, opts: &ScanOpts) -> Result<ScanResult> {
+pub fn run_plugin(path: &Path, opts: &ScanOpts) -> Result<ScanResult> {
     let mut cmd = build_plugin_cmd(path, opts);
 
     match opts.plugin_timeout_secs {
