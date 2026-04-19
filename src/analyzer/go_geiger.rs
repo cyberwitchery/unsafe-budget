@@ -108,14 +108,6 @@ fn parse_geiger_output(output: &[u8], opts: &ScanOpts) -> Result<(Vec<Unit>, Vec
             UnitKind::Workspace
         };
 
-        // Skip based on options
-        if opts.workspace_only && kind == UnitKind::Dep {
-            continue;
-        }
-        if !opts.include_deps && kind == UnitKind::Dep {
-            continue;
-        }
-
         let entry = counts.entry(pkg_name.clone()).or_insert((kind, 0));
         entry.1 += 1;
 
@@ -128,24 +120,7 @@ fn parse_geiger_output(output: &[u8], opts: &ScanOpts) -> Result<(Vec<Unit>, Vec
         });
     }
 
-    let mut units: Vec<Unit> = counts
-        .into_iter()
-        .map(|(name, (kind, count))| Unit {
-            name,
-            kind,
-            unsafe_count: count,
-        })
-        .collect();
-
-    units.sort_by(|a, b| a.name.cmp(&b.name));
-    details.sort_by(|a, b| {
-        a.unit
-            .cmp(&b.unit)
-            .then_with(|| a.file.cmp(&b.file))
-            .then_with(|| a.line.cmp(&b.line))
-    });
-
-    Ok((units, details))
+    Ok(super::aggregate_units(counts, details, opts))
 }
 
 /// Extract Go package name from file path.
