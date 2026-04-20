@@ -164,19 +164,7 @@ fn print_check_text(
 
     // Build delta map if baseline available
     let deltas: HashMap<String, i64> = baseline
-        .map(|b| {
-            let baseline_map = b.unit_map();
-            result
-                .scan
-                .units
-                .iter()
-                .map(|u| {
-                    let baseline_count = baseline_map.get(u.name.as_str()).copied().unwrap_or(0);
-                    let delta = u.unsafe_count as i64 - baseline_count as i64;
-                    (u.name.clone(), delta)
-                })
-                .collect()
-        })
+        .map(|b| crate::budget::compute_deltas(&result.scan, b))
         .unwrap_or_default();
 
     // Build violation set for quick lookup
