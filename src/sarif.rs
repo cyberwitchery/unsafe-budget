@@ -9,6 +9,7 @@ use serde_sarif::sarif;
 const SARIF_SCHEMA: &str = "https://json.schemastore.org/sarif-2.1.0.json";
 const RULE_UNSAFE_CODE: &str = "unsafe_code";
 const RULE_BUDGET_VIOLATION: &str = "budget_violation";
+const RULE_BUDGET_WARNING: &str = "budget_warning";
 
 /// Convert a scan result into a SARIF 2.1.0 log.
 ///
@@ -40,6 +41,9 @@ pub fn check_to_sarif(result: &CheckResult) -> sarif::Sarif {
     if !result.violations.is_empty() {
         rules.push(make_budget_violation_rule());
     }
+    if !result.warnings.is_empty() {
+        rules.push(make_budget_warning_rule());
+    }
 
     let driver = make_driver(&result.scan.tool_version, rules);
     let tool = sarif::Tool::builder().driver(driver).build();
@@ -55,6 +59,20 @@ pub fn check_to_sarif(result: &CheckResult) -> sarif::Sarif {
             sarif::Result::builder()
                 .rule_id(RULE_BUDGET_VIOLATION.to_string())
                 .level(sarif::ResultLevel::Error)
+                .message(sarif::Message::builder().text(message).build())
+                .build(),
+        );
+    }
+
+    for w in &result.warnings {
+        let message = format!(
+            "unit '{}' is near its budget: {} unsafe (budget: {})",
+            w.unit, w.actual, w.budget
+        );
+        results.push(
+            sarif::Result::builder()
+                .rule_id(RULE_BUDGET_WARNING.to_string())
+                .level(sarif::ResultLevel::Note)
                 .message(sarif::Message::builder().text(message).build())
                 .build(),
         );
@@ -98,6 +116,17 @@ fn make_budget_violation_rule() -> sarif::ReportingDescriptor {
         .short_description(
             sarif::MultiformatMessageString::builder()
                 .text("Unsafe code budget exceeded")
+                .build(),
+        )
+        .build()
+}
+
+fn make_budget_warning_rule() -> sarif::ReportingDescriptor {
+    sarif::ReportingDescriptor::builder()
+        .id(RULE_BUDGET_WARNING)
+        .short_description(
+            sarif::MultiformatMessageString::builder()
+                .text("Unsafe code near budget threshold")
                 .build(),
         )
         .build()
@@ -197,7 +226,7 @@ fn sort_results(results: &mut [sarif::Result]) {
 mod tests {
     use super::*;
     use crate::model::{
-        CheckResult, Occurrence, ScanResult, Scope, Totals, Unit, UnitKind, Violation,
+        CheckResult, Occurrence, ScanResult, Scope, Totals, Unit, UnitKind, Violation, Warning,
     };
     use std::path::PathBuf;
 
@@ -419,6 +448,101 @@ mod tests {
         let results = run.results.as_ref().unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].rule_id.as_deref(), Some("unsafe_code"));
+    }
+
+    #[test]
+    fn test_check_to_sarif_with_warnings() {
+        let scan = make_scan_result(vec![Occurrence {
+            unit: "my_crate".into(),
+            file: PathBuf::from("src/lib.rs"),
+            line: 10,
+            col: 5,
+            message: Some("unsafe block".into()),
+        }]);
+
+        let check = CheckResult {
+            scan,
+            violations: vec![],
+            warnings: vec![Warning {
+                unit: "my_crate".into(),
+                kind: UnitKind::Workspace,
+                budget: 5,
+                actual: 4,
+            }],
+            passed: true,
+        };
+
+        let sarif = check_to_sarif(&check);
+        let run = &sarif.runs[0];
+
+        let rules = run.tool.driver.rules.as_ref().unwrap();
+        assert_eq!(rules.len(), 2);
+        let rule_ids: Vec<_> = rules.iter().map(|r| r.id.as_str()).collect();
+        assert!(rule_ids.contains(&"unsafe_code"));
+        assert!(rule_ids.contains(&"budget_warning"));
+
+        let results = run.results.as_ref().unwrap();
+        assert_eq!(results.len(), 2);
+
+        let warning_result = results
+            .iter()
+            .find(|r| r.rule_id.as_deref() == Some("budget_warning"))
+            .unwrap();
+        assert_eq!(warning_result.level, Some(sarif::ResultLevel::Note));
+        assert!(warning_result
+            .message
+            .text
+            .as_ref()
+            .unwrap()
+            .contains("near its budget"));
+    }
+
+    #[test]
+    fn test_check_to_sarif_with_violations_and_warnings() {
+        let scan = make_scan_result(vec![]);
+
+        let check = CheckResult {
+            scan,
+            violations: vec![Violation {
+                unit: "bad_crate".into(),
+                kind: UnitKind::Workspace,
+                baseline: 0,
+                actual: 3,
+                delta: 3,
+            }],
+            warnings: vec![Warning {
+                unit: "close_crate".into(),
+                kind: UnitKind::Workspace,
+                budget: 5,
+                actual: 4,
+            }],
+            passed: false,
+        };
+
+        let sarif = check_to_sarif(&check);
+        let run = &sarif.runs[0];
+
+        let rules = run.tool.driver.rules.as_ref().unwrap();
+        assert_eq!(rules.len(), 3);
+        let rule_ids: Vec<_> = rules.iter().map(|r| r.id.as_str()).collect();
+        assert!(rule_ids.contains(&"unsafe_code"));
+        assert!(rule_ids.contains(&"budget_violation"));
+        assert!(rule_ids.contains(&"budget_warning"));
+
+        let results = run.results.as_ref().unwrap();
+        assert_eq!(results.len(), 2);
+
+        let violation = results
+            .iter()
+            .find(|r| r.rule_id.as_deref() == Some("budget_violation"))
+            .unwrap();
+        assert_eq!(violation.level, Some(sarif::ResultLevel::Error));
+
+        let warning = results
+            .iter()
+            .find(|r| r.rule_id.as_deref() == Some("budget_warning"))
+            .unwrap();
+        assert_eq!(warning.level, Some(sarif::ResultLevel::Note));
     }
 
     #[test]
