@@ -53,6 +53,7 @@ fn compute_warnings(
     }
 
     let violating_units: HashSet<&str> = violations.iter().map(|v| v.unit.as_str()).collect();
+    let baseline_map = baseline.map(|b| b.unit_map());
     let mut warnings = Vec::new();
 
     for unit in &scan.units {
@@ -63,7 +64,7 @@ fn compute_warnings(
             continue;
         }
 
-        let Some(budget) = budget_for_unit(unit, baseline, config) else {
+        let Some(budget) = budget_for_unit(unit, baseline_map.as_ref(), config) else {
             continue;
         };
         if budget == 0 {
@@ -93,12 +94,17 @@ fn compute_warnings(
     Ok(warnings)
 }
 
-fn budget_for_unit(unit: &Unit, baseline: Option<&Baseline>, config: &Config) -> Option<u64> {
+fn budget_for_unit(
+    unit: &Unit,
+    baseline_map: Option<&HashMap<&str, u64>>,
+    config: &Config,
+) -> Option<u64> {
     match config.mode {
-        Mode::Ratchet => baseline
-            .and_then(|b| b.get_unit(&unit.name))
-            .map(|u| u.unsafe_count)
-            .or(Some(0)),
+        Mode::Ratchet => Some(
+            baseline_map
+                .and_then(|m| m.get(unit.name.as_str()).copied())
+                .unwrap_or(0),
+        ),
         Mode::Caps => {
             let caps = config.caps.as_ref()?;
             match unit.kind {
