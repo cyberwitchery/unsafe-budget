@@ -6,7 +6,7 @@ use crate::budget;
 use crate::cli::{self, Command, ScanArgs};
 use crate::config::{Baseline, BaselineUnit, Config, IgnoreEntry};
 use crate::error::Result;
-use crate::model::{ScanOpts, ScanResult, Totals};
+use crate::model::{ScanOpts, ScanResult, Scope, Totals};
 use crate::output::{self, Format};
 
 pub fn run_cli() -> ExitCode {
@@ -64,6 +64,18 @@ fn cmd_check(args: ScanArgs) -> Result<ExitCode> {
         }
         crate::config::Mode::Caps => None,
     };
+
+    // Warn when the current scan scope differs from the baseline scope
+    if let Some(bl) = baseline.as_ref() {
+        let current_scope = Scope::from(&opts);
+        let diffs = bl.scope.diff_fields(&current_scope);
+        if !diffs.is_empty() {
+            eprintln!("warning: scan scope differs from baseline:");
+            for d in &diffs {
+                eprintln!("  - {}", d);
+            }
+        }
+    }
 
     let check_result = budget::check(&result, baseline.as_ref(), &config)?;
 

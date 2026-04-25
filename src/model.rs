@@ -58,6 +58,54 @@ pub struct Scope {
     pub manifest_path: Option<PathBuf>,
 }
 
+impl Scope {
+    /// Compare two scopes and return human-readable descriptions of fields that differ.
+    ///
+    /// Returns an empty vec when both scopes are equal.
+    pub fn diff_fields(&self, other: &Scope) -> Vec<String> {
+        let mut diffs = Vec::new();
+
+        if self.workspace_only != other.workspace_only {
+            diffs.push(format!(
+                "workspace_only: baseline={}, current={}",
+                self.workspace_only, other.workspace_only
+            ));
+        }
+        if self.include_deps != other.include_deps {
+            diffs.push(format!(
+                "include_deps: baseline={}, current={}",
+                self.include_deps, other.include_deps
+            ));
+        }
+        if self.features != other.features {
+            diffs.push(format!(
+                "features: baseline={:?}, current={:?}",
+                self.features, other.features
+            ));
+        }
+        if self.all_targets != other.all_targets {
+            diffs.push(format!(
+                "all_targets: baseline={}, current={}",
+                self.all_targets, other.all_targets
+            ));
+        }
+        if self.targets != other.targets {
+            diffs.push(format!(
+                "targets: baseline={:?}, current={:?}",
+                self.targets, other.targets
+            ));
+        }
+        if self.manifest_path != other.manifest_path {
+            diffs.push(format!(
+                "manifest_path: baseline={:?}, current={:?}",
+                self.manifest_path, other.manifest_path
+            ));
+        }
+
+        diffs
+    }
+}
+
 impl From<&ScanOpts> for Scope {
     fn from(opts: &ScanOpts) -> Self {
         Scope {
@@ -424,6 +472,66 @@ mod tests {
         assert_eq!(totals.workspace_unsafe, 10);
         assert_eq!(totals.deps_unsafe, 105);
         assert_eq!(totals.overall_unsafe, 115);
+    }
+
+    #[test]
+    fn test_scope_diff_fields_equal() {
+        let a = Scope {
+            workspace_only: false,
+            include_deps: true,
+            features: vec!["f1".into()],
+            all_targets: false,
+            targets: vec![],
+            manifest_path: None,
+        };
+        assert!(a.diff_fields(&a.clone()).is_empty());
+    }
+
+    #[test]
+    fn test_scope_diff_fields_all_different() {
+        let baseline = Scope {
+            workspace_only: false,
+            include_deps: true,
+            features: vec!["f1".into()],
+            all_targets: false,
+            targets: vec![],
+            manifest_path: None,
+        };
+        let current = Scope {
+            workspace_only: true,
+            include_deps: false,
+            features: vec!["f1".into(), "f2".into()],
+            all_targets: true,
+            targets: vec!["aarch64-unknown-linux-gnu".into()],
+            manifest_path: Some(PathBuf::from("Cargo.toml")),
+        };
+        let diffs = baseline.diff_fields(&current);
+        assert_eq!(diffs.len(), 6);
+        assert!(diffs[0].contains("workspace_only"));
+        assert!(diffs[1].contains("include_deps"));
+        assert!(diffs[2].contains("features"));
+        assert!(diffs[3].contains("all_targets"));
+        assert!(diffs[4].contains("targets"));
+        assert!(diffs[5].contains("manifest_path"));
+    }
+
+    #[test]
+    fn test_scope_diff_fields_single_change() {
+        let baseline = Scope {
+            workspace_only: false,
+            include_deps: true,
+            features: vec!["f1".into()],
+            all_targets: false,
+            targets: vec![],
+            manifest_path: None,
+        };
+        let mut current = baseline.clone();
+        current.features = vec![];
+        let diffs = baseline.diff_fields(&current);
+        assert_eq!(diffs.len(), 1);
+        assert!(diffs[0].contains("features"));
+        assert!(diffs[0].contains(r#"baseline=["f1"]"#));
+        assert!(diffs[0].contains("current=[]"));
     }
 
     #[test]
