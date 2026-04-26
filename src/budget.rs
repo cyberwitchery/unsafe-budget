@@ -9,11 +9,14 @@ pub fn check(
     baseline: Option<&Baseline>,
     config: &Config,
 ) -> Result<CheckResult> {
+    let unit_map = baseline.map(|b| b.unit_map());
+
     let violations = match config.mode {
         Mode::Ratchet => {
-            let baseline = baseline
+            let baseline_map = unit_map
+                .as_ref()
                 .ok_or_else(|| Error::Baseline("ratchet mode requires a baseline file".into()))?;
-            check_ratchet(scan, baseline, config)
+            check_ratchet(scan, baseline_map, config)
         }
         Mode::Caps => {
             let caps = config.caps.as_ref().ok_or_else(|| {
@@ -23,7 +26,7 @@ pub fn check(
         }
     };
 
-    let warnings = compute_warnings(scan, baseline, config, &violations)?;
+    let warnings = compute_warnings(scan, unit_map.as_ref(), config, &violations)?;
 
     let passed = violations.is_empty();
     Ok(CheckResult {
@@ -36,7 +39,7 @@ pub fn check(
 
 fn compute_warnings(
     scan: &ScanResult,
-    baseline: Option<&Baseline>,
+    baseline_map: Option<&HashMap<&str, u64>>,
     config: &Config,
     violations: &[Violation],
 ) -> Result<Vec<Warning>> {
@@ -53,7 +56,6 @@ fn compute_warnings(
     }
 
     let violating_units: HashSet<&str> = violations.iter().map(|v| v.unit.as_str()).collect();
-    let baseline_map = baseline.map(|b| b.unit_map());
     let mut warnings = Vec::new();
 
     for unit in &scan.units {
@@ -64,7 +66,7 @@ fn compute_warnings(
             continue;
         }
 
-        let Some(budget) = budget_for_unit(unit, baseline_map.as_ref(), config) else {
+        let Some(budget) = budget_for_unit(unit, baseline_map, config) else {
             continue;
         };
         if budget == 0 {
@@ -116,9 +118,11 @@ fn budget_for_unit(
 }
 
 /// Check against ratchet baseline - fail if any unit exceeds its baseline count.
-fn check_ratchet(scan: &ScanResult, baseline: &Baseline, config: &Config) -> Vec<Violation> {
-    let baseline_map = baseline.unit_map();
-
+fn check_ratchet(
+    scan: &ScanResult,
+    baseline_map: &HashMap<&str, u64>,
+    config: &Config,
+) -> Vec<Violation> {
     let mut violations = Vec::new();
 
     for unit in &scan.units {
