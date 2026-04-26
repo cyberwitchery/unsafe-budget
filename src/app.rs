@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::process::ExitCode;
 
 use crate::analyzer::{detect_analyzer, get_analyzer, list_analyzers, Analyzer};
@@ -180,11 +180,14 @@ fn apply_ignore_filter(mut result: ScanResult, ignores: &[IgnoreEntry]) -> ScanR
         return result;
     }
 
-    result.details.retain(|occ| {
-        !ignores
-            .iter()
-            .any(|rule| rule.file == occ.file && rule.line == occ.line)
-    });
+    let ignore_set: HashSet<(&std::path::Path, u32)> = ignores
+        .iter()
+        .map(|rule| (rule.file.as_path(), rule.line))
+        .collect();
+
+    result
+        .details
+        .retain(|occ| !ignore_set.contains(&(occ.file.as_path(), occ.line)));
 
     // Recompute per-unit counts from the filtered details.
     let mut counts: HashMap<&str, u64> = HashMap::new();
@@ -497,5 +500,30 @@ mod tests {
         assert_eq!(filtered.totals.deps_unsafe, 0);
         assert_eq!(filtered.totals.workspace_unsafe, 4); // unchanged
         assert_eq!(filtered.totals.overall_unsafe, 4);
+    }
+
+    #[test]
+    fn ignore_filter_many_ignores_scales_linearly() {
+        // Regression: ensure that a large number of ignore rules does not cause
+        // quadratic behaviour. With O(n*m) filtering this would iterate
+        // 4 * 1000 = 4000 times; with a HashSet it's 4 lookups + 1000 inserts.
+        let result = make_result_with_details();
+        let mut ignores: Vec<IgnoreEntry> = (0..1000)
+            .map(|i| IgnoreEntry {
+                file: PathBuf::from(format!("nonexistent/{}.rs", i)),
+                line: i,
+                reason: None,
+            })
+            .collect();
+        // Slip in one real match.
+        ignores.push(IgnoreEntry {
+            file: PathBuf::from("src/ffi.rs"),
+            line: 42,
+            reason: None,
+        });
+        let filtered = apply_ignore_filter(result, &ignores);
+
+        assert_eq!(filtered.details.len(), 3);
+        assert_eq!(filtered.totals.overall_unsafe, 3);
     }
 }
