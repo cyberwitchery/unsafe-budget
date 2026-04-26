@@ -183,11 +183,6 @@ impl Baseline {
         self.save(&dir.join("unsafe-budget.lock"))
     }
 
-    /// Get the unsafe count for a unit by name.
-    pub fn get_unit(&self, name: &str) -> Option<&BaselineUnit> {
-        self.units.iter().find(|u| u.name == name)
-    }
-
     /// Build a lookup map from unit name to unsafe count.
     pub fn unit_map(&self) -> HashMap<&str, u64> {
         self.units
@@ -320,7 +315,7 @@ line = 7
     }
 
     #[test]
-    fn test_baseline_get_unit_found() {
+    fn test_baseline_unit_map_found() {
         let baseline = Baseline {
             tool_version: "0.1.0".into(),
             analyzer_id: "test".into(),
@@ -340,13 +335,12 @@ line = 7
             }],
         };
 
-        let unit = baseline.get_unit("my_crate");
-        assert!(unit.is_some());
-        assert_eq!(unit.unwrap().unsafe_count, 10);
+        let map = baseline.unit_map();
+        assert_eq!(map.get("my_crate"), Some(&10));
     }
 
     #[test]
-    fn test_baseline_get_unit_not_found() {
+    fn test_baseline_unit_map_not_found() {
         let baseline = Baseline {
             tool_version: "0.1.0".into(),
             analyzer_id: "test".into(),
@@ -362,8 +356,8 @@ line = 7
             units: vec![],
         };
 
-        let unit = baseline.get_unit("nonexistent");
-        assert!(unit.is_none());
+        let map = baseline.unit_map();
+        assert_eq!(map.get("nonexistent"), None);
     }
 
     #[test]

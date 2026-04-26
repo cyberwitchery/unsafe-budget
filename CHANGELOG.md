@@ -3,6 +3,7 @@
 ## [unreleased]
 
 - warn to stderr when `check` scope differs from baseline scope (e.g. `--all-features` used during `update` but not `check`), listing which fields changed
+- remove `Baseline::get_unit()` method (superseded by `unit_map()` in 0.3.0)
 - add threshold warnings (near-budget) to SARIF output as note-level `budget_warning` results; previously these were silently dropped
 - fix `infer_language` in SARIF analyzer producing false Go classifications for tools whose names contain "go" as a substring (e.g. django, errgo); now requires "go" at a word boundary
 - refactor `go_geiger` analyzer to use the shared `aggregate_units` helper, consistent with the other analyzers
