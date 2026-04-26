@@ -52,6 +52,12 @@ pub struct Scope {
     pub workspace_only: bool,
     pub include_deps: bool,
     pub features: Vec<String>,
+    /// whether `--all-features` was passed.
+    #[serde(default)]
+    pub all_features: bool,
+    /// whether `--no-default-features` was passed.
+    #[serde(default)]
+    pub no_default_features: bool,
     pub all_targets: bool,
     pub targets: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -83,6 +89,18 @@ impl Scope {
                 self.features, other.features
             ));
         }
+        if self.all_features != other.all_features {
+            diffs.push(format!(
+                "all_features: baseline={}, current={}",
+                self.all_features, other.all_features
+            ));
+        }
+        if self.no_default_features != other.no_default_features {
+            diffs.push(format!(
+                "no_default_features: baseline={}, current={}",
+                self.no_default_features, other.no_default_features
+            ));
+        }
         if self.all_targets != other.all_targets {
             diffs.push(format!(
                 "all_targets: baseline={}, current={}",
@@ -112,6 +130,8 @@ impl From<&ScanOpts> for Scope {
             workspace_only: opts.workspace_only,
             include_deps: opts.include_deps,
             features: opts.features.clone(),
+            all_features: opts.all_features,
+            no_default_features: opts.no_default_features,
             all_targets: opts.all_targets,
             targets: opts.targets.clone(),
             manifest_path: opts.manifest_path.clone(),
@@ -232,6 +252,8 @@ impl Totals {
 ///         workspace_only: false,
 ///         include_deps: true,
 ///         features: vec![],
+///         all_features: false,
+///         no_default_features: false,
 ///         all_targets: false,
 ///         targets: vec![],
 ///         manifest_path: None,
@@ -377,6 +399,8 @@ mod tests {
         assert!(scope.workspace_only);
         assert!(!scope.include_deps);
         assert_eq!(scope.features, vec!["feature1", "feature2"]);
+        assert!(scope.all_features);
+        assert!(scope.no_default_features);
         assert!(scope.all_targets);
         assert_eq!(scope.targets, vec!["x86_64-unknown-linux-gnu"]);
         assert_eq!(
@@ -393,6 +417,8 @@ mod tests {
         assert!(!scope.workspace_only);
         assert!(!scope.include_deps);
         assert!(scope.features.is_empty());
+        assert!(!scope.all_features);
+        assert!(!scope.no_default_features);
         assert!(!scope.all_targets);
         assert!(scope.targets.is_empty());
         assert!(scope.manifest_path.is_none());
@@ -480,6 +506,8 @@ mod tests {
             workspace_only: false,
             include_deps: true,
             features: vec!["f1".into()],
+            all_features: false,
+            no_default_features: false,
             all_targets: false,
             targets: vec![],
             manifest_path: None,
@@ -493,6 +521,8 @@ mod tests {
             workspace_only: false,
             include_deps: true,
             features: vec!["f1".into()],
+            all_features: false,
+            no_default_features: false,
             all_targets: false,
             targets: vec![],
             manifest_path: None,
@@ -501,18 +531,22 @@ mod tests {
             workspace_only: true,
             include_deps: false,
             features: vec!["f1".into(), "f2".into()],
+            all_features: true,
+            no_default_features: true,
             all_targets: true,
             targets: vec!["aarch64-unknown-linux-gnu".into()],
             manifest_path: Some(PathBuf::from("Cargo.toml")),
         };
         let diffs = baseline.diff_fields(&current);
-        assert_eq!(diffs.len(), 6);
+        assert_eq!(diffs.len(), 8);
         assert!(diffs[0].contains("workspace_only"));
         assert!(diffs[1].contains("include_deps"));
         assert!(diffs[2].contains("features"));
-        assert!(diffs[3].contains("all_targets"));
-        assert!(diffs[4].contains("targets"));
-        assert!(diffs[5].contains("manifest_path"));
+        assert!(diffs[3].contains("all_features"));
+        assert!(diffs[4].contains("no_default_features"));
+        assert!(diffs[5].contains("all_targets"));
+        assert!(diffs[6].contains("targets"));
+        assert!(diffs[7].contains("manifest_path"));
     }
 
     #[test]
@@ -521,6 +555,8 @@ mod tests {
             workspace_only: false,
             include_deps: true,
             features: vec!["f1".into()],
+            all_features: false,
+            no_default_features: false,
             all_targets: false,
             targets: vec![],
             manifest_path: None,
