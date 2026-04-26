@@ -391,6 +391,8 @@ mod tests {
                 workspace_only: false,
                 include_deps: true,
                 features: vec![],
+                all_features: false,
+                no_default_features: false,
                 all_targets: false,
                 targets: vec![],
                 manifest_path: None,

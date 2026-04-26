@@ -2,6 +2,7 @@
 
 ## [unreleased]
 
+- track `all_features` and `no_default_features` in scan scope so baseline-vs-check comparisons detect feature flag mismatches
 - warn to stderr when `check` scope differs from baseline scope (e.g. `--all-features` used during `update` but not `check`), listing which fields changed
 - remove `Baseline::get_unit()` method (superseded by `unit_map()` in 0.3.0)
 - add threshold warnings (near-budget) to SARIF output as note-level `budget_warning` results; previously these were silently dropped
