@@ -55,13 +55,22 @@ pub fn check_to_sarif(result: &CheckResult) -> sarif::Sarif {
             "unit '{}' exceeds budget: {} unsafe (budget: {}, delta: +{})",
             v.unit, v.actual, v.baseline, v.delta
         );
-        results.push(
+        let locations = locations_for_unit(&v.unit, &result.scan.details);
+        let msg = sarif::Message::builder().text(message).build();
+        results.push(if locations.is_empty() {
             sarif::Result::builder()
                 .rule_id(RULE_BUDGET_VIOLATION.to_string())
                 .level(sarif::ResultLevel::Error)
-                .message(sarif::Message::builder().text(message).build())
-                .build(),
-        );
+                .message(msg)
+                .build()
+        } else {
+            sarif::Result::builder()
+                .rule_id(RULE_BUDGET_VIOLATION.to_string())
+                .level(sarif::ResultLevel::Error)
+                .message(msg)
+                .locations(locations)
+                .build()
+        });
     }
 
     for w in &result.warnings {
@@ -69,13 +78,22 @@ pub fn check_to_sarif(result: &CheckResult) -> sarif::Sarif {
             "unit '{}' is near its budget: {} unsafe (budget: {})",
             w.unit, w.actual, w.budget
         );
-        results.push(
+        let locations = locations_for_unit(&w.unit, &result.scan.details);
+        let msg = sarif::Message::builder().text(message).build();
+        results.push(if locations.is_empty() {
             sarif::Result::builder()
                 .rule_id(RULE_BUDGET_WARNING.to_string())
                 .level(sarif::ResultLevel::Note)
-                .message(sarif::Message::builder().text(message).build())
-                .build(),
-        );
+                .message(msg)
+                .build()
+        } else {
+            sarif::Result::builder()
+                .rule_id(RULE_BUDGET_WARNING.to_string())
+                .level(sarif::ResultLevel::Note)
+                .message(msg)
+                .locations(locations)
+                .build()
+        });
     }
 
     sort_results(&mut results);
@@ -132,43 +150,56 @@ fn make_budget_warning_rule() -> sarif::ReportingDescriptor {
         .build()
 }
 
+fn make_location(occ: &crate::model::Occurrence) -> sarif::Location {
+    sarif::Location::builder()
+        .physical_location(
+            sarif::PhysicalLocation::builder()
+                .artifact_location(
+                    sarif::ArtifactLocation::builder()
+                        .uri(occ.file.to_string_lossy().to_string())
+                        .build(),
+                )
+                .region(
+                    sarif::Region::builder()
+                        .start_line(occ.line as i64)
+                        .start_column(occ.col as i64)
+                        .build(),
+                )
+                .build(),
+        )
+        .build()
+}
+
+fn locations_for_unit(unit: &str, details: &[crate::model::Occurrence]) -> Vec<sarif::Location> {
+    let mut matching: Vec<_> = details.iter().filter(|occ| occ.unit == unit).collect();
+    matching.sort_by(|a, b| {
+        a.file
+            .cmp(&b.file)
+            .then(a.line.cmp(&b.line))
+            .then(a.col.cmp(&b.col))
+    });
+    matching.iter().map(|occ| make_location(occ)).collect()
+}
+
 fn make_occurrence_results(details: &[crate::model::Occurrence]) -> Vec<sarif::Result> {
     details
         .iter()
         .map(|occ| {
             let message = occ.message.as_deref().unwrap_or("unsafe code usage");
 
-            let location = sarif::Location::builder()
-                .physical_location(
-                    sarif::PhysicalLocation::builder()
-                        .artifact_location(
-                            sarif::ArtifactLocation::builder()
-                                .uri(occ.file.to_string_lossy().to_string())
-                                .build(),
-                        )
-                        .region(
-                            sarif::Region::builder()
-                                .start_line(occ.line as i64)
-                                .start_column(occ.col as i64)
-                                .build(),
-                        )
-                        .build(),
-                )
-                .build();
-
             sarif::Result::builder()
                 .rule_id(RULE_UNSAFE_CODE.to_string())
                 .level(sarif::ResultLevel::Warning)
                 .message(sarif::Message::builder().text(message.to_string()).build())
-                .locations(vec![location])
+                .locations(vec![make_location(occ)])
                 .build()
         })
         .collect()
 }
 
 /// Sort results for deterministic output.
-/// Violations (no locations) come first sorted by message,
-/// then occurrences sorted by (file, line, col).
+/// Results without locations come first sorted by message,
+/// then results with locations sorted by (file, line, col, rule_id).
 fn sort_results(results: &mut [sarif::Result]) {
     results.sort_by(|a, b| {
         let a_loc = a
@@ -213,10 +244,13 @@ fn sort_results(results: &mut [sarif::Result]) {
                     .as_ref()
                     .and_then(|r| r.start_column)
                     .unwrap_or(0);
+                let a_rule = a.rule_id.as_deref().unwrap_or("");
+                let b_rule = b.rule_id.as_deref().unwrap_or("");
                 a_uri
                     .cmp(b_uri)
                     .then(a_line.cmp(&b_line))
                     .then(a_col.cmp(&b_col))
+                    .then(a_rule.cmp(b_rule))
             }
         }
     });
@@ -408,7 +442,6 @@ mod tests {
         let results = run.results.as_ref().unwrap();
         assert_eq!(results.len(), 2);
 
-        // Violation (no location) comes first after sorting
         let violation_result = results
             .iter()
             .find(|r| r.rule_id.as_deref() == Some("budget_violation"))
@@ -420,6 +453,17 @@ mod tests {
             .as_ref()
             .unwrap()
             .contains("exceeds budget"));
+
+        // Violation includes locations from matching occurrences
+        let locs = violation_result.locations.as_ref().unwrap();
+        assert_eq!(locs.len(), 1);
+        let pl = locs[0].physical_location.as_ref().unwrap();
+        assert_eq!(
+            pl.artifact_location.as_ref().unwrap().uri.as_deref(),
+            Some("src/lib.rs")
+        );
+        assert_eq!(pl.region.as_ref().unwrap().start_line, Some(10));
+        assert_eq!(pl.region.as_ref().unwrap().start_column, Some(5));
     }
 
     #[test]
@@ -497,6 +541,16 @@ mod tests {
             .as_ref()
             .unwrap()
             .contains("near its budget"));
+
+        // Warning includes locations from matching occurrences
+        let locs = warning_result.locations.as_ref().unwrap();
+        assert_eq!(locs.len(), 1);
+        let pl = locs[0].physical_location.as_ref().unwrap();
+        assert_eq!(
+            pl.artifact_location.as_ref().unwrap().uri.as_deref(),
+            Some("src/lib.rs")
+        );
+        assert_eq!(pl.region.as_ref().unwrap().start_line, Some(10));
     }
 
     #[test]
@@ -570,5 +624,152 @@ mod tests {
         );
         assert!(parsed["runs"].is_array());
         assert!(parsed["runs"][0]["results"].is_array());
+    }
+
+    #[test]
+    fn test_check_to_sarif_violation_no_matching_occurrences() {
+        // Occurrences are for "my_crate" but violation is for "other_crate"
+        let scan = make_scan_result(vec![Occurrence {
+            unit: "my_crate".into(),
+            file: PathBuf::from("src/lib.rs"),
+            line: 10,
+            col: 5,
+            message: Some("unsafe block".into()),
+        }]);
+
+        let check = CheckResult {
+            scan,
+            violations: vec![Violation {
+                unit: "other_crate".into(),
+                kind: UnitKind::Dep,
+                baseline: 0,
+                actual: 2,
+                delta: 2,
+            }],
+            warnings: vec![],
+            passed: false,
+        };
+
+        let sarif = check_to_sarif(&check);
+        let results = sarif.runs[0].results.as_ref().unwrap();
+
+        let violation_result = results
+            .iter()
+            .find(|r| r.rule_id.as_deref() == Some("budget_violation"))
+            .unwrap();
+
+        // No matching occurrences => no locations
+        assert!(violation_result.locations.is_none());
+    }
+
+    #[test]
+    fn test_check_to_sarif_violation_multiple_occurrences() {
+        let details = vec![
+            Occurrence {
+                unit: "my_crate".into(),
+                file: PathBuf::from("src/lib.rs"),
+                line: 20,
+                col: 1,
+                message: Some("second".into()),
+            },
+            Occurrence {
+                unit: "other_crate".into(),
+                file: PathBuf::from("other/src/lib.rs"),
+                line: 1,
+                col: 1,
+                message: Some("unrelated".into()),
+            },
+            Occurrence {
+                unit: "my_crate".into(),
+                file: PathBuf::from("src/lib.rs"),
+                line: 10,
+                col: 5,
+                message: Some("first".into()),
+            },
+        ];
+        let scan = make_scan_result(details);
+
+        let check = CheckResult {
+            scan,
+            violations: vec![Violation {
+                unit: "my_crate".into(),
+                kind: UnitKind::Workspace,
+                baseline: 1,
+                actual: 2,
+                delta: 1,
+            }],
+            warnings: vec![],
+            passed: false,
+        };
+
+        let sarif = check_to_sarif(&check);
+        let results = sarif.runs[0].results.as_ref().unwrap();
+
+        let violation_result = results
+            .iter()
+            .find(|r| r.rule_id.as_deref() == Some("budget_violation"))
+            .unwrap();
+
+        // Only my_crate occurrences, sorted by file/line/col
+        let locs = violation_result.locations.as_ref().unwrap();
+        assert_eq!(locs.len(), 2);
+        assert_eq!(
+            locs[0]
+                .physical_location
+                .as_ref()
+                .unwrap()
+                .region
+                .as_ref()
+                .unwrap()
+                .start_line,
+            Some(10)
+        );
+        assert_eq!(
+            locs[1]
+                .physical_location
+                .as_ref()
+                .unwrap()
+                .region
+                .as_ref()
+                .unwrap()
+                .start_line,
+            Some(20)
+        );
+    }
+
+    #[test]
+    fn test_check_to_sarif_sort_with_located_violations() {
+        let details = vec![Occurrence {
+            unit: "my_crate".into(),
+            file: PathBuf::from("src/lib.rs"),
+            line: 10,
+            col: 5,
+            message: Some("unsafe block".into()),
+        }];
+        let scan = make_scan_result(details);
+
+        let check = CheckResult {
+            scan,
+            violations: vec![Violation {
+                unit: "my_crate".into(),
+                kind: UnitKind::Workspace,
+                baseline: 0,
+                actual: 1,
+                delta: 1,
+            }],
+            warnings: vec![],
+            passed: false,
+        };
+
+        let sarif = check_to_sarif(&check);
+        let results = sarif.runs[0].results.as_ref().unwrap();
+        assert_eq!(results.len(), 2);
+
+        // Both at same location; budget_violation sorts before unsafe_code
+        let rule_ids: Vec<_> = results
+            .iter()
+            .map(|r| r.rule_id.as_deref().unwrap())
+            .collect();
+        assert_eq!(rule_ids, vec!["budget_violation", "unsafe_code"]);
     }
 }
