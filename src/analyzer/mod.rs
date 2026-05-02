@@ -7,6 +7,7 @@ pub mod sarif;
 use crate::error::{Error, Result};
 use crate::model::{Occurrence, ScanOpts, ScanResult, Unit, UnitKind};
 use std::collections::{HashMap, HashSet};
+use std::process::Command;
 
 /// Trait for unsafe code analyzers.
 pub trait Analyzer {
@@ -119,6 +120,33 @@ pub fn list_analyzers() -> Vec<AnalyzerInfo> {
 
     analyzers.extend(plugin::discover_plugins());
     analyzers
+}
+
+/// Apply common cargo CLI flags from `ScanOpts` to a command.
+///
+/// Adds `--all-features`, `--no-default-features`, `--features`,
+/// `--all-targets`, `--target`, and `--manifest-path` flags as appropriate.
+pub(crate) fn apply_cargo_flags(cmd: &mut Command, opts: &ScanOpts) {
+    if opts.all_features {
+        cmd.arg("--all-features");
+    }
+    if opts.no_default_features {
+        cmd.arg("--no-default-features");
+    }
+    for feature in &opts.features {
+        cmd.arg("--features").arg(feature);
+    }
+
+    if opts.all_targets {
+        cmd.arg("--all-targets");
+    }
+    for target in &opts.targets {
+        cmd.arg("--target").arg(target);
+    }
+
+    if let Some(ref path) = opts.manifest_path {
+        cmd.arg("--manifest-path").arg(path);
+    }
 }
 
 /// Aggregate pre-collected unit counts and occurrences into sorted, filtered
@@ -379,5 +407,87 @@ mod tests {
 
         assert!(units.is_empty());
         assert!(details.is_empty());
+    }
+
+    #[test]
+    fn test_apply_cargo_flags_default_opts() {
+        let opts = ScanOpts::default();
+        let mut cmd = Command::new("cargo");
+        apply_cargo_flags(&mut cmd, &opts);
+
+        let args: Vec<_> = cmd.get_args().collect::<Vec<_>>();
+        assert!(args.is_empty());
+    }
+
+    #[test]
+    fn test_apply_cargo_flags_all_flags() {
+        let opts = ScanOpts {
+            all_features: true,
+            no_default_features: true,
+            features: vec!["feat1".into(), "feat2".into()],
+            all_targets: true,
+            targets: vec!["x86_64-unknown-linux-gnu".into()],
+            manifest_path: Some(PathBuf::from("/path/to/Cargo.toml")),
+            ..Default::default()
+        };
+        let mut cmd = Command::new("cargo");
+        apply_cargo_flags(&mut cmd, &opts);
+
+        let args: Vec<_> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect();
+        assert!(args.contains(&"--all-features".to_string()));
+        assert!(args.contains(&"--no-default-features".to_string()));
+        assert!(args.contains(&"--all-targets".to_string()));
+        assert!(args.contains(&"--manifest-path".to_string()));
+        assert!(args.contains(&"/path/to/Cargo.toml".to_string()));
+
+        // Check features are paired correctly
+        let feat_positions: Vec<_> = args
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| a.as_str() == "--features")
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(feat_positions.len(), 2);
+        assert_eq!(args[feat_positions[0] + 1], "feat1");
+        assert_eq!(args[feat_positions[1] + 1], "feat2");
+
+        // Check target is paired correctly
+        let target_pos = args.iter().position(|a| a == "--target").unwrap();
+        assert_eq!(args[target_pos + 1], "x86_64-unknown-linux-gnu");
+    }
+
+    #[test]
+    fn test_apply_cargo_flags_features_only() {
+        let opts = ScanOpts {
+            features: vec!["serde".into()],
+            ..Default::default()
+        };
+        let mut cmd = Command::new("cargo");
+        apply_cargo_flags(&mut cmd, &opts);
+
+        let args: Vec<_> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect();
+        assert_eq!(args, vec!["--features", "serde"]);
+    }
+
+    #[test]
+    fn test_apply_cargo_flags_manifest_path_only() {
+        let opts = ScanOpts {
+            manifest_path: Some(PathBuf::from("sub/Cargo.toml")),
+            ..Default::default()
+        };
+        let mut cmd = Command::new("cargo");
+        apply_cargo_flags(&mut cmd, &opts);
+
+        let args: Vec<_> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect();
+        assert_eq!(args, vec!["--manifest-path", "sub/Cargo.toml"]);
     }
 }

@@ -83,29 +83,7 @@ fn run_cargo_check(opts: &ScanOpts) -> Result<(Vec<u8>, String)> {
     };
     cmd.env("RUSTFLAGS", new_flags);
 
-    // Add feature flags
-    if opts.all_features {
-        cmd.arg("--all-features");
-    }
-    if opts.no_default_features {
-        cmd.arg("--no-default-features");
-    }
-    for feature in &opts.features {
-        cmd.arg("--features").arg(feature);
-    }
-
-    // Add target flags
-    if opts.all_targets {
-        cmd.arg("--all-targets");
-    }
-    for target in &opts.targets {
-        cmd.arg("--target").arg(target);
-    }
-
-    // Add manifest path
-    if let Some(ref path) = opts.manifest_path {
-        cmd.arg("--manifest-path").arg(path);
-    }
+    super::apply_cargo_flags(&mut cmd, opts);
 
     // Add workspace flag if needed
     if !opts.workspace_only {

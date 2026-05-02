@@ -56,21 +56,12 @@ pub fn check_to_sarif(result: &CheckResult) -> sarif::Sarif {
             v.unit, v.actual, v.baseline, v.delta
         );
         let locations = locations_for_unit(&v.unit, &result.scan.details);
-        let msg = sarif::Message::builder().text(message).build();
-        results.push(if locations.is_empty() {
-            sarif::Result::builder()
-                .rule_id(RULE_BUDGET_VIOLATION.to_string())
-                .level(sarif::ResultLevel::Error)
-                .message(msg)
-                .build()
-        } else {
-            sarif::Result::builder()
-                .rule_id(RULE_BUDGET_VIOLATION.to_string())
-                .level(sarif::ResultLevel::Error)
-                .message(msg)
-                .locations(locations)
-                .build()
-        });
+        results.push(make_budget_result(
+            RULE_BUDGET_VIOLATION,
+            sarif::ResultLevel::Error,
+            message,
+            locations,
+        ));
     }
 
     for w in &result.warnings {
@@ -79,21 +70,12 @@ pub fn check_to_sarif(result: &CheckResult) -> sarif::Sarif {
             w.unit, w.actual, w.budget
         );
         let locations = locations_for_unit(&w.unit, &result.scan.details);
-        let msg = sarif::Message::builder().text(message).build();
-        results.push(if locations.is_empty() {
-            sarif::Result::builder()
-                .rule_id(RULE_BUDGET_WARNING.to_string())
-                .level(sarif::ResultLevel::Note)
-                .message(msg)
-                .build()
-        } else {
-            sarif::Result::builder()
-                .rule_id(RULE_BUDGET_WARNING.to_string())
-                .level(sarif::ResultLevel::Note)
-                .message(msg)
-                .locations(locations)
-                .build()
-        });
+        results.push(make_budget_result(
+            RULE_BUDGET_WARNING,
+            sarif::ResultLevel::Note,
+            message,
+            locations,
+        ));
     }
 
     sort_results(&mut results);
@@ -148,6 +130,29 @@ fn make_budget_warning_rule() -> sarif::ReportingDescriptor {
                 .build(),
         )
         .build()
+}
+
+fn make_budget_result(
+    rule_id: &str,
+    level: sarif::ResultLevel,
+    message: String,
+    locations: Vec<sarif::Location>,
+) -> sarif::Result {
+    let msg = sarif::Message::builder().text(message).build();
+    if locations.is_empty() {
+        sarif::Result::builder()
+            .rule_id(rule_id.to_string())
+            .level(level)
+            .message(msg)
+            .build()
+    } else {
+        sarif::Result::builder()
+            .rule_id(rule_id.to_string())
+            .level(level)
+            .message(msg)
+            .locations(locations)
+            .build()
+    }
 }
 
 fn make_location(occ: &crate::model::Occurrence) -> sarif::Location {
@@ -771,5 +776,57 @@ mod tests {
             .map(|r| r.rule_id.as_deref().unwrap())
             .collect();
         assert_eq!(rule_ids, vec!["budget_violation", "unsafe_code"]);
+    }
+
+    #[test]
+    fn test_make_budget_result_without_locations() {
+        let result = make_budget_result(
+            RULE_BUDGET_VIOLATION,
+            sarif::ResultLevel::Error,
+            "unit 'foo' exceeds budget".into(),
+            vec![],
+        );
+
+        assert_eq!(result.rule_id.as_deref(), Some(RULE_BUDGET_VIOLATION));
+        assert_eq!(result.level, Some(sarif::ResultLevel::Error));
+        assert_eq!(
+            result.message.text.as_deref(),
+            Some("unit 'foo' exceeds budget")
+        );
+        assert!(result.locations.is_none());
+    }
+
+    #[test]
+    fn test_make_budget_result_with_locations() {
+        let occ = Occurrence {
+            unit: "foo".into(),
+            file: PathBuf::from("src/lib.rs"),
+            line: 42,
+            col: 1,
+            message: None,
+        };
+        let locations = vec![make_location(&occ)];
+
+        let result = make_budget_result(
+            RULE_BUDGET_WARNING,
+            sarif::ResultLevel::Note,
+            "unit 'foo' is near its budget".into(),
+            locations,
+        );
+
+        assert_eq!(result.rule_id.as_deref(), Some(RULE_BUDGET_WARNING));
+        assert_eq!(result.level, Some(sarif::ResultLevel::Note));
+        assert_eq!(
+            result.message.text.as_deref(),
+            Some("unit 'foo' is near its budget")
+        );
+        let locs = result.locations.as_ref().unwrap();
+        assert_eq!(locs.len(), 1);
+        let pl = locs[0].physical_location.as_ref().unwrap();
+        assert_eq!(
+            pl.artifact_location.as_ref().unwrap().uri.as_deref(),
+            Some("src/lib.rs")
+        );
+        assert_eq!(pl.region.as_ref().unwrap().start_line, Some(42));
     }
 }
