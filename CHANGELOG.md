@@ -13,6 +13,8 @@
 - fix `apply_ignore_filter` silently zeroing all unit counts when the analyzer produces no detail occurrences (e.g. `cargo_geiger`); `[[ignore]]` entries are now correctly skipped when there are no line-level details to filter
 - extract shared `aggregate_units` helper in `analyzer/mod.rs` so rustc, cargo-geiger, and SARIF analyzers share one filter/sort path instead of three
 - propagate `current_dir()` failure as an error instead of silently falling back to `"."` in `get_project_dir()` and `detect_analyzer()`
+- extract `apply_cargo_flags()` helper in `analyzer/mod.rs` to deduplicate cargo CLI flag building (features, targets, manifest-path) across `rustc` and `cargo_geiger` analyzers
+- extract `make_budget_result()` helper in `sarif.rs` to deduplicate SARIF violation/warning result construction in `check_to_sarif()`
 
 ## [0.3.0] - 2026-04-17
 
