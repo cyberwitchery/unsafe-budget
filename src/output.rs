@@ -1,7 +1,7 @@
 use crate::analyzer::AnalyzerInfo;
 use crate::config::Baseline;
-use crate::model::{CheckResult, ScanResult, Unit, Violation, Warning};
-use std::collections::HashMap;
+use crate::model::{CheckResult, Occurrence, ScanResult, Unit, Violation, Warning};
+use std::collections::{BTreeMap, HashMap};
 use std::io::{self, Write};
 
 /// Output format.
@@ -126,6 +126,8 @@ fn print_scan_text(out: &mut impl Write, result: &ScanResult) -> io::Result<()> 
             unit.unsafe_count
         )?;
     }
+
+    print_details_text(out, &result.details)?;
 
     Ok(())
 }
@@ -290,6 +292,8 @@ fn print_check_text(
         }
     }
 
+    print_details_text(out, &result.scan.details)?;
+
     Ok(())
 }
 
@@ -317,6 +321,43 @@ fn print_plugins_text(out: &mut impl Write, plugins: &[AnalyzerInfo]) -> io::Res
             "  {:<20} {:<12} {:<10} {}",
             p.id, p.language, typ, path
         )?;
+    }
+
+    Ok(())
+}
+
+fn print_details_text(out: &mut impl Write, details: &[Occurrence]) -> io::Result<()> {
+    if details.is_empty() {
+        return Ok(());
+    }
+
+    // Group by unit, sorted by unit name
+    let mut by_unit: BTreeMap<&str, Vec<&Occurrence>> = BTreeMap::new();
+    for occ in details {
+        by_unit.entry(&occ.unit).or_default().push(occ);
+    }
+
+    writeln!(out)?;
+    writeln!(out, "Details:")?;
+
+    for (unit, mut occs) in by_unit {
+        // Sort by file, then line, then column
+        occs.sort_by(|a, b| {
+            a.file
+                .cmp(&b.file)
+                .then(a.line.cmp(&b.line))
+                .then(a.col.cmp(&b.col))
+        });
+
+        writeln!(out, "  {}:", unit)?;
+        for occ in occs {
+            let loc = format!("{}:{}:{}", occ.file.display(), occ.line, occ.col);
+            if let Some(msg) = &occ.message {
+                writeln!(out, "    {} — {}", loc, msg)?;
+            } else {
+                writeln!(out, "    {}", loc)?;
+            }
+        }
     }
 
     Ok(())
@@ -564,5 +605,193 @@ mod tests {
         let output = String::from_utf8(buf).unwrap();
 
         assert!(output.contains("(none)"));
+    }
+
+    fn make_occurrences() -> Vec<Occurrence> {
+        vec![
+            Occurrence {
+                unit: "my_crate".into(),
+                file: "src/lib.rs".into(),
+                line: 10,
+                col: 5,
+                message: Some("unsafe block".into()),
+            },
+            Occurrence {
+                unit: "my_crate".into(),
+                file: "src/lib.rs".into(),
+                line: 25,
+                col: 9,
+                message: Some("unsafe impl".into()),
+            },
+            Occurrence {
+                unit: "dep_a".into(),
+                file: "src/ffi.rs".into(),
+                line: 3,
+                col: 1,
+                message: None,
+            },
+            Occurrence {
+                unit: "my_crate".into(),
+                file: "src/api.rs".into(),
+                line: 42,
+                col: 13,
+                message: Some("unsafe function call".into()),
+            },
+        ]
+    }
+
+    #[test]
+    fn test_print_details_text_grouped_by_unit() {
+        let details = make_occurrences();
+        let mut buf = Vec::new();
+        print_details_text(&mut buf, &details).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+
+        assert!(output.contains("Details:"));
+        // Units sorted alphabetically
+        let dep_pos = output.find("dep_a:").unwrap();
+        let crate_pos = output.find("my_crate:").unwrap();
+        assert!(dep_pos < crate_pos, "dep_a should appear before my_crate");
+    }
+
+    #[test]
+    fn test_print_details_text_sorted_within_unit() {
+        let details = make_occurrences();
+        let mut buf = Vec::new();
+        print_details_text(&mut buf, &details).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+
+        // Within my_crate: src/api.rs should come before src/lib.rs
+        let api_pos = output.find("src/api.rs:42:13").unwrap();
+        let lib10_pos = output.find("src/lib.rs:10:5").unwrap();
+        let lib25_pos = output.find("src/lib.rs:25:9").unwrap();
+        assert!(api_pos < lib10_pos);
+        assert!(lib10_pos < lib25_pos);
+    }
+
+    #[test]
+    fn test_print_details_text_with_message() {
+        let details = make_occurrences();
+        let mut buf = Vec::new();
+        print_details_text(&mut buf, &details).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+
+        assert!(output.contains("src/lib.rs:10:5 — unsafe block"));
+        assert!(output.contains("src/api.rs:42:13 — unsafe function call"));
+    }
+
+    #[test]
+    fn test_print_details_text_without_message() {
+        let details = make_occurrences();
+        let mut buf = Vec::new();
+        print_details_text(&mut buf, &details).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+
+        // dep_a occurrence has no message - just the location
+        assert!(output.contains("src/ffi.rs:3:1\n"));
+        assert!(!output.contains("src/ffi.rs:3:1 —"));
+    }
+
+    #[test]
+    fn test_print_details_text_empty() {
+        let details: Vec<Occurrence> = vec![];
+        let mut buf = Vec::new();
+        print_details_text(&mut buf, &details).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+
+        assert!(output.is_empty(), "empty details should produce no output");
+    }
+
+    #[test]
+    fn test_print_scan_text_with_details() {
+        let mut result = make_scan_result();
+        result.details = make_occurrences();
+
+        let mut buf = Vec::new();
+        print_scan_text(&mut buf, &result).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+
+        // Should still have the normal scan header
+        assert!(output.contains("unsafe-budget scan"));
+        assert!(output.contains("Per-unit breakdown:"));
+        // And also the details section
+        assert!(output.contains("Details:"));
+        assert!(output.contains("my_crate:"));
+        assert!(output.contains("src/lib.rs:10:5 — unsafe block"));
+    }
+
+    #[test]
+    fn test_print_scan_text_without_details() {
+        let result = make_scan_result();
+        let mut buf = Vec::new();
+        print_scan_text(&mut buf, &result).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+
+        assert!(!output.contains("Details:"));
+    }
+
+    #[test]
+    fn test_print_check_text_with_details() {
+        let mut scan = make_scan_result();
+        scan.details = make_occurrences();
+
+        let check = CheckResult {
+            scan,
+            violations: vec![Violation {
+                unit: "my_crate".into(),
+                kind: UnitKind::Workspace,
+                baseline: 5,
+                actual: 10,
+                delta: 5,
+            }],
+            warnings: vec![],
+            passed: false,
+        };
+
+        let mut buf = Vec::new();
+        print_check_text(&mut buf, &check, None).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+
+        // Should have violations AND details
+        assert!(output.contains("Violations (1):"));
+        assert!(output.contains("Details:"));
+        assert!(output.contains("dep_a:"));
+        assert!(output.contains("src/ffi.rs:3:1"));
+    }
+
+    #[test]
+    fn test_print_check_text_without_details() {
+        let scan = make_scan_result();
+        let check = CheckResult {
+            scan,
+            violations: vec![],
+            warnings: vec![],
+            passed: true,
+        };
+
+        let mut buf = Vec::new();
+        print_check_text(&mut buf, &check, None).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+
+        assert!(!output.contains("Details:"));
+    }
+
+    #[test]
+    fn test_print_details_text_single_occurrence() {
+        let details = vec![Occurrence {
+            unit: "only_crate".into(),
+            file: "src/main.rs".into(),
+            line: 1,
+            col: 1,
+            message: Some("unsafe fn".into()),
+        }];
+
+        let mut buf = Vec::new();
+        print_details_text(&mut buf, &details).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+
+        assert!(output.contains("Details:"));
+        assert!(output.contains("  only_crate:"));
+        assert!(output.contains("    src/main.rs:1:1 — unsafe fn"));
     }
 }
