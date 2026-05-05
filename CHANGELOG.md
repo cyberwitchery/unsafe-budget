@@ -2,6 +2,8 @@
 
 ## [unreleased]
 
+- show individual unsafe occurrences in text output when `--details` is passed; occurrences are grouped by unit and sorted by file/line/col, matching the detail level already available in JSON and SARIF formats
+- respect `--details` flag in `check` command (previously only `scan` filtered details)
 - enrich SARIF `budget_violation` and `budget_warning` results with file-level locations by correlating them with occurrence data from the same unit; GitHub code scanning now points to specific files instead of showing repo-level alerts
 - track `all_features` and `no_default_features` in scan scope so baseline-vs-check comparisons detect feature flag mismatches
 - warn to stderr when `check` scope differs from baseline scope (e.g. `--all-features` used during `update` but not `check`), listing which fields changed

@@ -77,7 +77,12 @@ fn cmd_check(args: ScanArgs) -> Result<ExitCode> {
         }
     }
 
-    let check_result = budget::check(&result, baseline.as_ref(), &config)?;
+    let mut check_result = budget::check(&result, baseline.as_ref(), &config)?;
+
+    // Filter details if not requested
+    if !args.details {
+        check_result.scan.details.clear();
+    }
 
     output::print_check(&check_result, baseline.as_ref(), args.format)?;
 
