@@ -2,6 +2,8 @@
 
 ## [unreleased]
 
+- fix `go_geiger` analyzer silently emitting line/col 0 for malformed output lines; these lines are now skipped entirely
+
 ## [0.4.0] - 2026-05-06
 
 - show individual unsafe occurrences in text output when `--details` is passed; occurrences are grouped by unit and sorted by file/line/col, matching the detail level already available in JSON and SARIF formats
