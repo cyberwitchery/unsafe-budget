@@ -2,6 +2,7 @@
 
 ## [unreleased]
 
+- add `--format html` output: a self-contained HTML document with embedded CSS showing totals, per-unit breakdown, violations, warnings, and occurrence details; suitable for CI artifacts and stakeholder reports
 - fix `go_geiger` analyzer silently emitting line/col 0 for malformed output lines; these lines are now skipped with a warning to stderr
 
 ## [0.4.0] - 2026-05-06
