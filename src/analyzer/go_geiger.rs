@@ -86,8 +86,14 @@ fn parse_geiger_output(output: &[u8], opts: &ScanOpts) -> Result<(Vec<Unit>, Vec
         }
 
         let file = PathBuf::from(parts[0]);
-        let line_num: u32 = parts[1].parse().unwrap_or(0);
-        let col: u32 = parts[2].trim().parse().unwrap_or(0);
+        let Ok(line_num) = parts[1].parse::<u32>() else {
+            eprintln!("warning: go-geiger: skipping line with unparseable line number: {line}");
+            continue;
+        };
+        let Ok(col) = parts[2].trim().parse::<u32>() else {
+            eprintln!("warning: go-geiger: skipping line with unparseable column number: {line}");
+            continue;
+        };
         let message = parts.get(3).map(|s| s.trim().to_string());
 
         // Determine package name from file path
@@ -281,6 +287,22 @@ mod tests {
 
         assert_eq!(units.len(), 1);
         assert_eq!(details.len(), 1);
+    }
+
+    #[test]
+    fn test_parse_geiger_output_malformed_line_col_skipped() {
+        let output = b"/home/user/project/main.go:abc:5: unsafe.Pointer\n\
+                       /home/user/project/main.go:10:xyz: unsafe.Sizeof\n\
+                       /home/user/project/main.go:20:3: unsafe.Pointer\n";
+
+        let opts = ScanOpts::default();
+        let (units, details) = parse_geiger_output(output, &opts).unwrap();
+
+        assert_eq!(details.len(), 1);
+        assert_eq!(details[0].line, 20);
+        assert_eq!(details[0].col, 3);
+        assert_eq!(units.len(), 1);
+        assert_eq!(units[0].unsafe_count, 1);
     }
 
     #[test]
