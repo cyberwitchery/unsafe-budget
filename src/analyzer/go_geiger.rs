@@ -86,7 +86,7 @@ fn parse_geiger_output(output: &[u8], opts: &ScanOpts) -> Result<(Vec<Unit>, Vec
         }
 
         let file = PathBuf::from(parts[0]);
-        let Ok(line_num) = parts[1].parse::<u32>() else {
+        let Ok(line_num) = parts[1].trim().parse::<u32>() else {
             eprintln!("warning: go-geiger: skipping line with unparseable line number: {line}");
             continue;
         };
@@ -303,6 +303,19 @@ mod tests {
         assert_eq!(details[0].col, 3);
         assert_eq!(units.len(), 1);
         assert_eq!(units[0].unsafe_count, 1);
+    }
+
+    #[test]
+    fn test_parse_geiger_output_whitespace_padded_numbers() {
+        let output = b"/home/user/project/main.go: 10 : 5 : unsafe.Pointer\n";
+
+        let opts = ScanOpts::default();
+        let (units, details) = parse_geiger_output(output, &opts).unwrap();
+
+        assert_eq!(details.len(), 1);
+        assert_eq!(details[0].line, 10);
+        assert_eq!(details[0].col, 5);
+        assert_eq!(units.len(), 1);
     }
 
     #[test]
