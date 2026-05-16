@@ -2,7 +2,7 @@
 
 ## [unreleased]
 
-- fix `go_geiger` analyzer silently emitting line/col 0 for malformed output lines; these lines are now skipped entirely
+- fix `go_geiger` analyzer silently emitting line/col 0 for malformed output lines; these lines are now skipped with a warning to stderr
 
 ## [0.4.0] - 2026-05-06
 
