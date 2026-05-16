@@ -87,9 +87,11 @@ fn parse_geiger_output(output: &[u8], opts: &ScanOpts) -> Result<(Vec<Unit>, Vec
 
         let file = PathBuf::from(parts[0]);
         let Ok(line_num) = parts[1].parse::<u32>() else {
+            eprintln!("warning: go-geiger: skipping line with unparseable line number: {line}");
             continue;
         };
         let Ok(col) = parts[2].trim().parse::<u32>() else {
+            eprintln!("warning: go-geiger: skipping line with unparseable column number: {line}");
             continue;
         };
         let message = parts.get(3).map(|s| s.trim().to_string());
