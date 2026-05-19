@@ -271,6 +271,7 @@ impl Totals {
 ///         overall_unsafe: 5,
 ///     },
 ///     details: vec![],
+///     parse_warnings: vec![],
 /// };
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -290,6 +291,9 @@ pub struct ScanResult {
     /// optional line-level details.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub details: Vec<Occurrence>,
+    /// warnings emitted while parsing analyzer output.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parse_warnings: Vec<ParseWarning>,
 }
 
 impl ScanResult {
@@ -313,8 +317,21 @@ impl ScanResult {
             units,
             totals,
             details,
+            parse_warnings: Vec::new(),
         }
     }
+}
+
+/// a warning emitted during output parsing.
+///
+/// records when an analyzer encounters a line it cannot fully parse
+/// but can safely skip.  these are accumulated in [`ScanResult`] so
+/// they flow through json/sarif output instead of being written to
+/// stderr.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ParseWarning {
+    /// human-readable description of what went wrong.
+    pub message: String,
 }
 
 /// a budget violation.

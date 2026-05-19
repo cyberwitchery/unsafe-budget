@@ -88,6 +88,7 @@ fn test_budget_logic() {
             overall_unsafe: 25,
         },
         details: vec![],
+        parse_warnings: vec![],
     };
 
     let baseline = Baseline {

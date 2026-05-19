@@ -291,6 +291,7 @@ mod tests {
                     message: None,
                 },
             ],
+            parse_warnings: vec![],
         }
     }
 
@@ -318,6 +319,7 @@ mod tests {
                 overall_unsafe: 210,
             },
             details: vec![],
+            parse_warnings: vec![],
         }
     }
 
