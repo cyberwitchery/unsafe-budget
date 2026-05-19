@@ -10,17 +10,22 @@ const SARIF_SCHEMA: &str = "https://json.schemastore.org/sarif-2.1.0.json";
 const RULE_UNSAFE_CODE: &str = "unsafe_code";
 const RULE_BUDGET_VIOLATION: &str = "budget_violation";
 const RULE_BUDGET_WARNING: &str = "budget_warning";
+const RULE_PARSE_WARNING: &str = "parse_warning";
 
 /// Convert a scan result into a SARIF 2.1.0 log.
 ///
 /// Each occurrence becomes a SARIF result with level "warning".
 /// If there are no details (occurrences), the results array will be empty.
 pub fn scan_to_sarif(result: &ScanResult) -> sarif::Sarif {
-    let rules = vec![make_unsafe_code_rule()];
+    let mut rules = vec![make_unsafe_code_rule()];
+    if !result.parse_warnings.is_empty() {
+        rules.push(make_parse_warning_rule());
+    }
     let driver = make_driver(&result.tool_version, rules);
     let tool = sarif::Tool::builder().driver(driver).build();
 
     let mut results = make_occurrence_results(&result.details);
+    append_parse_warning_results(&mut results, &result.parse_warnings);
     sort_results(&mut results);
 
     sarif::Sarif::builder()
@@ -43,6 +48,9 @@ pub fn check_to_sarif(result: &CheckResult) -> sarif::Sarif {
     }
     if !result.warnings.is_empty() {
         rules.push(make_budget_warning_rule());
+    }
+    if !result.scan.parse_warnings.is_empty() {
+        rules.push(make_parse_warning_rule());
     }
 
     let driver = make_driver(&result.scan.tool_version, rules);
@@ -78,6 +86,7 @@ pub fn check_to_sarif(result: &CheckResult) -> sarif::Sarif {
         ));
     }
 
+    append_parse_warning_results(&mut results, &result.scan.parse_warnings);
     sort_results(&mut results);
 
     sarif::Sarif::builder()
@@ -130,6 +139,32 @@ fn make_budget_warning_rule() -> sarif::ReportingDescriptor {
                 .build(),
         )
         .build()
+}
+
+fn make_parse_warning_rule() -> sarif::ReportingDescriptor {
+    sarif::ReportingDescriptor::builder()
+        .id(RULE_PARSE_WARNING)
+        .short_description(
+            sarif::MultiformatMessageString::builder()
+                .text("Analyzer output contained unparseable lines")
+                .build(),
+        )
+        .build()
+}
+
+fn append_parse_warning_results(
+    results: &mut Vec<sarif::Result>,
+    warnings: &[crate::model::ParseWarning],
+) {
+    for w in warnings {
+        results.push(
+            sarif::Result::builder()
+                .rule_id(RULE_PARSE_WARNING.to_string())
+                .level(sarif::ResultLevel::Note)
+                .message(sarif::Message::builder().text(w.message.clone()).build())
+                .build(),
+        );
+    }
 }
 
 fn make_budget_result(
@@ -295,6 +330,7 @@ mod tests {
                 overall_unsafe: details.len() as u64,
             },
             details,
+            parse_warnings: vec![],
         }
     }
 
@@ -828,5 +864,75 @@ mod tests {
             Some("src/lib.rs")
         );
         assert_eq!(pl.region.as_ref().unwrap().start_line, Some(42));
+    }
+
+    #[test]
+    fn test_scan_to_sarif_with_parse_warnings() {
+        let mut scan = make_scan_result(vec![]);
+        scan.parse_warnings = vec![
+            crate::model::ParseWarning {
+                message: "go-geiger: skipping line with unparseable line number: foo:abc:1: x"
+                    .into(),
+            },
+            crate::model::ParseWarning {
+                message: "go-geiger: skipping line with unparseable column number: foo:1:xyz: x"
+                    .into(),
+            },
+        ];
+
+        let sarif = scan_to_sarif(&scan);
+        let run = &sarif.runs[0];
+
+        let rules = run.tool.driver.rules.as_ref().unwrap();
+        let rule_ids: Vec<_> = rules.iter().map(|r| r.id.as_str()).collect();
+        assert!(rule_ids.contains(&"parse_warning"));
+
+        let results = run.results.as_ref().unwrap();
+        assert_eq!(results.len(), 2);
+
+        for r in results {
+            assert_eq!(r.rule_id.as_deref(), Some("parse_warning"));
+            assert_eq!(r.level, Some(sarif::ResultLevel::Note));
+            assert!(r.locations.is_none());
+        }
+    }
+
+    #[test]
+    fn test_scan_to_sarif_no_parse_warning_rule_when_empty() {
+        let scan = make_scan_result(vec![]);
+        let sarif = scan_to_sarif(&scan);
+        let rules = sarif.runs[0].tool.driver.rules.as_ref().unwrap();
+        let rule_ids: Vec<_> = rules.iter().map(|r| r.id.as_str()).collect();
+        assert!(!rule_ids.contains(&"parse_warning"));
+    }
+
+    #[test]
+    fn test_check_to_sarif_with_parse_warnings() {
+        let mut scan = make_scan_result(vec![]);
+        scan.parse_warnings = vec![crate::model::ParseWarning {
+            message: "go-geiger: test warning".into(),
+        }];
+
+        let check = CheckResult {
+            scan,
+            violations: vec![],
+            warnings: vec![],
+            passed: true,
+        };
+
+        let sarif = check_to_sarif(&check);
+        let run = &sarif.runs[0];
+
+        let rules = run.tool.driver.rules.as_ref().unwrap();
+        let rule_ids: Vec<_> = rules.iter().map(|r| r.id.as_str()).collect();
+        assert!(rule_ids.contains(&"parse_warning"));
+
+        let results = run.results.as_ref().unwrap();
+        let pw = results
+            .iter()
+            .find(|r| r.rule_id.as_deref() == Some("parse_warning"))
+            .unwrap();
+        assert_eq!(pw.level, Some(sarif::ResultLevel::Note));
+        assert!(pw.message.text.as_ref().unwrap().contains("test warning"));
     }
 }

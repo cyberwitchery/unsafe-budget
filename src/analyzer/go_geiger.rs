@@ -1,6 +1,6 @@
 use crate::analyzer::Analyzer;
 use crate::error::{Error, Result};
-use crate::model::{Occurrence, ScanOpts, ScanResult, Unit, UnitKind};
+use crate::model::{Occurrence, ParseWarning, ScanOpts, ScanResult, Unit, UnitKind};
 use std::collections::HashMap;
 use std::io::BufRead;
 use std::path::PathBuf;
@@ -19,15 +19,11 @@ impl Analyzer for GoGeigerAnalyzer {
 
     fn run(&self, opts: &ScanOpts) -> Result<ScanResult> {
         let output = run_go_geiger(opts)?;
-        let (units, details) = parse_geiger_output(&output, opts)?;
+        let (units, details, warnings) = parse_geiger_output(&output, opts)?;
 
-        Ok(ScanResult::from_parts(
-            self.id(),
-            self.language(),
-            opts,
-            units,
-            details,
-        ))
+        let mut result = ScanResult::from_parts(self.id(), self.language(), opts, units, details);
+        result.parse_warnings = warnings;
+        Ok(result)
     }
 }
 
@@ -69,9 +65,13 @@ fn run_go_geiger(opts: &ScanOpts) -> Result<Vec<u8>> {
 // go-geiger output format (line-based):
 // /path/to/file.go:123:45: unsafe.Pointer
 // /path/to/file.go:456:12: unsafe.Sizeof
-fn parse_geiger_output(output: &[u8], opts: &ScanOpts) -> Result<(Vec<Unit>, Vec<Occurrence>)> {
+fn parse_geiger_output(
+    output: &[u8],
+    opts: &ScanOpts,
+) -> Result<(Vec<Unit>, Vec<Occurrence>, Vec<ParseWarning>)> {
     let mut counts: HashMap<String, (UnitKind, u64)> = HashMap::new();
     let mut details = Vec::new();
+    let mut warnings = Vec::new();
 
     for line in output.lines() {
         let line = line?;
@@ -87,11 +87,15 @@ fn parse_geiger_output(output: &[u8], opts: &ScanOpts) -> Result<(Vec<Unit>, Vec
 
         let file = PathBuf::from(parts[0]);
         let Ok(line_num) = parts[1].parse::<u32>() else {
-            eprintln!("warning: go-geiger: skipping line with unparseable line number: {line}");
+            warnings.push(ParseWarning {
+                message: format!("go-geiger: skipping line with unparseable line number: {line}"),
+            });
             continue;
         };
         let Ok(col) = parts[2].trim().parse::<u32>() else {
-            eprintln!("warning: go-geiger: skipping line with unparseable column number: {line}");
+            warnings.push(ParseWarning {
+                message: format!("go-geiger: skipping line with unparseable column number: {line}"),
+            });
             continue;
         };
         let message = parts.get(3).map(|s| s.trim().to_string());
@@ -123,7 +127,8 @@ fn parse_geiger_output(output: &[u8], opts: &ScanOpts) -> Result<(Vec<Unit>, Vec
         });
     }
 
-    Ok(super::aggregate_units(counts, details, opts))
+    let (units, details) = super::aggregate_units(counts, details, opts);
+    Ok((units, details, warnings))
 }
 
 /// Extract Go package name from file path.
@@ -198,7 +203,7 @@ mod tests {
                        /home/user/project/main.go:20:10: unsafe.Sizeof\n";
 
         let opts = ScanOpts::default();
-        let (units, details) = parse_geiger_output(output, &opts).unwrap();
+        let (units, details, _) = parse_geiger_output(output, &opts).unwrap();
 
         assert_eq!(units.len(), 1);
         assert_eq!(units[0].name, "project");
@@ -216,7 +221,7 @@ mod tests {
             include_deps: true,
             ..Default::default()
         };
-        let (units, details) = parse_geiger_output(output, &opts).unwrap();
+        let (units, details, _) = parse_geiger_output(output, &opts).unwrap();
 
         assert_eq!(units.len(), 1);
         assert_eq!(units[0].name, "github.com/pkg/errors");
@@ -233,7 +238,7 @@ mod tests {
             workspace_only: true,
             ..Default::default()
         };
-        let (units, details) = parse_geiger_output(output, &opts).unwrap();
+        let (units, details, _) = parse_geiger_output(output, &opts).unwrap();
 
         assert_eq!(units.len(), 1);
         assert_eq!(units[0].name, "project");
@@ -249,7 +254,7 @@ mod tests {
             include_deps: false,
             ..Default::default()
         };
-        let (units, details) = parse_geiger_output(output, &opts).unwrap();
+        let (units, details, _) = parse_geiger_output(output, &opts).unwrap();
 
         assert_eq!(units.len(), 1);
         assert_eq!(units[0].name, "project");
@@ -260,7 +265,7 @@ mod tests {
     fn test_parse_geiger_output_empty() {
         let output = b"";
         let opts = ScanOpts::default();
-        let (units, details) = parse_geiger_output(output, &opts).unwrap();
+        let (units, details, _) = parse_geiger_output(output, &opts).unwrap();
 
         assert!(units.is_empty());
         assert!(details.is_empty());
@@ -270,7 +275,7 @@ mod tests {
     fn test_parse_geiger_output_empty_lines() {
         let output = b"\n\n/home/user/project/main.go:10:5: unsafe.Pointer\n\n";
         let opts = ScanOpts::default();
-        let (units, details) = parse_geiger_output(output, &opts).unwrap();
+        let (units, details, _) = parse_geiger_output(output, &opts).unwrap();
 
         assert_eq!(units.len(), 1);
         assert_eq!(details.len(), 1);
@@ -283,10 +288,12 @@ mod tests {
                        also invalid\n";
 
         let opts = ScanOpts::default();
-        let (units, details) = parse_geiger_output(output, &opts).unwrap();
+        let (units, details, warnings) = parse_geiger_output(output, &opts).unwrap();
 
         assert_eq!(units.len(), 1);
         assert_eq!(details.len(), 1);
+        // Lines with < 3 parts are silently skipped (no warning).
+        assert!(warnings.is_empty());
     }
 
     #[test]
@@ -296,13 +303,17 @@ mod tests {
                        /home/user/project/main.go:20:3: unsafe.Pointer\n";
 
         let opts = ScanOpts::default();
-        let (units, details) = parse_geiger_output(output, &opts).unwrap();
+        let (units, details, warnings) = parse_geiger_output(output, &opts).unwrap();
 
         assert_eq!(details.len(), 1);
         assert_eq!(details[0].line, 20);
         assert_eq!(details[0].col, 3);
         assert_eq!(units.len(), 1);
         assert_eq!(units[0].unsafe_count, 1);
+
+        assert_eq!(warnings.len(), 2);
+        assert!(warnings[0].message.contains("unparseable line number"));
+        assert!(warnings[1].message.contains("unparseable column number"));
     }
 
     #[test]
@@ -311,7 +322,7 @@ mod tests {
                        /home/user/project/alpha/a.go:1:1: unsafe.Pointer\n";
 
         let opts = ScanOpts::default();
-        let (units, _) = parse_geiger_output(output, &opts).unwrap();
+        let (units, _, _) = parse_geiger_output(output, &opts).unwrap();
 
         assert_eq!(units[0].name, "alpha");
         assert_eq!(units[1].name, "zebra");

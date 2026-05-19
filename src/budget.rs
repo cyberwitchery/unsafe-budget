@@ -240,6 +240,7 @@ mod tests {
                 overall_unsafe: workspace_unsafe + deps_unsafe,
             },
             details: vec![],
+            parse_warnings: vec![],
         }
     }
 

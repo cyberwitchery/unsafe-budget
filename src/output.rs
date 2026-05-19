@@ -1,6 +1,6 @@
 use crate::analyzer::AnalyzerInfo;
 use crate::config::Baseline;
-use crate::model::{CheckResult, Occurrence, ScanResult, Unit, Violation, Warning};
+use crate::model::{CheckResult, Occurrence, ParseWarning, ScanResult, Unit, Violation, Warning};
 use std::collections::{BTreeMap, HashMap};
 use std::io::{self, Write};
 
@@ -128,6 +128,7 @@ fn print_scan_text(out: &mut impl Write, result: &ScanResult) -> io::Result<()> 
     }
 
     print_details_text(out, &result.details)?;
+    print_parse_warnings_text(out, &result.parse_warnings)?;
 
     Ok(())
 }
@@ -293,6 +294,7 @@ fn print_check_text(
     }
 
     print_details_text(out, &result.scan.details)?;
+    print_parse_warnings_text(out, &result.scan.parse_warnings)?;
 
     Ok(())
 }
@@ -358,6 +360,20 @@ fn print_details_text(out: &mut impl Write, details: &[Occurrence]) -> io::Resul
                 writeln!(out, "    {}", loc)?;
             }
         }
+    }
+
+    Ok(())
+}
+
+fn print_parse_warnings_text(out: &mut impl Write, warnings: &[ParseWarning]) -> io::Result<()> {
+    if warnings.is_empty() {
+        return Ok(());
+    }
+
+    writeln!(out)?;
+    writeln!(out, "Parse warnings ({}):", warnings.len())?;
+    for w in warnings {
+        writeln!(out, "  - {}", w.message)?;
     }
 
     Ok(())
@@ -456,6 +472,7 @@ mod tests {
                 overall_unsafe: 15,
             },
             details: vec![],
+            parse_warnings: vec![],
         }
     }
 
@@ -793,5 +810,80 @@ mod tests {
         assert!(output.contains("Details:"));
         assert!(output.contains("  only_crate:"));
         assert!(output.contains("    src/main.rs:1:1 — unsafe fn"));
+    }
+
+    #[test]
+    fn test_print_parse_warnings_text() {
+        let warnings = vec![
+            ParseWarning {
+                message: "go-geiger: skipping line with unparseable line number: foo:abc:1: x"
+                    .into(),
+            },
+            ParseWarning {
+                message: "go-geiger: skipping line with unparseable column number: foo:1:xyz: x"
+                    .into(),
+            },
+        ];
+
+        let mut buf = Vec::new();
+        print_parse_warnings_text(&mut buf, &warnings).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+
+        assert!(output.contains("Parse warnings (2):"));
+        assert!(output.contains("unparseable line number"));
+        assert!(output.contains("unparseable column number"));
+    }
+
+    #[test]
+    fn test_print_parse_warnings_text_empty() {
+        let mut buf = Vec::new();
+        print_parse_warnings_text(&mut buf, &[]).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+
+        assert!(output.is_empty());
+    }
+
+    #[test]
+    fn test_print_scan_text_with_parse_warnings() {
+        let mut result = make_scan_result();
+        result.parse_warnings = vec![ParseWarning {
+            message: "go-geiger: skipping malformed line".into(),
+        }];
+
+        let mut buf = Vec::new();
+        print_scan_text(&mut buf, &result).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+
+        assert!(output.contains("Parse warnings (1):"));
+        assert!(output.contains("go-geiger: skipping malformed line"));
+    }
+
+    #[test]
+    fn test_print_scan_json_includes_parse_warnings() {
+        let mut result = make_scan_result();
+        result.parse_warnings = vec![ParseWarning {
+            message: "go-geiger: test warning".into(),
+        }];
+
+        let mut buf = Vec::new();
+        print_json(&mut buf, &result).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+
+        let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
+        let warnings = parsed["parse_warnings"].as_array().unwrap();
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0]["message"], "go-geiger: test warning");
+    }
+
+    #[test]
+    fn test_print_scan_json_omits_empty_parse_warnings() {
+        let result = make_scan_result();
+
+        let mut buf = Vec::new();
+        print_json(&mut buf, &result).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+
+        let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
+        assert!(parsed.get("parse_warnings").is_none());
     }
 }
