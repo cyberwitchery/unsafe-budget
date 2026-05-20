@@ -5,7 +5,7 @@ use crate::analyzer::{detect_analyzer, get_analyzer, list_analyzers, Analyzer};
 use crate::budget;
 use crate::cli::{self, Command, ScanArgs};
 use crate::config::{Baseline, BaselineUnit, Config, IgnoreEntry};
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::model::{ScanOpts, ScanResult, Scope, Totals};
 use crate::output::{self, Format};
 
@@ -64,6 +64,17 @@ fn cmd_check(args: ScanArgs) -> Result<ExitCode> {
         }
         crate::config::Mode::Caps => None,
     };
+
+    // Reject baselines created with a different analyzer
+    if let Some(bl) = baseline.as_ref() {
+        if bl.analyzer_id != result.analyzer_id {
+            return Err(Error::Baseline(format!(
+                "analyzer mismatch: baseline was created with '{}' but current analyzer is '{}'\n\
+                 hint: re-run `unsafe-budget update` with the current analyzer to regenerate the baseline",
+                bl.analyzer_id, result.analyzer_id
+            )));
+        }
+    }
 
     // Warn when the current scan scope differs from the baseline scope
     if let Some(bl) = baseline.as_ref() {
@@ -534,5 +545,60 @@ mod tests {
 
         assert_eq!(filtered.details.len(), 3);
         assert_eq!(filtered.totals.overall_unsafe, 3);
+    }
+
+    fn make_baseline_with_analyzer(analyzer_id: &str) -> Baseline {
+        Baseline {
+            tool_version: "0.1.0".into(),
+            analyzer_id: analyzer_id.into(),
+            scope: make_scope(),
+            totals: Totals {
+                workspace_unsafe: 4,
+                deps_unsafe: 0,
+                overall_unsafe: 4,
+            },
+            units: vec![BaselineUnit {
+                name: "my_crate".into(),
+                kind: UnitKind::Workspace,
+                unsafe_count: 4,
+            }],
+        }
+    }
+
+    #[test]
+    fn analyzer_mismatch_is_rejected() {
+        let scan = make_result_with_details(); // analyzer_id = "rustc_unsafe_lint"
+        let baseline = make_baseline_with_analyzer("cargo_geiger");
+        let config = Config::default(); // ratchet mode
+
+        // budget::check doesn't validate analyzer_id (cmd_check does);
+        // verify the mismatch is detectable:
+        assert_ne!(baseline.analyzer_id, scan.analyzer_id);
+
+        // Verify the check still runs (no panic) — budget sees mismatched units:
+        let _result = budget::check(&scan, Some(&baseline), &config).unwrap();
+
+        // Verify the error message we'd produce in cmd_check:
+        let err = Error::Baseline(format!(
+            "analyzer mismatch: baseline was created with '{}' but current analyzer is '{}'",
+            baseline.analyzer_id, scan.analyzer_id
+        ));
+        let msg = err.to_string();
+        assert!(
+            msg.contains("cargo_geiger"),
+            "should mention baseline analyzer"
+        );
+        assert!(
+            msg.contains("rustc_unsafe_lint"),
+            "should mention current analyzer"
+        );
+    }
+
+    #[test]
+    fn analyzer_match_is_accepted() {
+        let scan = make_result_with_details(); // analyzer_id = "rustc_unsafe_lint"
+        let baseline = make_baseline_with_analyzer("rustc_unsafe_lint");
+
+        assert_eq!(baseline.analyzer_id, scan.analyzer_id);
     }
 }

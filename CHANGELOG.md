@@ -2,6 +2,7 @@
 
 ## [unreleased]
 
+- reject baselines created with a different analyzer in `check` command; previously a baseline from e.g. `rustc_unsafe_lint` would silently proceed when checked with `cargo_geiger`, causing false passes/failures via mismatched unit names
 - fix `go_geiger` analyzer silently emitting line/col 0 for malformed output lines; these lines are now skipped with a warning to stderr
 
 ## [0.4.0] - 2026-05-06
