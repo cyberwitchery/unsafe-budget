@@ -82,6 +82,9 @@ fn parse_geiger_output(
         // Parse line: "file:line:col: message"
         let parts: Vec<&str> = line.splitn(4, ':').collect();
         if parts.len() < 3 {
+            warnings.push(ParseWarning {
+                message: format!("go-geiger: skipping malformed output line: {line}"),
+            });
             continue;
         }
 
@@ -282,7 +285,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_geiger_output_malformed_lines_skipped() {
+    fn test_parse_geiger_output_malformed_lines_warn() {
         let output = b"invalid line\n\
                        /home/user/project/main.go:10:5: unsafe.Pointer\n\
                        also invalid\n";
@@ -292,8 +295,11 @@ mod tests {
 
         assert_eq!(units.len(), 1);
         assert_eq!(details.len(), 1);
-        // Lines with < 3 parts are silently skipped (no warning).
-        assert!(warnings.is_empty());
+        assert_eq!(warnings.len(), 2);
+        assert!(warnings[0].message.contains("malformed output line"));
+        assert!(warnings[0].message.contains("invalid line"));
+        assert!(warnings[1].message.contains("malformed output line"));
+        assert!(warnings[1].message.contains("also invalid"));
     }
 
     #[test]
