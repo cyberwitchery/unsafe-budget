@@ -110,7 +110,7 @@ fn budget_for_unit(
         Mode::Caps => {
             let caps = config.caps.as_ref()?;
             match unit.kind {
-                UnitKind::Workspace => caps.workspace.get(&unit.name).copied(),
+                UnitKind::Workspace => caps.workspace.get(&unit.name).copied().or(caps.default),
                 UnitKind::Dep => caps.deps.get(&unit.name).copied().or(caps.default),
             }
         }
@@ -158,7 +158,7 @@ fn check_caps(scan: &ScanResult, caps: &Caps, config: &Config) -> Vec<Violation>
         }
 
         let cap = match unit.kind {
-            UnitKind::Workspace => caps.workspace.get(&unit.name).copied(),
+            UnitKind::Workspace => caps.workspace.get(&unit.name).copied().or(caps.default),
             UnitKind::Dep => caps.deps.get(&unit.name).copied().or(caps.default),
         };
 
@@ -536,5 +536,162 @@ mod tests {
 
         let result = check(&scan, None, &config);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_caps_workspace_default_fallback_pass() {
+        // workspace crate without explicit caps.workspace entry uses caps.default
+        let scan = make_scan(vec![("unlisted_crate", UnitKind::Workspace, 50)]);
+        let config = Config {
+            mode: Mode::Caps,
+            caps: Some(Caps {
+                default: Some(100),
+                workspace: HashMap::new(),
+                deps: HashMap::new(),
+            }),
+            ..Config::default()
+        };
+
+        let result = check(&scan, None, &config).unwrap();
+        assert!(result.passed);
+        assert!(result.violations.is_empty());
+    }
+
+    #[test]
+    fn test_caps_workspace_default_fallback_violation() {
+        // workspace crate exceeding caps.default triggers a violation
+        let scan = make_scan(vec![("unlisted_crate", UnitKind::Workspace, 150)]);
+        let config = Config {
+            mode: Mode::Caps,
+            caps: Some(Caps {
+                default: Some(100),
+                workspace: HashMap::new(),
+                deps: HashMap::new(),
+            }),
+            ..Config::default()
+        };
+
+        let result = check(&scan, None, &config).unwrap();
+        assert!(!result.passed);
+        assert_eq!(result.violations.len(), 1);
+        assert_eq!(result.violations[0].unit, "unlisted_crate");
+        assert_eq!(result.violations[0].baseline, 100);
+        assert_eq!(result.violations[0].actual, 150);
+        assert_eq!(result.violations[0].delta, 50);
+    }
+
+    #[test]
+    fn test_caps_workspace_explicit_overrides_default() {
+        // explicit caps.workspace entry takes precedence over caps.default
+        let scan = make_scan(vec![("my_crate", UnitKind::Workspace, 15)]);
+        let config = Config {
+            mode: Mode::Caps,
+            caps: Some(Caps {
+                default: Some(100),
+                workspace: [("my_crate".into(), 10)].into_iter().collect(),
+                deps: HashMap::new(),
+            }),
+            ..Config::default()
+        };
+
+        let result = check(&scan, None, &config).unwrap();
+        // violates the explicit cap of 10, not the default of 100
+        assert!(!result.passed);
+        assert_eq!(result.violations[0].baseline, 10);
+        assert_eq!(result.violations[0].delta, 5);
+    }
+
+    #[test]
+    fn test_caps_workspace_mixed_explicit_and_default() {
+        // some workspace crates have explicit caps, others fall back to default
+        let scan = make_scan(vec![
+            ("explicit_crate", UnitKind::Workspace, 8),
+            ("default_crate", UnitKind::Workspace, 50),
+            ("over_default", UnitKind::Workspace, 200),
+        ]);
+        let config = Config {
+            mode: Mode::Caps,
+            caps: Some(Caps {
+                default: Some(100),
+                workspace: [("explicit_crate".into(), 10)].into_iter().collect(),
+                deps: HashMap::new(),
+            }),
+            ..Config::default()
+        };
+
+        let result = check(&scan, None, &config).unwrap();
+        assert!(!result.passed);
+        // explicit_crate: 8 <= 10, pass
+        // default_crate: 50 <= 100, pass
+        // over_default: 200 > 100, violation
+        assert_eq!(result.violations.len(), 1);
+        assert_eq!(result.violations[0].unit, "over_default");
+    }
+
+    #[test]
+    fn test_caps_workspace_no_default_no_explicit_skipped() {
+        // workspace crate with no default and no explicit cap is silently skipped
+        let scan = make_scan(vec![("unlisted_crate", UnitKind::Workspace, 9999)]);
+        let config = Config {
+            mode: Mode::Caps,
+            caps: Some(Caps {
+                default: None,
+                workspace: HashMap::new(),
+                deps: HashMap::new(),
+            }),
+            ..Config::default()
+        };
+
+        let result = check(&scan, None, &config).unwrap();
+        assert!(result.passed);
+        assert!(result.violations.is_empty());
+    }
+
+    #[test]
+    fn test_caps_workspace_default_warning_threshold() {
+        // warning threshold works for workspace crates using caps.default
+        let scan = make_scan(vec![("unlisted_crate", UnitKind::Workspace, 85)]);
+        let config = Config {
+            mode: Mode::Caps,
+            caps: Some(Caps {
+                default: Some(100),
+                workspace: HashMap::new(),
+                deps: HashMap::new(),
+            }),
+            warnings: Some(crate::config::Warnings { threshold: 0.8 }),
+            ..Config::default()
+        };
+
+        let result = check(&scan, None, &config).unwrap();
+        assert!(result.passed);
+        assert_eq!(result.warnings.len(), 1);
+        assert_eq!(result.warnings[0].unit, "unlisted_crate");
+        assert_eq!(result.warnings[0].budget, 100);
+        assert_eq!(result.warnings[0].actual, 85);
+    }
+
+    #[test]
+    fn test_caps_default_applies_to_both_workspace_and_deps() {
+        // caps.default is the fallback for both workspace and dep units
+        let scan = make_scan(vec![
+            ("ws_crate", UnitKind::Workspace, 150),
+            ("some_dep", UnitKind::Dep, 150),
+        ]);
+        let config = Config {
+            mode: Mode::Caps,
+            caps: Some(Caps {
+                default: Some(100),
+                workspace: HashMap::new(),
+                deps: HashMap::new(),
+            }),
+            ..Config::default()
+        };
+
+        let result = check(&scan, None, &config).unwrap();
+        assert!(!result.passed);
+        assert_eq!(result.violations.len(), 2);
+        let names: Vec<&str> = result.violations.iter().map(|v| v.unit.as_str()).collect();
+        assert!(names.contains(&"ws_crate"));
+        assert!(names.contains(&"some_dep"));
     }
 }
