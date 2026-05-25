@@ -2,6 +2,8 @@
 
 ## [unreleased]
 
+## [0.4.1] - 2026-05-25
+
 - reject baselines created with a different analyzer in `check` command; previously a baseline from e.g. `rustc_unsafe_lint` would silently proceed when checked with `cargo_geiger`, causing false passes/failures via mismatched unit names
 - fix `go_geiger` analyzer silently emitting line/col 0 for malformed output lines; these lines are now skipped with a warning to stderr
 - emit `ParseWarning` in `go_geiger` analyzer when output lines have fewer than 3 colon-delimited parts; previously these were silently skipped, masking truncated or corrupted go-geiger output
@@ -59,8 +61,10 @@ initial release
 - baseline file (`unsafe-budget.lock`) for tracking unsafe counts over time
 - configuration via `unsafe-budget.toml`
 
+[0.4.1]: https://github.com/cyberwitchery/unsafe-budget/releases/tag/v0.4.1
+[0.4.0]: https://github.com/cyberwitchery/unsafe-budget/releases/tag/v0.4.0
 [0.3.0]: https://github.com/cyberwitchery/unsafe-budget/releases/tag/v0.3.0
 [0.2.0]: https://github.com/cyberwitchery/unsafe-budget/releases/tag/v0.2.0
 [0.1.1]: https://github.com/cyberwitchery/unsafe-budget/releases/tag/v0.1.1
 [0.1.0]: https://github.com/cyberwitchery/unsafe-budget/releases/tag/v0.1.0
-[unreleased]: https://github.com/cyberwitchery/unsafe-budget/compare/v0.3.0...HEAD
+[unreleased]: https://github.com/cyberwitchery/unsafe-budget/compare/v0.4.1...HEAD
