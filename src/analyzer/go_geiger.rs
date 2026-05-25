@@ -105,7 +105,15 @@ fn parse_geiger_output(
 
         // Determine package name from file path
         // Try to extract module/package name from path
-        let pkg_name = extract_go_package(&file);
+        let pkg_name = extract_go_package(&file).unwrap_or_else(|| {
+            warnings.push(ParseWarning {
+                message: format!(
+                    "go-geiger: could not determine package for {}, attributing to \"unknown\"",
+                    file.display()
+                ),
+            });
+            "unknown".into()
+        });
 
         // Determine if this is a workspace package or dependency
         // Dependencies are typically in vendor/ or go module cache
@@ -136,16 +144,19 @@ fn parse_geiger_output(
 
 /// Extract Go package name from file path.
 /// Tries to find the package based on common Go project layouts.
-fn extract_go_package(file: &std::path::Path) -> String {
+///
+/// Returns `None` when no package name can be determined (e.g. bare
+/// filename with no parent directory).
+fn extract_go_package(file: &std::path::Path) -> Option<String> {
     let path_str = file.to_string_lossy();
 
     // Check for vendor path
     if let Some(idx) = path_str.find("/vendor/") {
         let after_vendor = &path_str[idx + 8..];
         if let Some(end) = after_vendor.rfind('/') {
-            return after_vendor[..end].to_string();
+            return Some(after_vendor[..end].to_string());
         }
-        return after_vendor.to_string();
+        return Some(after_vendor.to_string());
     }
 
     // Check for go module cache path
@@ -154,7 +165,7 @@ fn extract_go_package(file: &std::path::Path) -> String {
         // Format: module@version/path
         if let Some(at_idx) = after_mod.find('@') {
             let module = &after_mod[..at_idx];
-            return module.to_string();
+            return Some(module.to_string());
         }
     }
 
@@ -162,7 +173,6 @@ fn extract_go_package(file: &std::path::Path) -> String {
     file.parent()
         .and_then(|p| p.file_name())
         .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| "unknown".into())
 }
 
 #[cfg(test)]
@@ -173,31 +183,49 @@ mod tests {
     #[test]
     fn test_extract_go_package_workspace_file() {
         let path = Path::new("/home/user/myproject/pkg/utils/helper.go");
-        assert_eq!(extract_go_package(path), "utils");
+        assert_eq!(extract_go_package(path), Some("utils".into()));
     }
 
     #[test]
     fn test_extract_go_package_vendor_path() {
         let path = Path::new("/home/user/myproject/vendor/github.com/pkg/errors/errors.go");
-        assert_eq!(extract_go_package(path), "github.com/pkg/errors");
+        assert_eq!(
+            extract_go_package(path),
+            Some("github.com/pkg/errors".into())
+        );
     }
 
     #[test]
     fn test_extract_go_package_vendor_no_subpath() {
         let path = Path::new("/home/user/myproject/vendor/errors/errors.go");
-        assert_eq!(extract_go_package(path), "errors");
+        assert_eq!(extract_go_package(path), Some("errors".into()));
     }
 
     #[test]
     fn test_extract_go_package_module_cache() {
         let path = Path::new("/home/user/go/pkg/mod/github.com/pkg/errors@v0.9.1/errors.go");
-        assert_eq!(extract_go_package(path), "github.com/pkg/errors");
+        assert_eq!(
+            extract_go_package(path),
+            Some("github.com/pkg/errors".into())
+        );
     }
 
     #[test]
     fn test_extract_go_package_fallback() {
         let path = Path::new("/some/random/path/main.go");
-        assert_eq!(extract_go_package(path), "path");
+        assert_eq!(extract_go_package(path), Some("path".into()));
+    }
+
+    #[test]
+    fn test_extract_go_package_bare_filename_returns_none() {
+        let path = Path::new("main.go");
+        assert_eq!(extract_go_package(path), None);
+    }
+
+    #[test]
+    fn test_extract_go_package_root_file_returns_none() {
+        let path = Path::new("/main.go");
+        assert_eq!(extract_go_package(path), None);
     }
 
     #[test]
@@ -320,6 +348,22 @@ mod tests {
         assert_eq!(warnings.len(), 2);
         assert!(warnings[0].message.contains("unparseable line number"));
         assert!(warnings[1].message.contains("unparseable column number"));
+    }
+
+    #[test]
+    fn test_parse_geiger_output_unknown_package_warns() {
+        let output = b"/main.go:1:1: unsafe.Pointer\n";
+
+        let opts = ScanOpts::default();
+        let (units, details, warnings) = parse_geiger_output(output, &opts).unwrap();
+
+        assert_eq!(units.len(), 1);
+        assert_eq!(units[0].name, "unknown");
+        assert_eq!(details.len(), 1);
+        assert_eq!(details[0].unit, "unknown");
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].message.contains("could not determine package"));
+        assert!(warnings[0].message.contains("/main.go"));
     }
 
     #[test]
