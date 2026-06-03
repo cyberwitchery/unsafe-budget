@@ -2,6 +2,7 @@
 
 ## [unreleased]
 
+- fix `caps.default` not applying to workspace units; crates without explicit `[caps.workspace]` entries were silently skipped from budget checks instead of falling back to the default cap
 - reject baselines created with a different analyzer in `check` command; previously a baseline from e.g. `rustc_unsafe_lint` would silently proceed when checked with `cargo_geiger`, causing false passes/failures via mismatched unit names
 - fix `go_geiger` analyzer silently emitting line/col 0 for malformed output lines; these lines are now skipped with a warning to stderr
 - emit `ParseWarning` in `go_geiger` analyzer when output lines have fewer than 3 colon-delimited parts; previously these were silently skipped, masking truncated or corrupted go-geiger output
