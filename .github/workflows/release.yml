@@ -36,7 +36,7 @@ jobs:
             bin_ext: ".exe"
             publish_crates: false
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -62,7 +62,7 @@ jobs:
           tar -czf "${dist_root}/${archive_base}.tar.gz" -C "${dist_root}" "${archive_base}"
 
       - name: upload packaged binaries
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: ${{ runner.temp }}/dist/*.tar.gz
 
@@ -91,7 +91,7 @@ jobs:
 
       - name: upload sbom
         if: matrix.publish_crates
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: sbom-${{ github.ref_name }}
           path: "/tmp/unsafe-budget-sbom/sbom-${{ github.ref_name }}.cdx.json"
@@ -99,7 +99,7 @@ jobs:
 
       - name: attach sbom to release
         if: matrix.publish_crates
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: /tmp/unsafe-budget-sbom/sbom-${{ github.ref_name }}.cdx.json
 
