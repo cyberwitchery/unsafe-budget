@@ -59,7 +59,7 @@ fn get_workspace_members(opts: &ScanOpts) -> Result<HashSet<String>> {
                 .packages
                 .iter()
                 .find(|p| &p.id == id)
-                .map(|p| p.name.clone())
+                .map(|p| p.name.to_string())
         })
         .collect();
 
