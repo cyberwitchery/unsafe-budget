@@ -2,64 +2,49 @@
 
 ## [unreleased]
 
-- fix `caps.default` not applying to workspace units; crates without explicit `[caps.workspace]` entries were silently skipped from budget checks instead of falling back to the default cap
-- reject baselines created with a different analyzer in `check` command; previously a baseline from e.g. `rustc_unsafe_lint` would silently proceed when checked with `cargo_geiger`, causing false passes/failures via mismatched unit names
-- fix `go_geiger` analyzer silently emitting line/col 0 for malformed output lines; these lines are now skipped with a warning to stderr
-- emit `ParseWarning` in `go_geiger` analyzer when output lines have fewer than 3 colon-delimited parts; previously these were silently skipped, masking truncated or corrupted go-geiger output
-- emit `ParseWarning` in `go_geiger` analyzer when package extraction falls back to `"unknown"`; previously the fallback was silent, degrading package attribution in reports without user visibility
+- fix: `caps.default` now applies to workspace crates that have no explicit `[caps.workspace]` entry, instead of silently skipping them from budget checks.
+- the `check` command now rejects a baseline created with a different analyzer (e.g. a `rustc_unsafe_lint` baseline checked with `cargo_geiger`), which previously caused false passes/failures from mismatched unit names.
+- the `go_geiger` analyzer now warns (to stderr, via `ParseWarning`) on malformed output instead of silently mishandling it: lines with bad line/col numbers or fewer than three colon-delimited parts are skipped, and a fallback to an `"unknown"` package is surfaced.
 
 ## [0.4.0] - 2026-05-06
 
-- show individual unsafe occurrences in text output when `--details` is passed; occurrences are grouped by unit and sorted by file/line/col, matching the detail level already available in JSON and SARIF formats
-- respect `--details` flag in `check` command (previously only `scan` filtered details)
-- enrich SARIF `budget_violation` and `budget_warning` results with file-level locations by correlating them with occurrence data from the same unit; GitHub code scanning now points to specific files instead of showing repo-level alerts
-- track `all_features` and `no_default_features` in scan scope so baseline-vs-check comparisons detect feature flag mismatches
-- warn to stderr when `check` scope differs from baseline scope (e.g. `--all-features` used during `update` but not `check`), listing which fields changed
-- remove `Baseline::get_unit()` method (superseded by `unit_map()` in 0.3.0)
-- add threshold warnings (near-budget) to SARIF output as note-level `budget_warning` results; previously these were silently dropped
-- fix `infer_language` in SARIF analyzer producing false Go classifications for tools whose names contain "go" as a substring (e.g. django, errgo); now requires "go" at a word boundary
-- refactor `go_geiger` analyzer to use the shared `aggregate_units` helper, consistent with the other analyzers
-- fix `truncate()` in text output panicking on unit names containing multi-byte (non-ASCII) characters
-- fix `apply_ignore_filter` silently zeroing all unit counts when the analyzer produces no detail occurrences (e.g. `cargo_geiger`); `[[ignore]]` entries are now correctly skipped when there are no line-level details to filter
-- extract shared `aggregate_units` helper in `analyzer/mod.rs` so rustc, cargo-geiger, and SARIF analyzers share one filter/sort path instead of three
-- propagate `current_dir()` failure as an error instead of silently falling back to `"."` in `get_project_dir()` and `detect_analyzer()`
+- show individual unsafe occurrences in text output with `--details` (grouped by unit, sorted by file/line/col), matching the detail already available in JSON and SARIF.
+- `--details` is now respected by the `check` command, not just `scan`.
+- SARIF `budget_violation`/`budget_warning` results now carry file-level locations, so GitHub code scanning points to specific files instead of repo-level alerts; near-budget threshold warnings are also emitted (previously dropped).
+- track `all_features`/`no_default_features` in the scan scope, and warn to stderr when a `check` scope differs from the baseline (e.g. `--all-features` used during `update` but not `check`), listing which fields changed.
+- fix: SARIF language inference no longer misclassifies tools whose names merely contain "go" (django, errgo) as Go; it now requires a word boundary.
+- fix: text output no longer panics when truncating unit names that contain multi-byte characters.
+- fix: `[[ignore]]` entries no longer zero out all unit counts for analyzers that produce no line-level occurrences (e.g. `cargo_geiger`).
+- fix: a failure to read the current directory is now reported as an error instead of silently falling back to `.`.
+- remove `Baseline::get_unit()` (superseded by `unit_map()` in 0.3.0).
 
 ## [0.3.0] - 2026-04-17
 
-- fix SARIF analyzer collapsing all `*/src/*.rs` paths into a single "src" unit; now extracts the crate/package directory name instead
-- add `plugin_timeout_secs` config option and `--plugin-timeout` CLI flag to kill hanging plugin subprocesses
-- add `[[ignore]]` config table for suppressing specific file+line occurrences
-- fix stale `information_uri` in SARIF output pointing to old repo name `unsafe-gate`
-- fix changelog release URLs (unsafe-gate → unsafe-budget)
-- fix repository URL in Cargo.toml
+- add an `[[ignore]]` config table to suppress specific file+line occurrences.
+- add `plugin_timeout_secs` (config) and `--plugin-timeout` (CLI) to kill hanging plugin subprocesses.
+- fix: the SARIF analyzer no longer collapses every `*/src/*.rs` path into a single `src` unit; it now uses the crate/package directory name.
+- fix stale `unsafe-gate` references in the SARIF `information_uri` and the Cargo.toml repository URL.
 
 ## [0.2.0] - 2026-02-19
 
-- add release SBOM generation and upload (CycloneDX)
-- publish pre-built release binaries for Linux/macOS/Windows on version tags
-- add optional threshold warnings for near-budget units (`[warnings].threshold`)
-- add a GitHub composite action (`cyberwitchery/unsafe-budget@v1`) for CI usage
-- fix `Analyzer::id` and `Analyzer::language` to return `&str` instead of `&'static str`, removing the `Box::leak` workaround in the plugin analyzer
-- fix release workflow SBOM collection to handle cargo-cyclonedx output landing next to the manifest rather than in `/tmp`
+- publish pre-built release binaries for Linux/macOS/Windows on version tags, and ship a CycloneDX SBOM with each release.
+- add a GitHub composite action (`cyberwitchery/unsafe-budget@v1`) for CI use.
+- add optional near-budget threshold warnings (`[warnings].threshold`).
+- `Analyzer::id` and `Analyzer::language` now return `&str` instead of `&'static str` (relevant to custom analyzer/plugin authors).
 
 ## [0.1.1] - 2026-01-29
 
-- SARIF 2.1.0 output format (`--format sarif`) for GitHub Code Scanning and IDE integration
-- built-in SARIF analyzer (`--analyzer sarif`) to ingest `.sarif` files from any static analysis tool
+- SARIF 2.1.0 output (`--format sarif`) for GitHub Code Scanning and IDE integration.
+- built-in SARIF analyzer (`--analyzer sarif`) to ingest `.sarif` files from any static analysis tool.
 
 ## [0.1.0] - 2026-01-27
 
-initial release
+initial release.
 
-- unsafe code budget gate for CI pipelines
-- ratchet mode (baseline comparison) and caps mode (explicit limits)
-- built-in analyzers: rustc_unsafe_lint, cargo_geiger, go_geiger
-- auto-detection of project type from Cargo.toml or go.mod
-- plugin system for custom analyzers via `unsafe-budget-plugin-*` executables
-- works standalone or as cargo subcommand (`cargo unsafe-budget`)
-- text and json output formats
-- baseline file (`unsafe-budget.lock`) for tracking unsafe counts over time
-- configuration via `unsafe-budget.toml`
+- unsafe-code budget gate for CI pipelines, in ratchet mode (baseline comparison) or caps mode (explicit limits).
+- built-in analyzers (`rustc_unsafe_lint`, `cargo_geiger`, `go_geiger`) with project-type auto-detection from `Cargo.toml`/`go.mod`, plus a plugin system for custom analyzers (`unsafe-budget-plugin-*`).
+- works standalone or as a cargo subcommand (`cargo unsafe-budget`).
+- text and JSON output; baseline file (`unsafe-budget.lock`) and configuration via `unsafe-budget.toml`.
 
 [0.3.0]: https://github.com/cyberwitchery/unsafe-budget/releases/tag/v0.3.0
 [0.2.0]: https://github.com/cyberwitchery/unsafe-budget/releases/tag/v0.2.0
