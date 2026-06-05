@@ -3,8 +3,10 @@ name: ci
 on:
   push:
     branches: [main]
+    paths-ignore: ["**/*.md"]
   pull_request:
     branches: [main]
+    paths-ignore: ["**/*.md"]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
@@ -56,10 +58,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo install unsafe-budget
-      - run: cargo unsafe-budget check
+      # Dogfood our own action: downloads the release binary, no compile.
+      - uses: ./
+        with:
+          mode: check
 
   deny:
     runs-on: ubuntu-latest
