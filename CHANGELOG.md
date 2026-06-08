@@ -1,6 +1,6 @@
 # changelog
 
-## [unreleased]
+## [0.4.1] - 2026-06-08
 
 - fix: `caps.default` now applies to workspace crates that have no explicit `[caps.workspace]` entry, instead of silently skipping them from budget checks.
 - the `check` command now rejects a baseline created with a different analyzer (e.g. a `rustc_unsafe_lint` baseline checked with `cargo_geiger`), which previously caused false passes/failures from mismatched unit names.
