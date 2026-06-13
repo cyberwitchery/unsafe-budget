@@ -109,12 +109,22 @@ fn budget_for_unit(
         ),
         Mode::Caps => {
             let caps = config.caps.as_ref()?;
-            match unit.kind {
-                UnitKind::Workspace => caps.workspace.get(&unit.name).copied().or(caps.default),
-                UnitKind::Dep => caps.deps.get(&unit.name).copied().or(caps.default),
-            }
+            resolve_cap(caps, unit)
         }
     }
+}
+
+/// Look up the cap for a unit from the caps configuration.
+fn resolve_cap(caps: &Caps, unit: &Unit) -> Option<u64> {
+    match unit.kind {
+        UnitKind::Workspace => caps.workspace.get(&unit.name).copied().or(caps.default),
+        UnitKind::Dep => caps.deps.get(&unit.name).copied().or(caps.default),
+    }
+}
+
+/// Sort violations by delta (descending), then by unit name (ascending).
+fn sort_violations(violations: &mut [Violation]) {
+    violations.sort_by(|a, b| b.delta.cmp(&a.delta).then_with(|| a.unit.cmp(&b.unit)));
 }
 
 /// Check against ratchet baseline - fail if any unit exceeds its baseline count.
@@ -144,7 +154,7 @@ fn check_ratchet(
         }
     }
 
-    violations.sort_by(|a, b| b.delta.cmp(&a.delta).then_with(|| a.unit.cmp(&b.unit)));
+    sort_violations(&mut violations);
     violations
 }
 
@@ -157,10 +167,7 @@ fn check_caps(scan: &ScanResult, caps: &Caps, config: &Config) -> Vec<Violation>
             continue;
         }
 
-        let cap = match unit.kind {
-            UnitKind::Workspace => caps.workspace.get(&unit.name).copied().or(caps.default),
-            UnitKind::Dep => caps.deps.get(&unit.name).copied().or(caps.default),
-        };
+        let cap = resolve_cap(caps, unit);
 
         if let Some(cap) = cap {
             if unit.unsafe_count > cap {
@@ -175,7 +182,7 @@ fn check_caps(scan: &ScanResult, caps: &Caps, config: &Config) -> Vec<Violation>
         }
     }
 
-    violations.sort_by(|a, b| b.delta.cmp(&a.delta).then_with(|| a.unit.cmp(&b.unit)));
+    sort_violations(&mut violations);
     violations
 }
 
