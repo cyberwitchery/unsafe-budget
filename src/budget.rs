@@ -127,11 +127,13 @@ fn sort_violations(violations: &mut [Violation]) {
     violations.sort_by(|a, b| b.delta.cmp(&a.delta).then_with(|| a.unit.cmp(&b.unit)));
 }
 
-/// Check against ratchet baseline - fail if any unit exceeds its baseline count.
-fn check_ratchet(
+/// Collect violations by iterating scan units, skipping ignored ones, resolving
+/// a baseline value via the provided closure, and flagging any unit whose count
+/// exceeds its baseline.  Returns `None` from the closure to skip a unit.
+fn collect_violations(
     scan: &ScanResult,
-    baseline_map: &HashMap<&str, u64>,
     config: &Config,
+    resolve_baseline: impl Fn(&Unit) -> Option<u64>,
 ) -> Vec<Violation> {
     let mut violations = Vec::new();
 
@@ -140,14 +142,17 @@ fn check_ratchet(
             continue;
         }
 
-        let baseline_count = baseline_map.get(unit.name.as_str()).copied().unwrap_or(0);
-        let delta = unit.unsafe_count as i64 - baseline_count as i64;
+        let Some(baseline) = resolve_baseline(unit) else {
+            continue;
+        };
+
+        let delta = unit.unsafe_count as i64 - baseline as i64;
 
         if delta > 0 {
             violations.push(Violation {
                 unit: unit.name.clone(),
                 kind: unit.kind,
-                baseline: baseline_count,
+                baseline,
                 actual: unit.unsafe_count,
                 delta,
             });
@@ -158,32 +163,20 @@ fn check_ratchet(
     violations
 }
 
+/// Check against ratchet baseline - fail if any unit exceeds its baseline count.
+fn check_ratchet(
+    scan: &ScanResult,
+    baseline_map: &HashMap<&str, u64>,
+    config: &Config,
+) -> Vec<Violation> {
+    collect_violations(scan, config, |unit| {
+        Some(baseline_map.get(unit.name.as_str()).copied().unwrap_or(0))
+    })
+}
+
 /// Check against explicit caps.
 fn check_caps(scan: &ScanResult, caps: &Caps, config: &Config) -> Vec<Violation> {
-    let mut violations = Vec::new();
-
-    for unit in &scan.units {
-        if config.ignore_units.contains(&unit.name) {
-            continue;
-        }
-
-        let cap = resolve_cap(caps, unit);
-
-        if let Some(cap) = cap {
-            if unit.unsafe_count > cap {
-                violations.push(Violation {
-                    unit: unit.name.clone(),
-                    kind: unit.kind,
-                    baseline: cap,
-                    actual: unit.unsafe_count,
-                    delta: unit.unsafe_count as i64 - cap as i64,
-                });
-            }
-        }
-    }
-
-    sort_violations(&mut violations);
-    violations
+    collect_violations(scan, config, |unit| resolve_cap(caps, unit))
 }
 
 /// Compute deltas between scan and baseline for reporting (non-failing).
