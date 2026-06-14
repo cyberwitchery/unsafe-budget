@@ -3,7 +3,7 @@ use crate::error::{Error, Result};
 use crate::model::{CheckResult, ScanResult, Unit, UnitKind, Violation, Warning};
 use std::collections::{HashMap, HashSet};
 
-/// Check scan results against baseline/caps based on config mode.
+/// check scan results against baseline/caps based on config mode.
 pub fn check(
     scan: &ScanResult,
     baseline: Option<&Baseline>,
@@ -114,7 +114,7 @@ fn budget_for_unit(
     }
 }
 
-/// Look up the cap for a unit from the caps configuration.
+/// look up the cap for a unit from the caps configuration.
 fn resolve_cap(caps: &Caps, unit: &Unit) -> Option<u64> {
     match unit.kind {
         UnitKind::Workspace => caps.workspace.get(&unit.name).copied().or(caps.default),
@@ -122,12 +122,12 @@ fn resolve_cap(caps: &Caps, unit: &Unit) -> Option<u64> {
     }
 }
 
-/// Sort violations by delta (descending), then by unit name (ascending).
+/// sort violations by delta (descending), then by unit name (ascending).
 fn sort_violations(violations: &mut [Violation]) {
     violations.sort_by(|a, b| b.delta.cmp(&a.delta).then_with(|| a.unit.cmp(&b.unit)));
 }
 
-/// Collect violations by iterating scan units, skipping ignored ones, resolving
+/// collect violations by iterating scan units, skipping ignored ones, resolving
 /// a baseline value via the provided closure, and flagging any unit whose count
 /// exceeds its baseline.  Returns `None` from the closure to skip a unit.
 fn collect_violations(
@@ -163,7 +163,7 @@ fn collect_violations(
     violations
 }
 
-/// Check against ratchet baseline - fail if any unit exceeds its baseline count.
+/// check against ratchet baseline - fail if any unit exceeds its baseline count.
 fn check_ratchet(
     scan: &ScanResult,
     baseline_map: &HashMap<&str, u64>,
@@ -174,12 +174,12 @@ fn check_ratchet(
     })
 }
 
-/// Check against explicit caps.
+/// check against explicit caps.
 fn check_caps(scan: &ScanResult, caps: &Caps, config: &Config) -> Vec<Violation> {
     collect_violations(scan, config, |unit| resolve_cap(caps, unit))
 }
 
-/// Compute deltas between scan and baseline for reporting (non-failing).
+/// compute deltas between scan and baseline for reporting (non-failing).
 pub fn compute_deltas(scan: &ScanResult, baseline: &Baseline) -> HashMap<String, i64> {
     let baseline_map = baseline.unit_map();
 

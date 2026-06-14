@@ -12,10 +12,10 @@ const RULE_BUDGET_VIOLATION: &str = "budget_violation";
 const RULE_BUDGET_WARNING: &str = "budget_warning";
 const RULE_PARSE_WARNING: &str = "parse_warning";
 
-/// Convert a scan result into a SARIF 2.1.0 log.
+/// convert a scan result into a SARIF 2.1.0 log.
 ///
-/// Each occurrence becomes a SARIF result with level "warning".
-/// If there are no details (occurrences), the results array will be empty.
+/// each occurrence becomes a SARIF result with level "warning".
+/// if there are no details (occurrences), the results array will be empty.
 pub fn scan_to_sarif(result: &ScanResult) -> sarif::Sarif {
     let mut rules = vec![make_unsafe_code_rule()];
     if !result.parse_warnings.is_empty() {
@@ -38,9 +38,9 @@ pub fn scan_to_sarif(result: &ScanResult) -> sarif::Sarif {
         .build()
 }
 
-/// Convert a check result into a SARIF 2.1.0 log.
+/// convert a check result into a SARIF 2.1.0 log.
 ///
-/// Occurrences become "warning" results. Violations become "error" results.
+/// occurrences become "warning" results. Violations become "error" results.
 pub fn check_to_sarif(result: &CheckResult) -> sarif::Sarif {
     let mut rules = vec![make_unsafe_code_rule()];
     if !result.violations.is_empty() {
@@ -237,8 +237,8 @@ fn make_occurrence_results(details: &[crate::model::Occurrence]) -> Vec<sarif::R
         .collect()
 }
 
-/// Sort results for deterministic output.
-/// Results without locations come first sorted by message,
+/// sort results for deterministic output.
+/// results without locations come first sorted by message,
 /// then results with locations sorted by (file, line, col, rule_id).
 fn sort_results(results: &mut [sarif::Result]) {
     results.sort_by(|a, b| {
@@ -373,7 +373,7 @@ mod tests {
         let results = run.results.as_ref().unwrap();
         assert_eq!(results.len(), 2);
 
-        // First result (sorted by line)
+        // first result (sorted by line)
         assert_eq!(results[0].rule_id.as_deref(), Some("unsafe_code"));
         assert_eq!(results[0].level, Some(sarif::ResultLevel::Warning));
         assert_eq!(results[0].message.text.as_deref(), Some("unsafe block"));
@@ -394,7 +394,7 @@ mod tests {
         assert_eq!(loc.region.as_ref().unwrap().start_line, Some(10));
         assert_eq!(loc.region.as_ref().unwrap().start_column, Some(5));
 
-        // Second result uses default message
+        // second result uses default message
         assert_eq!(
             results[1].message.text.as_deref(),
             Some("unsafe code usage")
@@ -412,7 +412,7 @@ mod tests {
 
     #[test]
     fn test_scan_to_sarif_deterministic() {
-        // Feed occurrences in reverse order
+        // feed occurrences in reverse order
         let details = vec![
             Occurrence {
                 unit: "my_crate".into(),
@@ -444,7 +444,7 @@ mod tests {
             .iter()
             .map(|r| r.message.text.as_deref().unwrap())
             .collect();
-        // Sorted by file then line
+        // sorted by file then line
         assert_eq!(messages, vec!["zeroth", "first", "third"]);
     }
 
@@ -495,7 +495,7 @@ mod tests {
             .unwrap()
             .contains("exceeds budget"));
 
-        // Violation includes locations from matching occurrences
+        // violation includes locations from matching occurrences
         let locs = violation_result.locations.as_ref().unwrap();
         assert_eq!(locs.len(), 1);
         let pl = locs[0].physical_location.as_ref().unwrap();
@@ -527,7 +527,7 @@ mod tests {
         let sarif = check_to_sarif(&check);
         let run = &sarif.runs[0];
 
-        // No budget_violation rule when there are no violations
+        // no budget_violation rule when there are no violations
         let rules = run.tool.driver.rules.as_ref().unwrap();
         assert_eq!(rules.len(), 1);
         assert_eq!(rules[0].id, "unsafe_code");
@@ -583,7 +583,7 @@ mod tests {
             .unwrap()
             .contains("near its budget"));
 
-        // Warning includes locations from matching occurrences
+        // warning includes locations from matching occurrences
         let locs = warning_result.locations.as_ref().unwrap();
         assert_eq!(locs.len(), 1);
         let pl = locs[0].physical_location.as_ref().unwrap();
@@ -654,7 +654,7 @@ mod tests {
         let scan = make_scan_result(details);
         let sarif_out = scan_to_sarif(&scan);
 
-        // Serialize and parse back
+        // serialize and parse back
         let json = serde_json::to_string_pretty(&sarif_out).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
 
@@ -669,7 +669,7 @@ mod tests {
 
     #[test]
     fn test_check_to_sarif_violation_no_matching_occurrences() {
-        // Occurrences are for "my_crate" but violation is for "other_crate"
+        // occurrences are for "my_crate" but violation is for "other_crate"
         let scan = make_scan_result(vec![Occurrence {
             unit: "my_crate".into(),
             file: PathBuf::from("src/lib.rs"),
@@ -699,7 +699,7 @@ mod tests {
             .find(|r| r.rule_id.as_deref() == Some("budget_violation"))
             .unwrap();
 
-        // No matching occurrences => no locations
+        // no matching occurrences => no locations
         assert!(violation_result.locations.is_none());
     }
 
@@ -751,7 +751,7 @@ mod tests {
             .find(|r| r.rule_id.as_deref() == Some("budget_violation"))
             .unwrap();
 
-        // Only my_crate occurrences, sorted by file/line/col
+        // only my_crate occurrences, sorted by file/line/col
         let locs = violation_result.locations.as_ref().unwrap();
         assert_eq!(locs.len(), 2);
         assert_eq!(
@@ -806,7 +806,7 @@ mod tests {
         let results = sarif.runs[0].results.as_ref().unwrap();
         assert_eq!(results.len(), 2);
 
-        // Both at same location; budget_violation sorts before unsafe_code
+        // both at same location; budget_violation sorts before unsafe_code
         let rule_ids: Vec<_> = results
             .iter()
             .map(|r| r.rule_id.as_deref().unwrap())

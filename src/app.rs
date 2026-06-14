@@ -39,7 +39,7 @@ fn cmd_scan(args: ScanArgs) -> Result<ExitCode> {
 
     result = apply_ignore_filter(result, &config.ignore);
 
-    // Filter details if not requested
+    // filter details if not requested
     if !args.details {
         result.details.clear();
     }
@@ -56,7 +56,7 @@ fn cmd_check(args: ScanArgs) -> Result<ExitCode> {
     let result = analyzer.run(&opts)?;
     let result = apply_ignore_filter(result, &config.ignore);
 
-    // Load baseline for ratchet mode
+    // load baseline for ratchet mode
     let baseline = match config.mode {
         crate::config::Mode::Ratchet => {
             let dir = get_project_dir(&args)?;
@@ -65,7 +65,7 @@ fn cmd_check(args: ScanArgs) -> Result<ExitCode> {
         crate::config::Mode::Caps => None,
     };
 
-    // Reject baselines created with a different analyzer
+    // reject baselines created with a different analyzer
     if let Some(bl) = baseline.as_ref() {
         if bl.analyzer_id != result.analyzer_id {
             return Err(Error::Baseline(format!(
@@ -76,7 +76,7 @@ fn cmd_check(args: ScanArgs) -> Result<ExitCode> {
         }
     }
 
-    // Warn when the current scan scope differs from the baseline scope
+    // warn when the current scan scope differs from the baseline scope
     if let Some(bl) = baseline.as_ref() {
         let current_scope = Scope::from(&opts);
         let diffs = bl.scope.diff_fields(&current_scope);
@@ -90,7 +90,7 @@ fn cmd_check(args: ScanArgs) -> Result<ExitCode> {
 
     let mut check_result = budget::check(&result, baseline.as_ref(), &config)?;
 
-    // Filter details if not requested
+    // filter details if not requested
     if !args.details {
         check_result.scan.details.clear();
     }
@@ -184,11 +184,11 @@ fn build_scan_opts(args: &ScanArgs, config: &Config) -> ScanOpts {
     }
 }
 
-/// Remove occurrences that match an `[[ignore]]` config entry and recompute unit
+/// remove occurrences that match an `[[ignore]]` config entry and recompute unit
 /// counts and totals. A match requires both the file path and line number to be
 /// equal; the `reason` field is documentation only.
 ///
-/// If `ignores` is empty this is a no-op. If the scan result has no detail
+/// if `ignores` is empty this is a no-op. If the scan result has no detail
 /// occurrences (e.g. cargo_geiger only provides aggregate counts), this is also
 /// a no-op — there are no individual occurrences to match against.
 fn apply_ignore_filter(mut result: ScanResult, ignores: &[IgnoreEntry]) -> ScanResult {
@@ -205,7 +205,7 @@ fn apply_ignore_filter(mut result: ScanResult, ignores: &[IgnoreEntry]) -> ScanR
         .details
         .retain(|occ| !ignore_set.contains(&(occ.file.as_path(), occ.line)));
 
-    // Recompute per-unit counts from the filtered details.
+    // recompute per-unit counts from the filtered details.
     let mut counts: HashMap<&str, u64> = HashMap::new();
     for occ in &result.details {
         *counts.entry(occ.unit.as_str()).or_default() += 1;
@@ -214,7 +214,7 @@ fn apply_ignore_filter(mut result: ScanResult, ignores: &[IgnoreEntry]) -> ScanR
         unit.unsafe_count = counts.get(unit.name.as_str()).copied().unwrap_or(0);
     }
 
-    // Recompute totals.
+    // recompute totals.
     result.totals = Totals::from_units(&result.units);
 
     result
@@ -399,7 +399,7 @@ mod tests {
     #[test]
     fn ignore_filter_requires_both_file_and_line_to_match() {
         let result = make_result_with_details();
-        // Right file, wrong line
+        // right file, wrong line
         let ignores = vec![IgnoreEntry {
             file: PathBuf::from("src/ffi.rs"),
             line: 99,
@@ -413,7 +413,7 @@ mod tests {
 
     #[test]
     fn ignore_filter_no_details_preserves_counts() {
-        // This is the cargo_geiger bug: aggregate counts with no details.
+        // this is the cargo_geiger bug: aggregate counts with no details.
         let result = make_result_without_details();
         let ignores = vec![IgnoreEntry {
             file: PathBuf::from("src/lib.rs"),
@@ -422,7 +422,7 @@ mod tests {
         }];
         let filtered = apply_ignore_filter(result, &ignores);
 
-        // Counts must NOT be zeroed.
+        // counts must NOT be zeroed.
         assert_eq!(filtered.units[0].unsafe_count, 10);
         assert_eq!(filtered.units[1].unsafe_count, 200);
         assert_eq!(filtered.totals.workspace_unsafe, 10);
@@ -459,7 +459,7 @@ mod tests {
 
     #[test]
     fn ignore_filter_removes_all_occurrences_zeros_counts() {
-        // When details ARE present and all are filtered, counts should go to 0.
+        // when details ARE present and all are filtered, counts should go to 0.
         let result = make_result_with_details();
         let ignores = vec![
             IgnoreEntry {
@@ -494,7 +494,7 @@ mod tests {
     #[test]
     fn ignore_filter_recomputes_dep_totals() {
         let mut result = make_result_with_details();
-        // Add a dep unit with a detail occurrence.
+        // add a dep unit with a detail occurrence.
         result.units.push(Unit {
             name: "dep_crate".into(),
             kind: UnitKind::Dep,
@@ -524,7 +524,7 @@ mod tests {
 
     #[test]
     fn ignore_filter_many_ignores_scales_linearly() {
-        // Regression: ensure that a large number of ignore rules does not cause
+        // regression: ensure that a large number of ignore rules does not cause
         // quadratic behaviour. With O(n*m) filtering this would iterate
         // 4 * 1000 = 4000 times; with a HashSet it's 4 lookups + 1000 inserts.
         let result = make_result_with_details();
@@ -535,7 +535,7 @@ mod tests {
                 reason: None,
             })
             .collect();
-        // Slip in one real match.
+        // slip in one real match.
         ignores.push(IgnoreEntry {
             file: PathBuf::from("src/ffi.rs"),
             line: 42,
@@ -575,10 +575,10 @@ mod tests {
         // verify the mismatch is detectable:
         assert_ne!(baseline.analyzer_id, scan.analyzer_id);
 
-        // Verify the check still runs (no panic) — budget sees mismatched units:
+        // verify the check still runs (no panic) — budget sees mismatched units:
         let _result = budget::check(&scan, Some(&baseline), &config).unwrap();
 
-        // Verify the error message we'd produce in cmd_check:
+        // verify the error message we'd produce in cmd_check:
         let err = Error::Baseline(format!(
             "analyzer mismatch: baseline was created with '{}' but current analyzer is '{}'",
             baseline.analyzer_id, scan.analyzer_id

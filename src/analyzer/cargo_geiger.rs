@@ -119,8 +119,8 @@ fn convert_report(report: &GeigerReport, opts: &ScanOpts) -> (Vec<Unit>, Vec<Occ
     let mut counts: HashMap<String, (UnitKind, u64)> = HashMap::new();
 
     for pkg in &report.packages {
-        // Determine if workspace or dep based on source
-        // Workspace packages have no source (path dependencies from workspace)
+        // determine if workspace or dep based on source
+        // workspace packages have no source (path dependencies from workspace)
         let is_workspace = pkg.package.source.is_none();
         let kind = if is_workspace {
             UnitKind::Workspace

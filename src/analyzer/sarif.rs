@@ -98,7 +98,7 @@ fn convert_sarif(sarif: &Sarif, opts: &ScanOpts) -> Result<ScanResult> {
     ))
 }
 
-/// Check whether `word` appears in `haystack` at a left word boundary:
+/// check whether `word` appears in `haystack` at a left word boundary:
 /// either at the start of the string or immediately after a non-alphanumeric
 /// character. This prevents substring false positives such as "cargo" or
 /// "django" matching "go".
@@ -119,7 +119,7 @@ fn has_leading_word(haystack: &str, word: &str) -> bool {
     false
 }
 
-/// Infer language from the SARIF tool driver name.
+/// infer language from the SARIF tool driver name.
 fn infer_language(tool_name: &str) -> String {
     let lower = tool_name.to_lowercase();
     if lower.contains("rust") || lower.contains("cargo") || lower.contains("clippy") {
@@ -133,14 +133,14 @@ fn infer_language(tool_name: &str) -> String {
     }
 }
 
-/// Extract a unit name from an artifact URI.
+/// extract a unit name from an artifact URI.
 ///
-/// Looks for a `src` path component and uses the directory immediately
+/// looks for a `src` path component and uses the directory immediately
 /// before it as the crate/package name. This handles Rust workspace
 /// layouts where every crate has `crate_name/src/lib.rs` — without
 /// this, all such paths would collapse into unit `"src"`.
 ///
-/// Falls back to the first directory component when no `src` segment
+/// falls back to the first directory component when no `src` segment
 /// is found, or `"unknown"` for bare filenames.
 fn extract_unit_name(uri: &str) -> String {
     let path_str = uri.strip_prefix("file://").unwrap_or(uri);
@@ -154,14 +154,14 @@ fn extract_unit_name(uri: &str) -> String {
         })
         .collect();
 
-    // Need at least a directory and a filename.
+    // need at least a directory and a filename.
     if components.len() < 2 {
         return "unknown".into();
     }
 
     let dirs = &components[..components.len() - 1];
 
-    // If a "src" directory appears after at least one other component,
+    // if a "src" directory appears after at least one other component,
     // the component before it is the crate/package name.
     for (i, dir) in dirs.iter().enumerate() {
         if dir == "src" && i > 0 {
@@ -169,7 +169,7 @@ fn extract_unit_name(uri: &str) -> String {
         }
     }
 
-    // No "src" found, or "src" is the first component — use the first
+    // no "src" found, or "src" is the first component — use the first
     // directory as the unit name.
     dirs[0].clone()
 }
@@ -213,7 +213,7 @@ mod tests {
 
     #[test]
     fn test_infer_language_go_not_substring() {
-        // Tool names containing "go" as a substring must not match.
+        // tool names containing "go" as a substring must not match.
         assert_eq!(infer_language("django"), "unknown");
         assert_eq!(infer_language("errgo"), "unknown");
         assert_eq!(infer_language("mango-lint"), "unknown");
@@ -340,7 +340,7 @@ mod tests {
 
     #[test]
     fn test_convert_sarif_missing_locations() {
-        // Result without locations should be skipped
+        // result without locations should be skipped
         let result_no_loc = sarif::Result::builder()
             .message(
                 sarif::Message::builder()
@@ -357,7 +357,7 @@ mod tests {
         let opts = ScanOpts::default();
         let result = convert_sarif(&sarif_log, &opts).unwrap();
 
-        // Only the result with a location should be counted
+        // only the result with a location should be counted
         assert_eq!(result.details.len(), 1);
         assert_eq!(result.units[0].unsafe_count, 1);
     }
@@ -418,7 +418,7 @@ mod tests {
         let result = convert_sarif(&sarif_log, &opts).unwrap();
 
         assert_eq!(result.units.len(), 2);
-        // Sorted alphabetically
+        // sorted alphabetically
         assert_eq!(result.units[0].name, "crate_a");
         assert_eq!(result.units[0].unsafe_count, 2);
         assert_eq!(result.units[1].name, "crate_b");
@@ -427,7 +427,7 @@ mod tests {
 
     #[test]
     fn test_convert_sarif_workspace_src_paths() {
-        // Previously all of these collapsed into unit "src".
+        // previously all of these collapsed into unit "src".
         let sarif_log = make_sarif(vec![
             make_sarif_result("crate_a/src/lib.rs", 10, 1, "in crate_a"),
             make_sarif_result("crate_b/src/lib.rs", 5, 1, "in crate_b"),

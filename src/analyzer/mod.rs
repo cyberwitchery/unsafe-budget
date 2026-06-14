@@ -9,19 +9,19 @@ use crate::model::{Occurrence, ScanOpts, ScanResult, Unit, UnitKind};
 use std::collections::{HashMap, HashSet};
 use std::process::Command;
 
-/// Trait for unsafe code analyzers.
+/// trait for unsafe code analyzers.
 pub trait Analyzer {
-    /// Unique identifier for this analyzer.
+    /// unique identifier for this analyzer.
     fn id(&self) -> &str;
 
-    /// Language this analyzer targets.
+    /// language this analyzer targets.
     fn language(&self) -> &str;
 
-    /// Run the analysis with the given options.
+    /// run the analysis with the given options.
     fn run(&self, opts: &ScanOpts) -> Result<ScanResult>;
 }
 
-/// Information about an available analyzer.
+/// information about an available analyzer.
 #[derive(Debug, Clone)]
 pub struct AnalyzerInfo {
     pub id: String,
@@ -30,13 +30,13 @@ pub struct AnalyzerInfo {
     pub path: Option<std::path::PathBuf>,
 }
 
-/// Built-in analyzer IDs.
+/// built-in analyzer IDs.
 pub const RUSTC_UNSAFE_LINT: &str = "rustc_unsafe_lint";
 pub const CARGO_GEIGER: &str = "cargo_geiger";
 pub const GO_GEIGER: &str = "go_geiger";
 pub const SARIF: &str = "sarif";
 
-/// Get an analyzer by ID.
+/// get an analyzer by ID.
 pub fn get_analyzer(id: &str) -> Result<Box<dyn Analyzer>> {
     match id {
         RUSTC_UNSAFE_LINT => Ok(Box::new(rustc::RustcAnalyzer)),
@@ -44,7 +44,7 @@ pub fn get_analyzer(id: &str) -> Result<Box<dyn Analyzer>> {
         GO_GEIGER => Ok(Box::new(go_geiger::GoGeigerAnalyzer)),
         SARIF => Ok(Box::new(sarif::SarifAnalyzer)),
         _ => {
-            // Check for external plugin
+            // check for external plugin
             let plugins = plugin::discover_plugins();
             if let Some(info) = plugins.iter().find(|p| p.id == id) {
                 if let Some(ref path) = info.path {
@@ -63,33 +63,33 @@ pub fn get_analyzer(id: &str) -> Result<Box<dyn Analyzer>> {
     }
 }
 
-/// Get the default analyzer (rustc unsafe lint).
+/// get the default analyzer (rustc unsafe lint).
 pub fn default_analyzer() -> Box<dyn Analyzer> {
     Box::new(rustc::RustcAnalyzer)
 }
 
-/// Auto-detect analyzer based on project files.
+/// auto-detect analyzer based on project files.
 pub fn detect_analyzer(opts: &ScanOpts) -> Result<Box<dyn Analyzer>> {
     let dir = match opts.manifest_path.as_ref().and_then(|p| p.parent()) {
         Some(p) => p.to_path_buf(),
         None => std::env::current_dir()?,
     };
 
-    // Check for Go project
+    // check for Go project
     if dir.join("go.mod").exists() || dir.join("go.sum").exists() {
         return Ok(Box::new(go_geiger::GoGeigerAnalyzer));
     }
 
-    // Check for Rust project (default)
+    // check for Rust project (default)
     if dir.join("Cargo.toml").exists() {
         return Ok(Box::new(rustc::RustcAnalyzer));
     }
 
-    // Default to rustc
+    // default to rustc
     Ok(Box::new(rustc::RustcAnalyzer))
 }
 
-/// List all available analyzers (built-in + discovered plugins).
+/// list all available analyzers (built-in + discovered plugins).
 pub fn list_analyzers() -> Vec<AnalyzerInfo> {
     let mut analyzers = vec![
         AnalyzerInfo {
@@ -122,9 +122,9 @@ pub fn list_analyzers() -> Vec<AnalyzerInfo> {
     analyzers
 }
 
-/// Apply common cargo CLI flags from `ScanOpts` to a command.
+/// apply common cargo CLI flags from `ScanOpts` to a command.
 ///
-/// Adds `--all-features`, `--no-default-features`, `--features`,
+/// adds `--all-features`, `--no-default-features`, `--features`,
 /// `--all-targets`, `--target`, and `--manifest-path` flags as appropriate.
 pub(crate) fn apply_cargo_flags(cmd: &mut Command, opts: &ScanOpts) {
     if opts.all_features {
@@ -149,10 +149,10 @@ pub(crate) fn apply_cargo_flags(cmd: &mut Command, opts: &ScanOpts) {
     }
 }
 
-/// Aggregate pre-collected unit counts and occurrences into sorted, filtered
+/// aggregate pre-collected unit counts and occurrences into sorted, filtered
 /// results.
 ///
-/// Filters out dependency units when `opts.workspace_only` is set or
+/// filters out dependency units when `opts.workspace_only` is set or
 /// `opts.include_deps` is false, converts the count map into sorted [`Unit`]
 /// values, and sorts the detail occurrences for deterministic output.
 pub(crate) fn aggregate_units(
@@ -246,7 +246,7 @@ mod tests {
     fn test_list_analyzers_has_builtins() {
         let analyzers = list_analyzers();
 
-        // Should have at least the 4 built-in analyzers
+        // should have at least the 4 built-in analyzers
         assert!(analyzers.len() >= 4);
 
         let ids: Vec<_> = analyzers.iter().map(|a| a.id.as_str()).collect();
@@ -443,7 +443,7 @@ mod tests {
         assert!(args.contains(&"--manifest-path".to_string()));
         assert!(args.contains(&"/path/to/Cargo.toml".to_string()));
 
-        // Check features are paired correctly
+        // check features are paired correctly
         let feat_positions: Vec<_> = args
             .iter()
             .enumerate()
@@ -454,7 +454,7 @@ mod tests {
         assert_eq!(args[feat_positions[0] + 1], "feat1");
         assert_eq!(args[feat_positions[1] + 1], "feat2");
 
-        // Check target is paired correctly
+        // check target is paired correctly
         let target_pos = args.iter().position(|a| a == "--target").unwrap();
         assert_eq!(args[target_pos + 1], "x86_64-unknown-linux-gnu");
     }

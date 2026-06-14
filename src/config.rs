@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// Budget enforcement mode.
+/// budget enforcement mode.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Mode {
@@ -14,7 +14,7 @@ pub enum Mode {
     Caps,
 }
 
-/// Caps configuration for explicit limits.
+/// caps configuration for explicit limits.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Caps {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -25,12 +25,12 @@ pub struct Caps {
     pub deps: HashMap<String, u64>,
 }
 
-/// A single occurrence to ignore when counting unsafe code.
+/// a single occurrence to ignore when counting unsafe code.
 ///
-/// Matches a specific file and line number in the scan output. The `reason`
+/// matches a specific file and line number in the scan output. The `reason`
 /// field is optional documentation for reviewers.
 ///
-/// # Example (unsafe-budget.toml)
+/// # example (unsafe-budget.toml)
 ///
 /// ```toml
 /// [[ignore]]
@@ -40,23 +40,23 @@ pub struct Caps {
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct IgnoreEntry {
-    /// File path relative to the project root.
+    /// file path relative to the project root.
     pub file: PathBuf,
-    /// Line number (1-indexed).
+    /// line number (1-indexed).
     pub line: u32,
-    /// Optional human-readable reason for the ignore.
+    /// optional human-readable reason for the ignore.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
 }
 
-/// Warning configuration for near-budget usage.
+/// warning configuration for near-budget usage.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Warnings {
-    /// Warn when usage reaches this fraction of budget, e.g. 0.8 for 80%.
+    /// warn when usage reaches this fraction of budget, e.g. 0.8 for 80%.
     pub threshold: f64,
 }
 
-/// Main configuration from unsafe-budget.toml.
+/// main configuration from unsafe-budget.toml.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     #[serde(default)]
@@ -67,9 +67,9 @@ pub struct Config {
     pub workspace_only: bool,
     #[serde(default)]
     pub ignore_units: Vec<String>,
-    /// Specific occurrences to exclude from counts.
+    /// specific occurrences to exclude from counts.
     ///
-    /// Each entry matches a file path and line number. Matched occurrences are
+    /// each entry matches a file path and line number. Matched occurrences are
     /// removed before budgets are checked, so they do not count toward any unit's
     /// unsafe total.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -78,9 +78,9 @@ pub struct Config {
     pub caps: Option<Caps>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub warnings: Option<Warnings>,
-    /// Timeout in seconds for external plugin execution.
+    /// timeout in seconds for external plugin execution.
     ///
-    /// When set, plugin subprocesses that exceed this duration are killed and
+    /// when set, plugin subprocesses that exceed this duration are killed and
     /// reported as errors. Prevents hanging plugins from blocking CI pipelines
     /// indefinitely.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -107,7 +107,7 @@ impl Default for Config {
 }
 
 impl Config {
-    /// Load config from file, or return defaults if not found.
+    /// load config from file, or return defaults if not found.
     pub fn load(path: &Path) -> Result<Self> {
         if !path.exists() {
             return Ok(Config::default());
@@ -117,13 +117,13 @@ impl Config {
         Ok(config)
     }
 
-    /// Load config from the standard location in a directory.
+    /// load config from the standard location in a directory.
     pub fn load_from_dir(dir: &Path) -> Result<Self> {
         Self::load(&dir.join("unsafe-budget.toml"))
     }
 }
 
-/// Baseline data from unsafe-budget.lock.
+/// baseline data from unsafe-budget.lock.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Baseline {
     pub tool_version: String,
@@ -133,7 +133,7 @@ pub struct Baseline {
     pub units: Vec<BaselineUnit>,
 }
 
-/// Unit entry in baseline file (uses string kind for TOML compatibility).
+/// unit entry in baseline file (uses string kind for TOML compatibility).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BaselineUnit {
     pub name: String,
@@ -152,7 +152,7 @@ impl From<&Unit> for BaselineUnit {
 }
 
 impl Baseline {
-    /// Load baseline from file.
+    /// load baseline from file.
     pub fn load(path: &Path) -> Result<Self> {
         if !path.exists() {
             return Err(Error::BaselineNotFound {
@@ -165,12 +165,12 @@ impl Baseline {
         Ok(baseline)
     }
 
-    /// Load baseline from the standard location in a directory.
+    /// load baseline from the standard location in a directory.
     pub fn load_from_dir(dir: &Path) -> Result<Self> {
         Self::load(&dir.join("unsafe-budget.lock"))
     }
 
-    /// Write baseline to file.
+    /// write baseline to file.
     pub fn save(&self, path: &Path) -> Result<()> {
         let content = toml::to_string_pretty(self)?;
         let header = "# Auto-generated by unsafe-budget. Do not edit manually.\n\n";
@@ -178,12 +178,12 @@ impl Baseline {
         Ok(())
     }
 
-    /// Save baseline to the standard location in a directory.
+    /// save baseline to the standard location in a directory.
     pub fn save_to_dir(&self, dir: &Path) -> Result<()> {
         self.save(&dir.join("unsafe-budget.lock"))
     }
 
-    /// Build a lookup map from unit name to unsafe count.
+    /// build a lookup map from unit name to unsafe count.
     pub fn unit_map(&self) -> HashMap<&str, u64> {
         self.units
             .iter()

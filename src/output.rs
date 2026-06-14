@@ -4,7 +4,7 @@ use crate::model::{CheckResult, Occurrence, ParseWarning, ScanResult, Unit, Viol
 use std::collections::{BTreeMap, HashMap};
 use std::io::{self, Write};
 
-/// Output format.
+/// output format.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Format {
     #[default]
@@ -26,7 +26,7 @@ impl std::str::FromStr for Format {
     }
 }
 
-/// Print scan result.
+/// print scan result.
 pub fn print_scan(result: &ScanResult, format: Format) -> io::Result<()> {
     let mut out = io::stdout().lock();
     match format {
@@ -39,7 +39,7 @@ pub fn print_scan(result: &ScanResult, format: Format) -> io::Result<()> {
     }
 }
 
-/// Print check result.
+/// print check result.
 pub fn print_check(
     result: &CheckResult,
     baseline: Option<&Baseline>,
@@ -56,7 +56,7 @@ pub fn print_check(
     }
 }
 
-/// Print plugin list.
+/// print plugin list.
 pub fn print_plugins(plugins: &[AnalyzerInfo], format: Format) -> io::Result<()> {
     let mut out = io::stdout().lock();
     match format {
@@ -105,7 +105,7 @@ fn print_scan_text(out: &mut impl Write, result: &ScanResult) -> io::Result<()> 
         return Ok(());
     }
 
-    // Sort by count desc for display
+    // sort by count desc for display
     let mut units: Vec<_> = result.units.iter().collect();
     units.sort_by(|a, b| {
         b.unsafe_count
@@ -165,12 +165,12 @@ fn print_check_text(
     )?;
     writeln!(out)?;
 
-    // Build delta map if baseline available
+    // build delta map if baseline available
     let deltas: HashMap<String, i64> = baseline
         .map(|b| crate::budget::compute_deltas(&result.scan, b))
         .unwrap_or_default();
 
-    // Build violation set for quick lookup
+    // build violation set for quick lookup
     let violation_set: HashMap<&str, &Violation> = result
         .violations
         .iter()
@@ -187,7 +187,7 @@ fn print_check_text(
         return Ok(());
     }
 
-    // Sort: violations first, then warnings, then others by count desc
+    // sort: violations first, then warnings, then others by count desc
     let mut units: Vec<&Unit> = result.scan.units.iter().collect();
     units.sort_by(|a, b| {
         let a_viol = violation_set.contains_key(a.name.as_str());
@@ -333,7 +333,7 @@ fn print_details_text(out: &mut impl Write, details: &[Occurrence]) -> io::Resul
         return Ok(());
     }
 
-    // Group by unit, sorted by unit name
+    // group by unit, sorted by unit name
     let mut by_unit: BTreeMap<&str, Vec<&Occurrence>> = BTreeMap::new();
     for occ in details {
         by_unit.entry(&occ.unit).or_default().push(occ);
@@ -343,7 +343,7 @@ fn print_details_text(out: &mut impl Write, details: &[Occurrence]) -> io::Resul
     writeln!(out, "Details:")?;
 
     for (unit, mut occs) in by_unit {
-        // Sort by file, then line, then column
+        // sort by file, then line, then column
         occs.sort_by(|a, b| {
             a.file
                 .cmp(&b.file)
@@ -425,10 +425,10 @@ mod tests {
 
     #[test]
     fn test_truncate_multibyte() {
-        // Should not panic on multi-byte characters
+        // should not panic on multi-byte characters
         assert_eq!(truncate("日本語のパッケージ名", 8), "日本語のパ...");
         assert_eq!(truncate("café_module_long", 10), "café_mo...");
-        // Fits exactly
+        // fits exactly
         assert_eq!(truncate("café", 10), "café");
     }
 
@@ -511,7 +511,7 @@ mod tests {
         print_json(&mut buf, &result).unwrap();
         let output = String::from_utf8(buf).unwrap();
 
-        // Should be valid JSON
+        // should be valid JSON
         let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
         assert_eq!(parsed["analyzer_id"], "test");
         assert_eq!(parsed["totals"]["overall_unsafe"], 15);
@@ -665,7 +665,7 @@ mod tests {
         let output = String::from_utf8(buf).unwrap();
 
         assert!(output.contains("Details:"));
-        // Units sorted alphabetically
+        // units sorted alphabetically
         let dep_pos = output.find("dep_a:").unwrap();
         let crate_pos = output.find("my_crate:").unwrap();
         assert!(dep_pos < crate_pos, "dep_a should appear before my_crate");
@@ -678,7 +678,7 @@ mod tests {
         print_details_text(&mut buf, &details).unwrap();
         let output = String::from_utf8(buf).unwrap();
 
-        // Within my_crate: src/api.rs should come before src/lib.rs
+        // within my_crate: src/api.rs should come before src/lib.rs
         let api_pos = output.find("src/api.rs:42:13").unwrap();
         let lib10_pos = output.find("src/lib.rs:10:5").unwrap();
         let lib25_pos = output.find("src/lib.rs:25:9").unwrap();
@@ -728,10 +728,10 @@ mod tests {
         print_scan_text(&mut buf, &result).unwrap();
         let output = String::from_utf8(buf).unwrap();
 
-        // Should still have the normal scan header
+        // should still have the normal scan header
         assert!(output.contains("unsafe-budget scan"));
         assert!(output.contains("Per-unit breakdown:"));
-        // And also the details section
+        // and also the details section
         assert!(output.contains("Details:"));
         assert!(output.contains("my_crate:"));
         assert!(output.contains("src/lib.rs:10:5 — unsafe block"));
@@ -769,7 +769,7 @@ mod tests {
         print_check_text(&mut buf, &check, None).unwrap();
         let output = String::from_utf8(buf).unwrap();
 
-        // Should have violations AND details
+        // should have violations AND details
         assert!(output.contains("Violations (1):"));
         assert!(output.contains("Details:"));
         assert!(output.contains("dep_a:"));

@@ -19,16 +19,16 @@ impl Analyzer for RustcAnalyzer {
     }
 
     fn run(&self, opts: &ScanOpts) -> Result<ScanResult> {
-        // Get workspace metadata to identify workspace members
+        // get workspace metadata to identify workspace members
         let workspace_members = get_workspace_members(opts)?;
 
-        // Run cargo check with unsafe_code warnings enabled
+        // run cargo check with unsafe_code warnings enabled
         let (stdout, _stderr) = run_cargo_check(opts)?;
 
-        // Parse diagnostics
+        // parse diagnostics
         let occurrences = parse_diagnostics(&stdout, &workspace_members)?;
 
-        // Aggregate into units
+        // aggregate into units
         let (units, details) = aggregate_occurrences(occurrences, &workspace_members, opts);
 
         Ok(ScanResult::from_parts(
@@ -41,7 +41,7 @@ impl Analyzer for RustcAnalyzer {
     }
 }
 
-/// Get workspace member package names.
+/// get workspace member package names.
 fn get_workspace_members(opts: &ScanOpts) -> Result<HashSet<String>> {
     let mut cmd = MetadataCommand::new();
 
@@ -66,7 +66,7 @@ fn get_workspace_members(opts: &ScanOpts) -> Result<HashSet<String>> {
     Ok(members)
 }
 
-/// Run cargo check and capture output.
+/// run cargo check and capture output.
 fn run_cargo_check(opts: &ScanOpts) -> Result<(Vec<u8>, String)> {
     let mut cmd = Command::new("cargo");
     cmd.arg("check")
@@ -74,7 +74,7 @@ fn run_cargo_check(opts: &ScanOpts) -> Result<(Vec<u8>, String)> {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    // Set RUSTFLAGS to enable unsafe_code lint
+    // set RUSTFLAGS to enable unsafe_code lint
     let existing_flags = std::env::var("RUSTFLAGS").unwrap_or_default();
     let new_flags = if existing_flags.is_empty() {
         "-Wunsafe_code".into()
@@ -85,7 +85,7 @@ fn run_cargo_check(opts: &ScanOpts) -> Result<(Vec<u8>, String)> {
 
     super::apply_cargo_flags(&mut cmd, opts);
 
-    // Add workspace flag if needed
+    // add workspace flag if needed
     if !opts.workspace_only {
         cmd.arg("--workspace");
     }
@@ -94,10 +94,10 @@ fn run_cargo_check(opts: &ScanOpts) -> Result<(Vec<u8>, String)> {
 
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 
-    // Don't fail on non-zero exit - warnings cause this
-    // Only fail if cargo itself failed catastrophically (no stdout at all and error in stderr)
+    // don't fail on non-zero exit - warnings cause this
+    // only fail if cargo itself failed catastrophically (no stdout at all and error in stderr)
     if output.stdout.is_empty() && !output.status.success() && !stderr.is_empty() {
-        // Check if it's actually a cargo error vs just warnings
+        // check if it's actually a cargo error vs just warnings
         if stderr.contains("error: could not compile")
             || stderr.contains("error[E")
             || stderr.contains("error: failed to")
@@ -112,7 +112,7 @@ fn run_cargo_check(opts: &ScanOpts) -> Result<(Vec<u8>, String)> {
     Ok((output.stdout, stderr))
 }
 
-/// Parse cargo JSON messages and extract unsafe_code diagnostics.
+/// parse cargo JSON messages and extract unsafe_code diagnostics.
 fn parse_diagnostics(
     stdout: &[u8],
     workspace_members: &HashSet<String>,
@@ -134,14 +134,14 @@ fn parse_diagnostics(
         if let Message::CompilerMessage(compiler_msg) = message {
             let diag = &compiler_msg.message;
 
-            // Check if this is an unsafe_code warning
+            // check if this is an unsafe_code warning
             let is_unsafe = diag.code.as_ref().is_some_and(|c| c.code == "unsafe_code");
 
             if !is_unsafe {
                 continue;
             }
 
-            // Get the primary span for location
+            // get the primary span for location
             let span = diag.spans.iter().find(|s| s.is_primary);
 
             let (file, line, col) = if let Some(span) = span {
@@ -154,10 +154,10 @@ fn parse_diagnostics(
                 continue; // Skip if no location
             };
 
-            // Determine the unit name from package_id
+            // determine the unit name from package_id
             let unit_name = extract_package_name(&compiler_msg.package_id.repr);
 
-            // Deduplicate
+            // deduplicate
             let key = (unit_name.clone(), file.clone(), line, col);
             if seen.contains(&key) {
                 continue;
@@ -186,13 +186,13 @@ fn parse_diagnostics(
     Ok(occurrences)
 }
 
-/// Extract package name from cargo's package_id representation.
-/// Handles formats like:
+/// extract package name from cargo's package_id representation.
+/// handles formats like:
 /// - "path+file:///path/to/crate#0.1.0" -> crate name from path
 /// - "registry+https://...#name@version" -> name
 /// - "crate_name 0.1.0 (registry+...)" -> crate_name
 fn extract_package_name(package_id: &str) -> String {
-    // New cargo format: "path+file:///path/to/crate#version" or "registry+...#name@version"
+    // new cargo format: "path+file:///path/to/crate#version" or "registry+...#name@version"
     if package_id.contains('#') {
         // registry+https://...#name@version -> extract name first (before path-based extraction)
         if package_id.starts_with("registry+") {
@@ -205,20 +205,20 @@ fn extract_package_name(package_id: &str) -> String {
 
         // path+file:///path/to/member#0.1.0 -> extract "member" from path
         if let Some(path_part) = package_id.split('#').next() {
-            // Remove scheme prefix like "path+file://"
+            // remove scheme prefix like "path+file://"
             let path = path_part
                 .strip_prefix("path+file://")
                 .or_else(|| path_part.strip_prefix("file://"))
                 .unwrap_or(path_part);
 
-            // Get the last component of the path as the crate name
+            // get the last component of the path as the crate name
             if let Some(name) = std::path::Path::new(path).file_name() {
                 return name.to_string_lossy().to_string();
             }
         }
     }
 
-    // Old format: "crate_name version (source)"
+    // old format: "crate_name version (source)"
     package_id
         .split_whitespace()
         .next()
@@ -226,7 +226,7 @@ fn extract_package_name(package_id: &str) -> String {
         .to_string()
 }
 
-/// Aggregate occurrences into units.
+/// aggregate occurrences into units.
 fn aggregate_occurrences(
     occurrences: Vec<(Occurrence, UnitKind)>,
     workspace_members: &HashSet<String>,
@@ -241,7 +241,7 @@ fn aggregate_occurrences(
         details.push(occ);
     }
 
-    // Ensure workspace members appear with 0 count when deps are excluded
+    // ensure workspace members appear with 0 count when deps are excluded
     if opts.workspace_only || !opts.include_deps {
         for member in workspace_members {
             counts
@@ -259,7 +259,7 @@ mod tests {
 
     #[test]
     fn test_extract_package_name_path_format() {
-        // New cargo format with path+file://
+        // new cargo format with path+file://
         assert_eq!(
             extract_package_name("path+file:///home/user/project/my_crate#0.1.0"),
             "my_crate"
@@ -272,7 +272,7 @@ mod tests {
 
     #[test]
     fn test_extract_package_name_registry_format() {
-        // Registry format with name@version
+        // registry format with name@version
         assert_eq!(
             extract_package_name(
                 "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.0"
@@ -289,7 +289,7 @@ mod tests {
 
     #[test]
     fn test_extract_package_name_old_format() {
-        // Old cargo format: "name version (source)"
+        // old cargo format: "name version (source)"
         assert_eq!(
             extract_package_name(
                 "serde 1.0.0 (registry+https://github.com/rust-lang/crates.io-index)"
@@ -394,7 +394,7 @@ mod tests {
 
         let (units, details) = aggregate_occurrences(occurrences, &workspace_members, &opts);
 
-        // Should only have workspace crate, deps filtered out
+        // should only have workspace crate, deps filtered out
         assert_eq!(units.len(), 1);
         assert_eq!(units[0].name, "my_crate");
         assert_eq!(details.len(), 1);
@@ -481,7 +481,7 @@ mod tests {
 
         let (units, _) = aggregate_occurrences(occurrences, &workspace_members, &opts);
 
-        // Units should be sorted alphabetically
+        // units should be sorted alphabetically
         assert_eq!(units[0].name, "alpha");
         assert_eq!(units[1].name, "beta");
         assert_eq!(units[2].name, "zebra");

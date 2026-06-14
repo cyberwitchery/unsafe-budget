@@ -65,9 +65,9 @@ pub struct Scope {
 }
 
 impl Scope {
-    /// Compare two scopes and return human-readable descriptions of fields that differ.
+    /// compare two scopes and return human-readable descriptions of fields that differ.
     ///
-    /// Returns an empty vec when both scopes are equal.
+    /// returns an empty vec when both scopes are equal.
     pub fn diff_fields(&self, other: &Scope) -> Vec<String> {
         let mut diffs = Vec::new();
 
@@ -297,9 +297,9 @@ pub struct ScanResult {
 }
 
 impl ScanResult {
-    /// Build a `ScanResult` from pre-aggregated parts.
+    /// build a `ScanResult` from pre-aggregated parts.
     ///
-    /// Sets `tool_version` to this crate's version, computes `totals` from
+    /// sets `tool_version` to this crate's version, computes `totals` from
     /// `units`, and derives `scope` from `opts`.
     pub fn from_parts(
         analyzer_id: impl Into<String>,

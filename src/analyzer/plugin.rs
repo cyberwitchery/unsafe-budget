@@ -9,7 +9,7 @@ use wait_timeout::ChildExt;
 
 const PLUGIN_PREFIX: &str = "unsafe-budget-plugin-";
 
-/// External plugin analyzer.
+/// external plugin analyzer.
 pub struct PluginAnalyzer {
     pub id: String,
     pub language: String,
@@ -30,7 +30,7 @@ impl Analyzer for PluginAnalyzer {
     }
 }
 
-/// Discover plugin executables on PATH.
+/// discover plugin executables on PATH.
 pub fn discover_plugins() -> Vec<AnalyzerInfo> {
     let path_var = match std::env::var("PATH") {
         Ok(p) => p,
@@ -46,7 +46,7 @@ pub fn discover_plugins() -> Vec<AnalyzerInfo> {
                 if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
                     if name.starts_with(PLUGIN_PREFIX) && is_executable(&path) {
                         let id = name.strip_prefix(PLUGIN_PREFIX).unwrap_or(name);
-                        // Try to get language from plugin
+                        // try to get language from plugin
                         let language =
                             probe_plugin_language(&path).unwrap_or_else(|| "unknown".into());
                         plugins.push(AnalyzerInfo {
@@ -66,7 +66,7 @@ pub fn discover_plugins() -> Vec<AnalyzerInfo> {
     plugins
 }
 
-/// Check if a path is executable.
+/// check if a path is executable.
 #[cfg(unix)]
 fn is_executable(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
@@ -81,7 +81,7 @@ fn is_executable(path: &Path) -> bool {
     path.is_file()
 }
 
-/// Try to get plugin language by running with --info.
+/// try to get plugin language by running with --info.
 fn probe_plugin_language(path: &Path) -> Option<String> {
     let output = Command::new(path)
         .arg("--info")
@@ -103,13 +103,13 @@ fn probe_plugin_language(path: &Path) -> Option<String> {
     Some(info.language)
 }
 
-/// Build a [`Command`] for an external plugin, setting the shared flags and
+/// build a [`Command`] for an external plugin, setting the shared flags and
 /// environment variables derived from [`ScanOpts`].
 fn build_plugin_cmd(path: &Path, opts: &ScanOpts) -> Command {
     let mut cmd = Command::new(path);
     cmd.arg("--format").arg("json");
 
-    // Pass options via environment
+    // pass options via environment
     cmd.env(
         "UNSAFE_BUDGET_WORKSPACE_ONLY",
         opts.workspace_only.to_string(),
@@ -135,7 +135,7 @@ fn build_plugin_cmd(path: &Path, opts: &ScanOpts) -> Command {
     cmd
 }
 
-/// Run an external plugin and parse its output.
+/// run an external plugin and parse its output.
 pub fn run_plugin(path: &Path, opts: &ScanOpts) -> Result<ScanResult> {
     let mut cmd = build_plugin_cmd(path, opts);
 
@@ -145,13 +145,13 @@ pub fn run_plugin(path: &Path, opts: &ScanOpts) -> Result<ScanResult> {
     }
 }
 
-/// Run a plugin command with no timeout (original behaviour).
+/// run a plugin command with no timeout (original behaviour).
 fn run_blocking(cmd: &mut Command, path: &std::path::Path) -> Result<ScanResult> {
     let output = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).output()?;
     parse_plugin_output(path, output.status, &output.stdout, &output.stderr)
 }
 
-/// Run a plugin command with a timeout, killing the child if it exceeds the
+/// run a plugin command with a timeout, killing the child if it exceeds the
 /// deadline.
 fn run_with_timeout(
     cmd: &mut Command,
@@ -160,7 +160,7 @@ fn run_with_timeout(
 ) -> Result<ScanResult> {
     let mut child = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
 
-    // Drain stdout and stderr on background threads so a plugin that produces
+    // drain stdout and stderr on background threads so a plugin that produces
     // lots of output cannot deadlock by filling the OS pipe buffer.
     let mut stdout_pipe = child.stdout.take().expect("stdout piped");
     let mut stderr_pipe = child.stderr.take().expect("stderr piped");
@@ -183,7 +183,7 @@ fn run_with_timeout(
             parse_plugin_output(path, status, &stdout, &stderr)
         }
         None => {
-            // Timed out — kill the child and clean up.
+            // timed out — kill the child and clean up.
             child.kill().ok();
             child.wait().ok();
             stdout_thread.join().ok();
@@ -197,7 +197,7 @@ fn run_with_timeout(
     }
 }
 
-/// Parse a completed plugin's output into a [`ScanResult`].
+/// parse a completed plugin's output into a [`ScanResult`].
 fn parse_plugin_output(
     path: &std::path::Path,
     status: std::process::ExitStatus,
@@ -423,7 +423,7 @@ mod tests {
 
     #[test]
     fn timeout_kills_slow_plugin() {
-        // Invoke `sleep` directly instead of via a script file to avoid
+        // invoke `sleep` directly instead of via a script file to avoid
         // ETXTBSY races under cargo-llvm-cov.  We must not use
         // `/bin/sh -c "sleep 60"` either — the shell may fork sleep as a
         // child, and killing the shell leaves the orphaned sleep holding
@@ -442,12 +442,12 @@ mod tests {
 
     #[test]
     fn timeout_allows_fast_plugin() {
-        // Same rationale as timeout_kills_slow_plugin — avoid script files
+        // same rationale as timeout_kills_slow_plugin — avoid script files
         // and intermediate shells.
         let dummy_path = PathBuf::from("fast-plugin");
         let mut cmd = Command::new("/bin/echo");
         cmd.arg("ok");
-        // The plugin exits quickly — the error here is a JSON parse failure, not
+        // the plugin exits quickly — the error here is a JSON parse failure, not
         // a timeout, proving it ran to completion.
         let result = run_with_timeout(&mut cmd, &dummy_path, Duration::from_secs(10));
         let err = result.unwrap_err();

@@ -31,7 +31,7 @@ fn run_go_geiger(opts: &ScanOpts) -> Result<Vec<u8>> {
     let mut cmd = Command::new("go-geiger");
 
     // go-geiger takes package patterns as arguments
-    // Default to ./... for current module
+    // default to ./... for current module
     let dir = opts
         .manifest_path
         .as_ref()
@@ -79,7 +79,7 @@ fn parse_geiger_output(
             continue;
         }
 
-        // Parse line: "file:line:col: message"
+        // parse line: "file:line:col: message"
         let parts: Vec<&str> = line.splitn(4, ':').collect();
         if parts.len() < 3 {
             warnings.push(ParseWarning {
@@ -103,8 +103,8 @@ fn parse_geiger_output(
         };
         let message = parts.get(3).map(|s| s.trim().to_string());
 
-        // Determine package name from file path
-        // Try to extract module/package name from path
+        // determine package name from file path
+        // try to extract module/package name from path
         let pkg_name = extract_go_package(&file).unwrap_or_else(|| {
             warnings.push(ParseWarning {
                 message: format!(
@@ -115,8 +115,8 @@ fn parse_geiger_output(
             "unknown".into()
         });
 
-        // Determine if this is a workspace package or dependency
-        // Dependencies are typically in vendor/ or go module cache
+        // determine if this is a workspace package or dependency
+        // dependencies are typically in vendor/ or go module cache
         let is_dep = file.to_string_lossy().contains("/vendor/")
             || file.to_string_lossy().contains("/go/pkg/mod/");
 
@@ -142,15 +142,15 @@ fn parse_geiger_output(
     Ok((units, details, warnings))
 }
 
-/// Extract Go package name from file path.
-/// Tries to find the package based on common Go project layouts.
+/// extract Go package name from file path.
+/// tries to find the package based on common Go project layouts.
 ///
-/// Returns `None` when no package name can be determined (e.g. bare
+/// returns `None` when no package name can be determined (e.g. bare
 /// filename with no parent directory).
 fn extract_go_package(file: &std::path::Path) -> Option<String> {
     let path_str = file.to_string_lossy();
 
-    // Check for vendor path
+    // check for vendor path
     if let Some(idx) = path_str.find("/vendor/") {
         let after_vendor = &path_str[idx + 8..];
         if let Some(end) = after_vendor.rfind('/') {
@@ -159,17 +159,17 @@ fn extract_go_package(file: &std::path::Path) -> Option<String> {
         return Some(after_vendor.to_string());
     }
 
-    // Check for go module cache path
+    // check for go module cache path
     if let Some(idx) = path_str.find("/go/pkg/mod/") {
         let after_mod = &path_str[idx + 12..];
-        // Format: module@version/path
+        // format: module@version/path
         if let Some(at_idx) = after_mod.find('@') {
             let module = &after_mod[..at_idx];
             return Some(module.to_string());
         }
     }
 
-    // For workspace files, use the parent directory name or file stem
+    // for workspace files, use the parent directory name or file stem
     file.parent()
         .and_then(|p| p.file_name())
         .map(|n| n.to_string_lossy().to_string())
