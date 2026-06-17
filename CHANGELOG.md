@@ -46,8 +46,10 @@ initial release.
 - works standalone or as a cargo subcommand (`cargo unsafe-budget`).
 - text and JSON output; baseline file (`unsafe-budget.lock`) and configuration via `unsafe-budget.toml`.
 
+[0.4.1]: https://github.com/cyberwitchery/unsafe-budget/compare/v0.4.0...v0.4.1
+[0.4.0]: https://github.com/cyberwitchery/unsafe-budget/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/cyberwitchery/unsafe-budget/releases/tag/v0.3.0
 [0.2.0]: https://github.com/cyberwitchery/unsafe-budget/releases/tag/v0.2.0
 [0.1.1]: https://github.com/cyberwitchery/unsafe-budget/releases/tag/v0.1.1
 [0.1.0]: https://github.com/cyberwitchery/unsafe-budget/releases/tag/v0.1.0
-[unreleased]: https://github.com/cyberwitchery/unsafe-budget/compare/v0.3.0...HEAD
+[unreleased]: https://github.com/cyberwitchery/unsafe-budget/compare/v0.4.1...HEAD
