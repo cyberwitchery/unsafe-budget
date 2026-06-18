@@ -3,6 +3,8 @@
 //! converts scan and check results into SARIF 2.1.0 format
 //! for integration with github code scanning, vs code, and other tools.
 
+use std::collections::HashMap;
+
 use crate::model::{CheckResult, ScanResult};
 use serde_sarif::sarif;
 
@@ -57,13 +59,17 @@ pub fn check_to_sarif(result: &CheckResult) -> sarif::Sarif {
     let tool = sarif::Tool::builder().driver(driver).build();
 
     let mut results = make_occurrence_results(&result.scan.details);
+    let location_map = build_location_map(&result.scan.details);
 
     for v in &result.violations {
         let message = format!(
             "unit '{}' exceeds budget: {} unsafe (budget: {}, delta: +{})",
             v.unit, v.actual, v.baseline, v.delta
         );
-        let locations = locations_for_unit(&v.unit, &result.scan.details);
+        let locations = location_map
+            .get(v.unit.as_str())
+            .cloned()
+            .unwrap_or_default();
         results.push(make_budget_result(
             RULE_BUDGET_VIOLATION,
             sarif::ResultLevel::Error,
@@ -77,7 +83,10 @@ pub fn check_to_sarif(result: &CheckResult) -> sarif::Sarif {
             "unit '{}' is near its budget: {} unsafe (budget: {})",
             w.unit, w.actual, w.budget
         );
-        let locations = locations_for_unit(&w.unit, &result.scan.details);
+        let locations = location_map
+            .get(w.unit.as_str())
+            .cloned()
+            .unwrap_or_default();
         results.push(make_budget_result(
             RULE_BUDGET_WARNING,
             sarif::ResultLevel::Note,
@@ -210,15 +219,25 @@ fn make_location(occ: &crate::model::Occurrence) -> sarif::Location {
         .build()
 }
 
-fn locations_for_unit(unit: &str, details: &[crate::model::Occurrence]) -> Vec<sarif::Location> {
-    let mut matching: Vec<_> = details.iter().filter(|occ| occ.unit == unit).collect();
-    matching.sort_by(|a, b| {
-        a.file
-            .cmp(&b.file)
-            .then(a.line.cmp(&b.line))
-            .then(a.col.cmp(&b.col))
-    });
-    matching.iter().map(|occ| make_location(occ)).collect()
+/// pre-build a map from unit name to sorted locations.
+/// avoids rescanning all details for each violation/warning.
+fn build_location_map(details: &[crate::model::Occurrence]) -> HashMap<&str, Vec<sarif::Location>> {
+    let mut by_unit: HashMap<&str, Vec<&crate::model::Occurrence>> = HashMap::new();
+    for occ in details {
+        by_unit.entry(occ.unit.as_str()).or_default().push(occ);
+    }
+    by_unit
+        .into_iter()
+        .map(|(unit, mut occs)| {
+            occs.sort_by(|a, b| {
+                a.file
+                    .cmp(&b.file)
+                    .then(a.line.cmp(&b.line))
+                    .then(a.col.cmp(&b.col))
+            });
+            (unit, occs.iter().map(|occ| make_location(occ)).collect())
+        })
+        .collect()
 }
 
 fn make_occurrence_results(details: &[crate::model::Occurrence]) -> Vec<sarif::Result> {
