@@ -41,7 +41,7 @@ pub struct ScanArgs {
     pub workspace_only: bool,
 
     /// include dependencies in scan (default: from config or true)
-    #[arg(long)]
+    #[arg(long, conflicts_with = "no_deps")]
     pub include_deps: bool,
 
     /// exclude dependencies from scan
@@ -104,4 +104,43 @@ pub fn parse() -> Cli {
     }
 
     Cli::parse_from(args)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::error::ErrorKind;
+
+    #[test]
+    fn include_deps_and_no_deps_conflict() {
+        let result = Cli::try_parse_from(["unsafe-budget", "scan", "--include-deps", "--no-deps"]);
+        match result {
+            Err(e) => assert_eq!(e.kind(), ErrorKind::ArgumentConflict),
+            Ok(_) => panic!("expected ArgumentConflict error"),
+        }
+    }
+
+    #[test]
+    fn include_deps_alone_is_accepted() {
+        let cli = Cli::try_parse_from(["unsafe-budget", "scan", "--include-deps"]).unwrap();
+        match cli.command {
+            Command::Scan(args) => {
+                assert!(args.include_deps);
+                assert!(!args.no_deps);
+            }
+            _ => panic!("expected scan command"),
+        }
+    }
+
+    #[test]
+    fn no_deps_alone_is_accepted() {
+        let cli = Cli::try_parse_from(["unsafe-budget", "scan", "--no-deps"]).unwrap();
+        match cli.command {
+            Command::Scan(args) => {
+                assert!(!args.include_deps);
+                assert!(args.no_deps);
+            }
+            _ => panic!("expected scan command"),
+        }
+    }
 }

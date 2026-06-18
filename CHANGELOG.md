@@ -1,5 +1,9 @@
 # changelog
 
+## Unreleased
+
+- `--include-deps` and `--no-deps` now conflict at the CLI level, preventing contradictory invocations that previously had undefined behavior.
+
 ## [0.4.1] - 2026-06-08
 
 - fix: `caps.default` now applies to workspace crates that have no explicit `[caps.workspace]` entry, instead of silently skipping them from budget checks.
