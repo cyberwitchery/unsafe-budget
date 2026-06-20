@@ -307,8 +307,7 @@ mod tests {
 
         #[test]
         fn nonzero_exit_empty_stdout_unknown_error_is_err() {
-            // previously this fell through because the stderr didn't match
-            // specific patterns — this was the bug
+            // empty stdout + failure is an error regardless of stderr content
             let result = check_cargo_output(&exit_failure(), b"", "error: linker `cc` not found");
             assert!(result.is_err());
         }

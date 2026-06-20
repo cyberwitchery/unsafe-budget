@@ -427,7 +427,6 @@ mod tests {
 
     #[test]
     fn test_convert_sarif_workspace_src_paths() {
-        // previously all of these collapsed into unit "src".
         let sarif_log = make_sarif(vec![
             make_sarif_result("crate_a/src/lib.rs", 10, 1, "in crate_a"),
             make_sarif_result("crate_b/src/lib.rs", 5, 1, "in crate_b"),
