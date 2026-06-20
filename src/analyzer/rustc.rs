@@ -93,23 +93,27 @@ fn run_cargo_check(opts: &ScanOpts) -> Result<(Vec<u8>, String)> {
     let output = cmd.output()?;
 
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-
-    // don't fail on non-zero exit - warnings cause this
-    // only fail if cargo itself failed catastrophically (no stdout at all and error in stderr)
-    if output.stdout.is_empty() && !output.status.success() && !stderr.is_empty() {
-        // check if it's actually a cargo error vs just warnings
-        if stderr.contains("error: could not compile")
-            || stderr.contains("error[E")
-            || stderr.contains("error: failed to")
-        {
-            return Err(Error::Cargo {
-                message: "cargo check failed".into(),
-                stderr,
-            });
-        }
-    }
-
+    check_cargo_output(&output.status, &output.stdout, &stderr)?;
     Ok((output.stdout, stderr))
+}
+
+/// check whether cargo's output indicates an infrastructure failure.
+/// warnings cause non-zero exit but still produce JSON diagnostics on stdout,
+/// so a non-zero exit alone isn't an error. but empty stdout with a non-zero exit
+/// means cargo itself broke (missing toolchain, linker error, network failure)
+/// and must not be silently treated as zero violations.
+fn check_cargo_output(
+    status: &std::process::ExitStatus,
+    stdout: &[u8],
+    stderr: &str,
+) -> Result<()> {
+    if !status.success() && stdout.is_empty() {
+        return Err(Error::Cargo {
+            message: "cargo check failed".into(),
+            stderr: stderr.to_string(),
+        });
+    }
+    Ok(())
 }
 
 /// parse cargo JSON messages and extract unsafe_code diagnostics.
@@ -256,6 +260,68 @@ fn aggregate_occurrences(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    mod cargo_output_checks {
+        use super::*;
+        use std::os::unix::process::ExitStatusExt;
+
+        fn exit_success() -> std::process::ExitStatus {
+            std::process::ExitStatus::from_raw(0)
+        }
+
+        fn exit_failure() -> std::process::ExitStatus {
+            // waitpid raw status: exit code in bits 8-15
+            std::process::ExitStatus::from_raw(1 << 8)
+        }
+
+        #[test]
+        fn success_is_ok() {
+            assert!(check_cargo_output(&exit_success(), b"output", "").is_ok());
+        }
+
+        #[test]
+        fn nonzero_exit_with_stdout_is_ok() {
+            // warnings cause non-zero exit but produce JSON on stdout
+            assert!(check_cargo_output(
+                &exit_failure(),
+                b"{\"reason\":\"compiler-message\"}",
+                "warning: unused variable"
+            )
+            .is_ok());
+        }
+
+        #[test]
+        fn nonzero_exit_empty_stdout_is_err() {
+            let result =
+                check_cargo_output(&exit_failure(), b"", "error: no such command: 'check'");
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn nonzero_exit_empty_stdout_empty_stderr_is_err() {
+            // even with empty stderr, empty stdout + failure = error
+            let result = check_cargo_output(&exit_failure(), b"", "");
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn nonzero_exit_empty_stdout_unknown_error_is_err() {
+            // previously this fell through because the stderr didn't match
+            // specific patterns — this was the bug
+            let result = check_cargo_output(&exit_failure(), b"", "error: linker `cc` not found");
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn preserves_stderr_in_error() {
+            let stderr = "error: toolchain 'nightly' is not installed";
+            let result = check_cargo_output(&exit_failure(), b"", stderr);
+            let err = result.unwrap_err();
+            let msg = format!("{}", err);
+            assert!(msg.contains(stderr));
+        }
+    }
 
     #[test]
     fn test_extract_package_name_path_format() {
