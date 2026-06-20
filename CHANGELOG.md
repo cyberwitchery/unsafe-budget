@@ -3,6 +3,7 @@
 ## Unreleased
 
 - `--include-deps` and `--no-deps` now conflict at the CLI level, preventing contradictory invocations that previously had undefined behavior.
+- fix: `run_cargo_check` no longer swallows unexpected cargo failures (missing toolchain, linker errors, network failures); any non-zero exit with empty stdout is now an error instead of a silent false-negative.
 
 ## [0.4.1] - 2026-06-08
 
