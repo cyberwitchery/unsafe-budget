@@ -192,7 +192,20 @@ fn build_scan_opts(args: &ScanArgs, config: &Config) -> ScanOpts {
 /// occurrences (e.g. cargo_geiger only provides aggregate counts), this is also
 /// a no-op — there are no individual occurrences to match against.
 fn apply_ignore_filter(mut result: ScanResult, ignores: &[IgnoreEntry]) -> ScanResult {
-    if ignores.is_empty() || result.details.is_empty() {
+    if ignores.is_empty() {
+        return result;
+    }
+    if result.details.is_empty() {
+        eprintln!(
+            "warning: config has {} [[ignore]] {} but the analyzer did not produce \
+             occurrence details, so ignore rules are not being applied",
+            ignores.len(),
+            if ignores.len() == 1 {
+                "entry"
+            } else {
+                "entries"
+            },
+        );
         return result;
     }
 

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- warn to stderr when `[[ignore]]` entries are configured but the analyzer did not produce occurrence details (so users know their ignore rules are silently inert).
 - `--include-deps` and `--no-deps` now conflict at the CLI level, preventing contradictory invocations that previously had undefined behavior.
 - fix: `run_cargo_check` no longer swallows unexpected cargo failures (missing toolchain, linker errors, network failures); any non-zero exit with empty stdout is now an error instead of a silent false-negative.
 
