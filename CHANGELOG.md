@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- fix: git, sparse-registry, and alternative/private-registry dependencies are now identified by their real crate name instead of garbage like `index.crates.io` or `bar?rev=abc`; previously the wrong name never matched the dependency's baseline/cap entry, so it either escaped enforcement or triggered spurious "new unit" violations.
 - `--include-deps` and `--no-deps` now conflict at the CLI level, preventing contradictory invocations that previously had undefined behavior.
 - fix: `run_cargo_check` no longer swallows unexpected cargo failures (missing toolchain, linker errors, network failures); any non-zero exit with empty stdout is now an error instead of a silent false-negative.
 
