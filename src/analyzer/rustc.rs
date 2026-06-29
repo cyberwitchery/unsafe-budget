@@ -194,31 +194,26 @@ fn parse_diagnostics(
 /// handles formats like:
 /// - "path+file:///path/to/crate#0.1.0" -> crate name from path
 /// - "registry+https://...#name@version" -> name
+/// - "git+https://...#name@version" / "sparse+https://...#name@version" -> name
 /// - "crate_name 0.1.0 (registry+...)" -> crate_name
 fn extract_package_name(package_id: &str) -> String {
-    // new cargo format: "path+file:///path/to/crate#version" or "registry+...#name@version"
-    if package_id.contains('#') {
-        // registry+https://...#name@version -> extract name first (before path-based extraction)
-        if package_id.starts_with("registry+") {
-            if let Some(after_hash) = package_id.split('#').nth(1) {
-                if let Some(name) = after_hash.split('@').next() {
-                    return name.to_string();
-                }
-            }
+    // new cargo format: "<scheme>+<url>#<name>@<version>" or "<scheme>+<url>#<version>"
+    if let Some((before_hash, after_hash)) = package_id.split_once('#') {
+        // "<scheme>+<url>#<name>@<version>" -> name. cargo uses this shape for any
+        // remote source (registry+, sparse+, git+, alternative registries), so key
+        // off the "<name>@<version>" suffix rather than the scheme prefix.
+        if let Some((name, _version)) = after_hash.split_once('@') {
+            return name.to_string();
         }
 
-        // path+file:///path/to/member#0.1.0 -> extract "member" from path
-        if let Some(path_part) = package_id.split('#').next() {
-            // remove scheme prefix like "path+file://"
-            let path = path_part
-                .strip_prefix("path+file://")
-                .or_else(|| path_part.strip_prefix("file://"))
-                .unwrap_or(path_part);
-
-            // get the last component of the path as the crate name
-            if let Some(name) = std::path::Path::new(path).file_name() {
-                return name.to_string_lossy().to_string();
-            }
+        // version-only suffix, e.g. "path+file:///path/to/member#0.1.0" -> "member".
+        // the name is omitted when it equals the url's last path segment.
+        let path = before_hash
+            .strip_prefix("path+file://")
+            .or_else(|| before_hash.strip_prefix("file://"))
+            .unwrap_or(before_hash);
+        if let Some(name) = std::path::Path::new(path).file_name() {
+            return name.to_string_lossy().to_string();
         }
     }
 
@@ -362,6 +357,51 @@ mod tests {
             "serde"
         );
         assert_eq!(extract_package_name("my_crate 0.1.0"), "my_crate");
+    }
+
+    #[test]
+    fn test_extract_package_name_git_format() {
+        // git source: name@version after '#', regardless of the git+ prefix or query string
+        assert_eq!(
+            extract_package_name("git+https://github.com/owner/repo#mycrate@0.1.0"),
+            "mycrate"
+        );
+        // a ?rev=/?branch= query precedes the '#' and must not leak into the name
+        assert_eq!(
+            extract_package_name("git+https://github.com/rust-lang/log?rev=abc123#log@0.4.20"),
+            "log"
+        );
+    }
+
+    #[test]
+    fn test_extract_package_name_sparse_format() {
+        // sparse crates-io index: previously mis-parsed to "index.crates.io" via the path branch
+        assert_eq!(
+            extract_package_name("sparse+https://index.crates.io/#serde@1.0.0"),
+            "serde"
+        );
+    }
+
+    #[test]
+    fn test_extract_package_name_alternative_registry() {
+        // private/alternative registry: name@version still wins over the scheme prefix
+        assert_eq!(
+            extract_package_name("sparse+https://registry.example.com/index/#private_crate@2.3.4"),
+            "private_crate"
+        );
+        assert_eq!(
+            extract_package_name("registry+https://my.alt.registry/index#alt_crate@0.5.0"),
+            "alt_crate"
+        );
+    }
+
+    #[test]
+    fn test_extract_package_name_path_member_regression() {
+        // version-only suffix (no '@'): must still resolve to the workspace member dir name
+        assert_eq!(
+            extract_package_name("path+file:///abs/workspace/sub-member#0.2.0"),
+            "sub-member"
+        );
     }
 
     #[test]
