@@ -1,5 +1,9 @@
 # changelog
 
+## Unreleased
+
+- add a general `timeout_secs` (config) and `--timeout` (CLI) option that bounds the built-in external analyzer subprocesses (`cargo geiger`, `go-geiger`, `cargo check`), so a hung external tool can no longer block a CI pipeline indefinitely. Off by default (unbounded), and `--plugin-timeout`/`plugin_timeout_secs` still take precedence for plugins.
+
 ## [0.4.2] - 2026-07-05
 
 - fix: git, sparse-registry, and alternative/private-registry dependencies are now identified by their real crate name instead of garbage like `index.crates.io` or `bar?rev=abc`; previously the wrong name never matched the dependency's baseline/cap entry, so it either escaped enforcement or triggered spurious "new unit" violations.

@@ -1,6 +1,7 @@
 pub mod cargo_geiger;
 pub mod go_geiger;
 pub mod plugin;
+pub(crate) mod process;
 pub mod rustc;
 pub mod sarif;
 

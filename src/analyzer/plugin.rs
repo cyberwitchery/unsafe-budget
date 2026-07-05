@@ -1,11 +1,10 @@
+use crate::analyzer::process::{self, Run};
 use crate::analyzer::{Analyzer, AnalyzerInfo};
 use crate::error::{Error, Result};
 use crate::model::{ScanOpts, ScanResult};
-use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
-use wait_timeout::ChildExt;
 
 const PLUGIN_PREFIX: &str = "unsafe-budget-plugin-";
 
@@ -138,62 +137,15 @@ fn build_plugin_cmd(path: &Path, opts: &ScanOpts) -> Command {
 /// run an external plugin and parse its output.
 pub fn run_plugin(path: &Path, opts: &ScanOpts) -> Result<ScanResult> {
     let mut cmd = build_plugin_cmd(path, opts);
+    let timeout_secs = opts.plugin_timeout_secs;
 
-    match opts.plugin_timeout_secs {
-        Some(secs) => run_with_timeout(&mut cmd, path, Duration::from_secs(secs)),
-        None => run_blocking(&mut cmd, path),
-    }
-}
-
-/// run a plugin command with no timeout (original behaviour).
-fn run_blocking(cmd: &mut Command, path: &std::path::Path) -> Result<ScanResult> {
-    let output = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).output()?;
-    parse_plugin_output(path, output.status, &output.stdout, &output.stderr)
-}
-
-/// run a plugin command with a timeout, killing the child if it exceeds the
-/// deadline.
-fn run_with_timeout(
-    cmd: &mut Command,
-    path: &std::path::Path,
-    timeout: Duration,
-) -> Result<ScanResult> {
-    let mut child = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
-
-    // drain stdout and stderr on background threads so a plugin that produces
-    // lots of output cannot deadlock by filling the OS pipe buffer.
-    let mut stdout_pipe = child.stdout.take().expect("stdout piped");
-    let mut stderr_pipe = child.stderr.take().expect("stderr piped");
-
-    let stdout_thread = std::thread::spawn(move || {
-        let mut buf = Vec::new();
-        stdout_pipe.read_to_end(&mut buf).ok();
-        buf
-    });
-    let stderr_thread = std::thread::spawn(move || {
-        let mut buf = Vec::new();
-        stderr_pipe.read_to_end(&mut buf).ok();
-        buf
-    });
-
-    match child.wait_timeout(timeout)? {
-        Some(status) => {
-            let stdout = stdout_thread.join().unwrap_or_default();
-            let stderr = stderr_thread.join().unwrap_or_default();
-            parse_plugin_output(path, status, &stdout, &stderr)
-        }
-        None => {
-            // timed out — kill the child and clean up.
-            child.kill().ok();
-            child.wait().ok();
-            stdout_thread.join().ok();
-            stderr_thread.join().ok();
-            Err(Error::Plugin(format!(
-                "plugin {} timed out after {}s",
-                path.display(),
-                timeout.as_secs()
-            )))
-        }
+    match process::run_process(&mut cmd, timeout_secs.map(Duration::from_secs))? {
+        Run::Completed(out) => parse_plugin_output(path, out.status, &out.stdout, &out.stderr),
+        Run::TimedOut => Err(Error::Plugin(format!(
+            "plugin {} timed out after {}s",
+            path.display(),
+            timeout_secs.unwrap_or_default()
+        ))),
     }
 }
 
@@ -419,20 +371,21 @@ mod tests {
         assert_eq!(found.unwrap().language, "unknown");
     }
 
-    // --- run_with_timeout ---
+    // --- run_plugin timeout ---
 
     #[test]
-    fn timeout_kills_slow_plugin() {
-        // invoke `sleep` directly instead of via a script file to avoid
-        // ETXTBSY races under cargo-llvm-cov.  We must not use
-        // `/bin/sh -c "sleep 60"` either — the shell may fork sleep as a
-        // child, and killing the shell leaves the orphaned sleep holding
-        // the stdout/stderr pipes open, which hangs the drain threads.
-        let dummy_path = PathBuf::from("slow-plugin");
-        let mut cmd = Command::new("sleep");
-        cmd.arg("60");
-        let result = run_with_timeout(&mut cmd, &dummy_path, Duration::from_secs(1));
-        let err = result.unwrap_err();
+    fn run_plugin_times_out_slow_plugin() {
+        // `exec sleep` replaces the shell in place, so the spawned child *is*
+        // sleep: killing it on timeout closes the pipes directly, leaving no
+        // orphaned grandchild holding them open (which would hang the drain
+        // threads).
+        let tmp = TempDir::new().unwrap();
+        let p = make_script(tmp.path(), "unsafe-budget-plugin-slow", "exec sleep 60\n");
+        let opts = ScanOpts {
+            plugin_timeout_secs: Some(1),
+            ..Default::default()
+        };
+        let err = run_plugin(&p, &opts).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("timed out"),
@@ -441,16 +394,16 @@ mod tests {
     }
 
     #[test]
-    fn timeout_allows_fast_plugin() {
-        // same rationale as timeout_kills_slow_plugin — avoid script files
-        // and intermediate shells.
-        let dummy_path = PathBuf::from("fast-plugin");
-        let mut cmd = Command::new("/bin/echo");
-        cmd.arg("ok");
-        // the plugin exits quickly — the error here is a JSON parse failure, not
-        // a timeout, proving it ran to completion.
-        let result = run_with_timeout(&mut cmd, &dummy_path, Duration::from_secs(10));
-        let err = result.unwrap_err();
+    fn run_plugin_allows_fast_plugin() {
+        // the plugin exits quickly — the error is a JSON parse failure, not a
+        // timeout, proving it ran to completion within the deadline.
+        let tmp = TempDir::new().unwrap();
+        let p = make_script(tmp.path(), "unsafe-budget-plugin-fast", "echo not-json\n");
+        let opts = ScanOpts {
+            plugin_timeout_secs: Some(10),
+            ..Default::default()
+        };
+        let err = run_plugin(&p, &opts).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("failed to parse"),

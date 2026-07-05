@@ -1,3 +1,4 @@
+use crate::analyzer::process::{self, Run};
 use crate::analyzer::Analyzer;
 use crate::error::{Error, Result};
 use crate::model::{Occurrence, ScanOpts, ScanResult, Unit, UnitKind};
@@ -5,7 +6,8 @@ use cargo_metadata::{Message, MetadataCommand};
 use std::collections::{HashMap, HashSet};
 use std::io::BufRead;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::Command;
+use std::time::Duration;
 
 pub struct RustcAnalyzer;
 
@@ -69,10 +71,7 @@ fn get_workspace_members(opts: &ScanOpts) -> Result<HashSet<String>> {
 /// run cargo check and capture output.
 fn run_cargo_check(opts: &ScanOpts) -> Result<(Vec<u8>, String)> {
     let mut cmd = Command::new("cargo");
-    cmd.arg("check")
-        .arg("--message-format=json")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+    cmd.arg("check").arg("--message-format=json");
 
     // set RUSTFLAGS to enable unsafe_code lint
     let existing_flags = std::env::var("RUSTFLAGS").unwrap_or_default();
@@ -90,7 +89,19 @@ fn run_cargo_check(opts: &ScanOpts) -> Result<(Vec<u8>, String)> {
         cmd.arg("--workspace");
     }
 
-    let output = cmd.output()?;
+    let timeout_secs = opts.analyzer_timeout_secs;
+    let output = match process::run_process(&mut cmd, timeout_secs.map(Duration::from_secs))? {
+        Run::Completed(output) => output,
+        Run::TimedOut => {
+            return Err(Error::Cargo {
+                message: format!(
+                    "cargo check timed out after {}s",
+                    timeout_secs.unwrap_or_default()
+                ),
+                stderr: String::new(),
+            })
+        }
+    };
 
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     check_cargo_output(&output.status, &output.stdout, &stderr)?;
