@@ -1,6 +1,6 @@
 # changelog
 
-## Unreleased
+## [0.4.2] - 2026-07-05
 
 - fix: git, sparse-registry, and alternative/private-registry dependencies are now identified by their real crate name instead of garbage like `index.crates.io` or `bar?rev=abc`; previously the wrong name never matched the dependency's baseline/cap entry, so it either escaped enforcement or triggered spurious "new unit" violations.
 - `--include-deps` and `--no-deps` now conflict at the CLI level, preventing contradictory invocations that previously had undefined behavior.
