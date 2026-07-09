@@ -375,6 +375,11 @@ mod tests {
 
     #[test]
     fn run_plugin_times_out_slow_plugin() {
+        // serialize with the other script-writing tests: the timeout path spawns
+        // the child in its own process group (the fork path), and that fork must
+        // not overlap another test's freshly-written-but-not-yet-exec'd plugin
+        // file, or that test's exec races with our inherited write fd (ETXTBSY).
+        let _lock = ENV_LOCK.lock().unwrap();
         // `exec sleep` replaces the shell in place, so the spawned child *is*
         // sleep: killing it on timeout closes the pipes directly, leaving no
         // orphaned grandchild holding them open (which would hang the drain
@@ -395,6 +400,9 @@ mod tests {
 
     #[test]
     fn run_plugin_allows_fast_plugin() {
+        // serialize spawns to avoid the ETXTBSY fork-race (see the slow-plugin
+        // test above).
+        let _lock = ENV_LOCK.lock().unwrap();
         // the plugin exits quickly — the error is a JSON parse failure, not a
         // timeout, proving it ran to completion within the deadline.
         let tmp = TempDir::new().unwrap();
