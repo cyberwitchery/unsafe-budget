@@ -171,6 +171,11 @@ fn build_scan_opts(args: &ScanArgs, config: &Config) -> ScanOpts {
 
     let workspace_only = args.workspace_only || config.workspace_only;
 
+    // the general timeout bounds the built-in external analyzers and, unless a
+    // plugin-specific override is set, plugins too. Leaving it unset preserves
+    // the previous unbounded behaviour for both.
+    let general_timeout = args.timeout.or(config.timeout_secs);
+
     ScanOpts {
         workspace_only,
         include_deps,
@@ -180,7 +185,11 @@ fn build_scan_opts(args: &ScanArgs, config: &Config) -> ScanOpts {
         all_targets: args.all_targets,
         targets: args.targets.clone(),
         manifest_path: args.manifest_path.clone(),
-        plugin_timeout_secs: args.plugin_timeout.or(config.plugin_timeout_secs),
+        plugin_timeout_secs: args
+            .plugin_timeout
+            .or(config.plugin_timeout_secs)
+            .or(general_timeout),
+        analyzer_timeout_secs: general_timeout,
     }
 }
 
@@ -600,5 +609,85 @@ mod tests {
         let baseline = make_baseline_with_analyzer("rustc_unsafe_lint");
 
         assert_eq!(baseline.analyzer_id, scan.analyzer_id);
+    }
+
+    fn scan_args(argv: &[&str]) -> ScanArgs {
+        use clap::Parser;
+        match cli::Cli::try_parse_from(argv).unwrap().command {
+            Command::Scan(a) => a,
+            _ => panic!("expected scan command"),
+        }
+    }
+
+    #[test]
+    fn timeouts_default_to_none() {
+        let opts = build_scan_opts(&scan_args(&["unsafe-budget", "scan"]), &Config::default());
+        assert_eq!(opts.plugin_timeout_secs, None);
+        assert_eq!(opts.analyzer_timeout_secs, None);
+    }
+
+    #[test]
+    fn plugin_timeout_flag_leaves_analyzers_unbounded() {
+        // the pre-existing --plugin-timeout surface must keep bounding only
+        // plugins, not the built-in analyzers.
+        let opts = build_scan_opts(
+            &scan_args(&["unsafe-budget", "scan", "--plugin-timeout", "5"]),
+            &Config::default(),
+        );
+        assert_eq!(opts.plugin_timeout_secs, Some(5));
+        assert_eq!(opts.analyzer_timeout_secs, None);
+    }
+
+    #[test]
+    fn general_timeout_flag_bounds_both() {
+        let opts = build_scan_opts(
+            &scan_args(&["unsafe-budget", "scan", "--timeout", "9"]),
+            &Config::default(),
+        );
+        assert_eq!(opts.plugin_timeout_secs, Some(9));
+        assert_eq!(opts.analyzer_timeout_secs, Some(9));
+    }
+
+    #[test]
+    fn plugin_timeout_overrides_general_for_plugins() {
+        let opts = build_scan_opts(
+            &scan_args(&[
+                "unsafe-budget",
+                "scan",
+                "--timeout",
+                "9",
+                "--plugin-timeout",
+                "3",
+            ]),
+            &Config::default(),
+        );
+        assert_eq!(opts.plugin_timeout_secs, Some(3));
+        assert_eq!(opts.analyzer_timeout_secs, Some(9));
+    }
+
+    #[test]
+    fn config_general_timeout_flows_to_both() {
+        let config = Config {
+            timeout_secs: Some(30),
+            ..Config::default()
+        };
+        let opts = build_scan_opts(&scan_args(&["unsafe-budget", "scan"]), &config);
+        assert_eq!(opts.plugin_timeout_secs, Some(30));
+        assert_eq!(opts.analyzer_timeout_secs, Some(30));
+    }
+
+    #[test]
+    fn cli_timeout_overrides_config_and_config_plugin_override_wins() {
+        let config = Config {
+            timeout_secs: Some(30),
+            plugin_timeout_secs: Some(7),
+            ..Config::default()
+        };
+        let opts = build_scan_opts(
+            &scan_args(&["unsafe-budget", "scan", "--timeout", "12"]),
+            &config,
+        );
+        assert_eq!(opts.analyzer_timeout_secs, Some(12));
+        assert_eq!(opts.plugin_timeout_secs, Some(7));
     }
 }

@@ -1,9 +1,11 @@
+use crate::analyzer::process::{self, Run};
 use crate::analyzer::Analyzer;
 use crate::error::{Error, Result};
 use crate::model::{Occurrence, ScanOpts, ScanResult, Unit, UnitKind};
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::process::{Command, Stdio};
+use std::process::Command;
+use std::time::Duration;
 
 pub struct CargoGeigerAnalyzer;
 
@@ -33,15 +35,23 @@ impl Analyzer for CargoGeigerAnalyzer {
 
 fn run_cargo_geiger(opts: &ScanOpts) -> Result<Vec<u8>> {
     let mut cmd = Command::new("cargo");
-    cmd.arg("geiger")
-        .arg("--output-format")
-        .arg("json")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+    cmd.arg("geiger").arg("--output-format").arg("json");
 
     super::apply_cargo_flags(&mut cmd, opts);
 
-    let output = cmd.output()?;
+    let timeout_secs = opts.analyzer_timeout_secs;
+    let output = match process::run_process(&mut cmd, timeout_secs.map(Duration::from_secs))? {
+        Run::Completed(output) => output,
+        Run::TimedOut => {
+            return Err(Error::Analyzer {
+                analyzer: "cargo_geiger".into(),
+                message: format!(
+                    "cargo geiger timed out after {}s",
+                    timeout_secs.unwrap_or_default()
+                ),
+            })
+        }
+    };
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);

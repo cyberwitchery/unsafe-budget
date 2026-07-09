@@ -70,6 +70,7 @@ unsafe-budget scan --format sarif --details # sarif output for code scanning
 unsafe-budget scan --analyzer cargo_geiger # explicit analyzer
 unsafe-budget scan --workspace-only       # skip dependencies
 unsafe-budget scan --details              # show line-level occurrences
+unsafe-budget scan --timeout 300          # bound external analyzer/plugin subprocesses (seconds)
 ```
 
 ## exit codes
@@ -88,6 +89,7 @@ create `unsafe-budget.toml`:
 mode = "ratchet"  # or "caps"
 include_deps = true
 ignore_units = ["test_crate"]
+timeout_secs = 300  # optional: kill hung external analyzers/plugins after N seconds
 
 # ignore specific occurrences by file + line (optional reason for reviewers)
 [[ignore]]

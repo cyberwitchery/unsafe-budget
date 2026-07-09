@@ -41,6 +41,10 @@ pub struct ScanOpts {
     pub manifest_path: Option<PathBuf>,
     /// timeout in seconds for external plugin execution.
     pub plugin_timeout_secs: Option<u64>,
+    /// timeout in seconds for the built-in external analyzer subprocesses
+    /// (`cargo geiger`, `go-geiger`, `cargo check`). `None` leaves them
+    /// unbounded.
+    pub analyzer_timeout_secs: Option<u64>,
 }
 
 /// scope captured in results for reproducibility.

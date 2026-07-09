@@ -1,6 +1,7 @@
 pub mod cargo_geiger;
 pub mod go_geiger;
 pub mod plugin;
+pub(crate) mod process;
 pub mod rustc;
 pub mod sarif;
 
@@ -193,6 +194,21 @@ pub(crate) fn aggregate_units(
     });
 
     (units, details)
+}
+
+/// Test-only lock serializing every test (across analyzer submodules) that
+/// spawns a subprocess or writes-then-execs a script.
+///
+/// A child spawned in its own process group takes the fork+exec path, which
+/// transiently inherits a write fd to another test's not-yet-exec'd script;
+/// that script's `execve` then fails with `ETXTBSY`. Serializing each test's
+/// whole write+spawn critical section removes the overlap. Poison-resistant so
+/// one test's panic can't cascade a `PoisonError` into the next.
+#[cfg(test)]
+pub(crate) fn test_spawn_guard() -> std::sync::MutexGuard<'static, ()> {
+    use std::sync::{Mutex, PoisonError};
+    static LOCK: Mutex<()> = Mutex::new(());
+    LOCK.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 #[cfg(test)]

@@ -1,10 +1,12 @@
+use crate::analyzer::process::{self, Run};
 use crate::analyzer::Analyzer;
 use crate::error::{Error, Result};
 use crate::model::{Occurrence, ParseWarning, ScanOpts, ScanResult, Unit, UnitKind};
 use std::collections::HashMap;
 use std::io::BufRead;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::Command;
+use std::time::Duration;
 
 pub struct GoGeigerAnalyzer;
 
@@ -42,11 +44,21 @@ fn run_go_geiger(opts: &ScanOpts) -> Result<Vec<u8>> {
         cmd.current_dir(d);
     }
 
-    cmd.arg("./...")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+    cmd.arg("./...");
 
-    let output = cmd.output()?;
+    let timeout_secs = opts.analyzer_timeout_secs;
+    let output = match process::run_process(&mut cmd, timeout_secs.map(Duration::from_secs))? {
+        Run::Completed(output) => output,
+        Run::TimedOut => {
+            return Err(Error::Analyzer {
+                analyzer: "go_geiger".into(),
+                message: format!(
+                    "go-geiger timed out after {}s",
+                    timeout_secs.unwrap_or_default()
+                ),
+            })
+        }
+    };
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
