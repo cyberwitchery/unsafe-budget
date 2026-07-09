@@ -180,15 +180,10 @@ fn parse_plugin_output(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::analyzer::test_spawn_guard;
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
-    use std::sync::Mutex;
     use tempfile::TempDir;
-
-    // discover_plugins reads PATH and probe_plugin_language spawns children
-    // that inherit the environment. Serialize tests that touch either to
-    // avoid races from concurrent set_var calls.
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn make_file(dir: &std::path::Path, name: &str, mode: u32) -> PathBuf {
         let p = dir.join(name);
@@ -257,7 +252,7 @@ mod tests {
 
     #[test]
     fn probe_parses_language_from_info_json() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = test_spawn_guard();
         let tmp = TempDir::new().unwrap();
         let p = make_script(tmp.path(), "plugin", r#"echo '{"language":"python"}'"#);
         assert_eq!(probe_plugin_language(&p), Some("python".into()));
@@ -265,7 +260,7 @@ mod tests {
 
     #[test]
     fn probe_returns_none_on_missing_field() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = test_spawn_guard();
         let tmp = TempDir::new().unwrap();
         let p = make_script(tmp.path(), "plugin", r#"echo '{"version":"1"}'"#);
         assert_eq!(probe_plugin_language(&p), None);
@@ -273,7 +268,7 @@ mod tests {
 
     #[test]
     fn probe_returns_none_on_non_zero_exit() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = test_spawn_guard();
         let tmp = TempDir::new().unwrap();
         let p = make_script(tmp.path(), "plugin", "exit 1");
         assert_eq!(probe_plugin_language(&p), None);
@@ -281,7 +276,7 @@ mod tests {
 
     #[test]
     fn probe_returns_none_for_nonexistent_binary() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = test_spawn_guard();
         assert_eq!(
             probe_plugin_language(&PathBuf::from("/no/such/binary")),
             None
@@ -292,7 +287,7 @@ mod tests {
 
     #[test]
     fn discover_finds_plugin_on_path() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = test_spawn_guard();
         let tmp = TempDir::new().unwrap();
         make_script(
             tmp.path(),
@@ -317,7 +312,7 @@ mod tests {
 
     #[test]
     fn discover_ignores_non_executable_plugin() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = test_spawn_guard();
         let tmp = TempDir::new().unwrap();
         make_file(tmp.path(), "unsafe-budget-plugin-noexe", 0o644);
 
@@ -336,7 +331,7 @@ mod tests {
 
     #[test]
     fn discover_ignores_files_without_prefix() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = test_spawn_guard();
         let tmp = TempDir::new().unwrap();
         make_script(tmp.path(), "some-other-tool", r#"echo '{}'"#);
 
@@ -355,7 +350,7 @@ mod tests {
 
     #[test]
     fn discover_falls_back_to_unknown_language() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = test_spawn_guard();
         let tmp = TempDir::new().unwrap();
         make_script(tmp.path(), "unsafe-budget-plugin-bad", "exit 1");
 
@@ -379,7 +374,7 @@ mod tests {
         // the child in its own process group (the fork path), and that fork must
         // not overlap another test's freshly-written-but-not-yet-exec'd plugin
         // file, or that test's exec races with our inherited write fd (ETXTBSY).
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = test_spawn_guard();
         // `exec sleep` replaces the shell in place, so the spawned child *is*
         // sleep: killing it on timeout closes the pipes directly, leaving no
         // orphaned grandchild holding them open (which would hang the drain
@@ -402,7 +397,7 @@ mod tests {
     fn run_plugin_allows_fast_plugin() {
         // serialize spawns to avoid the ETXTBSY fork-race (see the slow-plugin
         // test above).
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = test_spawn_guard();
         // the plugin exits quickly — the error is a JSON parse failure, not a
         // timeout, proving it ran to completion within the deadline.
         let tmp = TempDir::new().unwrap();
@@ -421,7 +416,7 @@ mod tests {
 
     #[test]
     fn discover_returns_sorted_and_deduped() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = test_spawn_guard();
         let tmp1 = TempDir::new().unwrap();
         let tmp2 = TempDir::new().unwrap();
         make_script(tmp1.path(), "unsafe-budget-plugin-zzz", "exit 1");

@@ -125,14 +125,16 @@ fn set_own_process_group(_cmd: &mut Command) {}
 /// joins return promptly instead of waiting on an orphaned subprocess tree.
 #[cfg(unix)]
 fn kill_child_tree(child: &mut Child) {
+    use nix::sys::signal::{killpg, Signal};
+    use nix::unistd::Pid;
+
     // process_group(0) made the child the leader of a group whose pgid equals
     // its pid; the child has not been reaped yet, so the pid is still valid.
-    let pgid = child.id() as libc::pid_t;
-    // SAFETY: killpg is a thin syscall wrapper with no memory effects; an
-    // already-dead group merely yields ESRCH, which we ignore.
-    unsafe {
-        libc::killpg(pgid, libc::SIGKILL);
-    }
+    let pgid = Pid::from_raw(child.id() as i32);
+    // nix's killpg is a safe wrapper (no `unsafe` at the call site, so this
+    // stays out of the workspace unsafe budget). best-effort: an already-dead
+    // group yields ESRCH, which we ignore.
+    let _ = killpg(pgid, Signal::SIGKILL);
     child.wait().ok();
 }
 
@@ -147,9 +149,13 @@ fn kill_child_tree(child: &mut Child) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::analyzer::test_spawn_guard;
 
     #[test]
     fn no_timeout_runs_to_completion() {
+        // shared spawn lock: keep this subprocess's fork from overlapping a
+        // concurrent script write in another test module (ETXTBSY).
+        let _lock = test_spawn_guard();
         let mut cmd = Command::new("/bin/echo");
         cmd.arg("hello");
         match run_process(&mut cmd, None).unwrap() {
@@ -163,6 +169,7 @@ mod tests {
 
     #[test]
     fn completes_within_timeout() {
+        let _lock = test_spawn_guard();
         // invoke the binary directly (no shell) to avoid ETXTBSY under
         // cargo-llvm-cov and orphaned children holding the pipes open.
         let mut cmd = Command::new("/bin/echo");
@@ -178,6 +185,7 @@ mod tests {
 
     #[test]
     fn timeout_kills_slow_process() {
+        let _lock = test_spawn_guard();
         // invoke `sleep` directly rather than via `/bin/sh -c`: a shell may fork
         // sleep as a child, and killing only the shell would orphan sleep
         // holding the pipes open, hanging the drain threads.
@@ -197,6 +205,7 @@ mod tests {
     fn timeout_kills_whole_process_tree_promptly() {
         use std::time::Instant;
 
+        let _lock = test_spawn_guard();
         // `sleep 30 | cat` runs sleep and cat as grandchildren of the shell,
         // both holding our inherited stdout pipe. killing only the shell would
         // orphan them and the drain-thread joins would block for the full 30s;
