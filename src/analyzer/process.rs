@@ -5,7 +5,7 @@
 //! instead of duplicating the delicate deadlock-avoidance dance.
 
 use std::io::{self, Read as _};
-use std::process::{Command, ExitStatus, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::Duration;
 use wait_timeout::ChildExt;
 
@@ -54,8 +54,18 @@ fn run_blocking(cmd: &mut Command) -> io::Result<Run> {
     }))
 }
 
-/// run with a timeout, killing the child if it exceeds the deadline.
+/// run with a timeout, killing the child (and, on Unix, its whole subprocess
+/// tree) if it exceeds the deadline.
 fn run_with_timeout(cmd: &mut Command, timeout: Duration) -> io::Result<Run> {
+    // put the child in its own process group so, on timeout, we can signal the
+    // entire subprocess tree at once. killing only the direct child would leave
+    // grandchildren that inherited the stdio pipes (a `cargo`/`rustc` under
+    // `cargo geiger`, a `go build` under `go-geiger`) holding the write ends
+    // open, and the drain-thread joins below would then block until that
+    // orphaned tree finished on its own — so the deadline would not be a real
+    // wall-clock cap.
+    set_own_process_group(cmd);
+
     let mut child = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
 
     // drain stdout and stderr on background threads so a child that produces
@@ -86,15 +96,52 @@ fn run_with_timeout(cmd: &mut Command, timeout: Duration) -> io::Result<Run> {
             }))
         }
         None => {
-            // timed out — kill the child so the pipes close, then join the
-            // drain threads before returning.
-            child.kill().ok();
-            child.wait().ok();
+            // timed out — kill the whole tree so every inherited pipe write end
+            // closes, then join the now-unblocked drain threads before returning.
+            kill_child_tree(&mut child);
             stdout_thread.join().ok();
             stderr_thread.join().ok();
             Ok(Run::TimedOut)
         }
     }
+}
+
+/// on Unix, place the child in a new process group that it leads, so its whole
+/// subprocess tree can be signalled at once on timeout. a no-op elsewhere.
+#[cfg(unix)]
+fn set_own_process_group(cmd: &mut Command) {
+    use std::os::unix::process::CommandExt as _;
+    cmd.process_group(0);
+}
+
+#[cfg(not(unix))]
+fn set_own_process_group(_cmd: &mut Command) {}
+
+/// kill a timed-out child and reap it.
+///
+/// on Unix the child leads its own process group (see [`set_own_process_group`]),
+/// so we `SIGKILL` the entire group: this closes the stdio pipes held by any
+/// grandchildren the direct child spawned, which is what lets the drain-thread
+/// joins return promptly instead of waiting on an orphaned subprocess tree.
+#[cfg(unix)]
+fn kill_child_tree(child: &mut Child) {
+    // process_group(0) made the child the leader of a group whose pgid equals
+    // its pid; the child has not been reaped yet, so the pid is still valid.
+    let pgid = child.id() as libc::pid_t;
+    // SAFETY: killpg is a thin syscall wrapper with no memory effects; an
+    // already-dead group merely yields ESRCH, which we ignore.
+    unsafe {
+        libc::killpg(pgid, libc::SIGKILL);
+    }
+    child.wait().ok();
+}
+
+/// non-Unix fallback: kill only the direct child. a hang inside a spawned
+/// grandchild may not be interrupted.
+#[cfg(not(unix))]
+fn kill_child_tree(child: &mut Child) {
+    child.kill().ok();
+    child.wait().ok();
 }
 
 #[cfg(test)]
@@ -140,5 +187,32 @@ mod tests {
             Run::TimedOut => {}
             Run::Completed(_) => panic!("a slow process should have timed out"),
         }
+    }
+
+    // the analyzers this runner protects (cargo geiger, go-geiger) do their real
+    // work in grandchildren that inherit the stdio pipes, so the timeout must
+    // reap the whole process tree — not just the direct child.
+    #[cfg(unix)]
+    #[test]
+    fn timeout_kills_whole_process_tree_promptly() {
+        use std::time::Instant;
+
+        // `sleep 30 | cat` runs sleep and cat as grandchildren of the shell,
+        // both holding our inherited stdout pipe. killing only the shell would
+        // orphan them and the drain-thread joins would block for the full 30s;
+        // the process-group kill must tear the tree down well before then.
+        let mut cmd = Command::new("/bin/sh");
+        cmd.arg("-c").arg("sleep 30 | cat");
+
+        let start = Instant::now();
+        match run_process(&mut cmd, Some(Duration::from_secs(1))).unwrap() {
+            Run::TimedOut => {}
+            Run::Completed(_) => panic!("a slow process tree should have timed out"),
+        }
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "timeout must fire promptly, not wait for orphaned grandchildren; took {elapsed:?}"
+        );
     }
 }

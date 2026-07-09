@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- add a general `timeout_secs` (config) and `--timeout` (CLI) option that bounds the built-in external analyzer subprocesses (`cargo geiger`, `go-geiger`, `cargo check`), so a hung external tool can no longer block a CI pipeline indefinitely. Off by default (unbounded), and `--plugin-timeout`/`plugin_timeout_secs` still take precedence for plugins.
+- add a general `timeout_secs` (config) and `--timeout` (CLI) option that bounds the built-in external analyzer subprocesses (`cargo geiger`, `go-geiger`, `cargo check`). On Unix the timeout kills the analyzer's entire subprocess tree, so a hang deep inside a spawned compile or registry fetch can no longer keep a CI pipeline running past the deadline; on non-Unix platforms only the direct analyzer process is killed. Off by default (unbounded), and `--plugin-timeout`/`plugin_timeout_secs` still take precedence for plugins.
 
 ## [0.4.2] - 2026-07-05
 
