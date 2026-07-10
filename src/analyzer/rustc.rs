@@ -68,8 +68,8 @@ fn get_workspace_members(opts: &ScanOpts) -> Result<HashSet<String>> {
     Ok(members)
 }
 
-/// run cargo check and capture output.
-fn run_cargo_check(opts: &ScanOpts) -> Result<(Vec<u8>, String)> {
+/// build the `cargo check` command used to collect unsafe_code diagnostics.
+fn build_cargo_check_command(opts: &ScanOpts) -> Command {
     let mut cmd = Command::new("cargo");
     cmd.arg("check").arg("--message-format=json");
 
@@ -84,10 +84,19 @@ fn run_cargo_check(opts: &ScanOpts) -> Result<(Vec<u8>, String)> {
 
     super::apply_cargo_flags(&mut cmd, opts);
 
-    // add workspace flag if needed
-    if !opts.workspace_only {
-        cmd.arg("--workspace");
-    }
+    // always compile the whole workspace so every member emits diagnostics.
+    // omitting `--workspace` would build only the current package, leaving
+    // sibling members unseen and silently counted as zero. dependency exclusion
+    // (for `workspace_only`) happens later in aggregation, not by narrowing the
+    // compile set.
+    cmd.arg("--workspace");
+
+    cmd
+}
+
+/// run cargo check and capture output.
+fn run_cargo_check(opts: &ScanOpts) -> Result<(Vec<u8>, String)> {
+    let mut cmd = build_cargo_check_command(opts);
 
     let timeout_secs = opts.analyzer_timeout_secs;
     let output = match process::run_process(&mut cmd, timeout_secs.map(Duration::from_secs))? {
@@ -601,5 +610,27 @@ mod tests {
         assert_eq!(units[0].name, "alpha");
         assert_eq!(units[1].name, "beta");
         assert_eq!(units[2].name, "zebra");
+    }
+
+    #[test]
+    fn test_cargo_check_command_always_scans_whole_workspace() {
+        // regression: `--workspace-only` must still compile every workspace
+        // member, so `--workspace` is added regardless of the flag. narrowing
+        // the compile set here would leave sibling members counted as zero.
+        for workspace_only in [false, true] {
+            let opts = ScanOpts {
+                workspace_only,
+                ..Default::default()
+            };
+            let cmd = build_cargo_check_command(&opts);
+            let args: Vec<String> = cmd
+                .get_args()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect();
+            assert!(
+                args.contains(&"--workspace".to_string()),
+                "cargo check must pass --workspace (workspace_only={workspace_only}), got {args:?}"
+            );
+        }
     }
 }
