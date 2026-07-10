@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- fix: `--workspace-only` now scans every workspace member, not just the current package. Previously, in a workspace with a root package plus sibling crates, only the root was compiled, so unsafe code in sibling members was silently counted as zero and the gate could pass when it should have failed.
 - add a general `timeout_secs` (config) and `--timeout` (CLI) option that bounds the built-in external analyzer subprocesses (`cargo geiger`, `go-geiger`, `cargo check`). On Unix the timeout kills the analyzer's entire subprocess tree, so a hang deep inside a spawned compile or registry fetch can no longer keep a CI pipeline running past the deadline; on non-Unix platforms only the direct analyzer process is killed. Off by default (unbounded), and `--plugin-timeout`/`plugin_timeout_secs` still take precedence for plugins.
 
 ## [0.4.2] - 2026-07-05

@@ -9,6 +9,10 @@ fn fixture_path() -> PathBuf {
     project_root().join("tests/fixtures/sample_workspace")
 }
 
+fn multi_member_fixture_path() -> PathBuf {
+    project_root().join("tests/fixtures/multi_member_workspace")
+}
+
 #[test]
 #[ignore = "requires cargo build first"]
 fn test_scan_sample_workspace() {
@@ -46,6 +50,47 @@ fn test_scan_sample_workspace() {
     assert!(
         count >= 2,
         "should find at least 2 unsafe blocks, found {}",
+        count
+    );
+}
+
+#[test]
+#[ignore = "requires cargo build first"]
+fn test_workspace_only_scans_sibling_members() {
+    // Regression: `--workspace-only` must compile every workspace member, not
+    // just the root package. A sibling crate's unsafe code was previously
+    // back-filled as zero, so the gate could pass when it should have failed.
+    let binary = project_root().join("target/debug/unsafe-budget");
+    if !binary.exists() {
+        eprintln!("Skipping integration test - binary not built");
+        return;
+    }
+
+    let output = Command::new(&binary)
+        .arg("scan")
+        .arg("--manifest-path")
+        .arg(multi_member_fixture_path().join("Cargo.toml"))
+        .arg("--workspace-only")
+        .arg("--format")
+        .arg("json")
+        .output()
+        .expect("failed to run unsafe-budget");
+
+    assert!(output.status.success(), "scan failed: {:?}", output);
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let result: serde_json::Value = serde_json::from_str(&stdout).expect("invalid json output");
+
+    let units = result["units"].as_array().expect("units should be array");
+    let sibling = units
+        .iter()
+        .find(|u| u["name"] == "sibling")
+        .expect("workspace-only scan should include the sibling member");
+
+    let count = sibling["unsafe_count"].as_u64().unwrap();
+    assert!(
+        count >= 1,
+        "sibling member's unsafe code must be counted in --workspace-only mode, found {}",
         count
     );
 }
