@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- fix: SARIF files containing multiple runs are now counted in full. Previously only the first run's results were read, so a multi-run SARIF import (e.g. one run per tool invocation or analysis target) silently dropped every occurrence in the remaining runs and could pass a budget it should have failed.
 - fix: `--workspace-only` now scans every workspace member, not just the current package. Previously, in a workspace with a root package plus sibling crates, only the root was compiled, so unsafe code in sibling members was silently counted as zero and the gate could pass when it should have failed.
 - add a general `timeout_secs` (config) and `--timeout` (CLI) option that bounds the built-in external analyzer subprocesses (`cargo geiger`, `go-geiger`, `cargo check`). On Unix the timeout kills the analyzer's entire subprocess tree, so a hang deep inside a spawned compile or registry fetch can no longer keep a CI pipeline running past the deadline; on non-Unix platforms only the direct analyzer process is killed. Off by default (unbounded), and `--plugin-timeout`/`plugin_timeout_secs` still take precedence for plugins.
 

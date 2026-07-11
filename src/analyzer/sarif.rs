@@ -36,58 +36,74 @@ impl Analyzer for SarifAnalyzer {
 }
 
 fn convert_sarif(sarif: &Sarif, opts: &ScanOpts) -> Result<ScanResult> {
-    let run = sarif.runs.first().ok_or_else(|| Error::Analyzer {
-        analyzer: "sarif".into(),
-        message: "SARIF file contains no runs".into(),
-    })?;
+    if sarif.runs.is_empty() {
+        return Err(Error::Analyzer {
+            analyzer: "sarif".into(),
+            message: "SARIF file contains no runs".into(),
+        });
+    }
 
-    let tool_name = &run.tool.driver.name;
-    let language = infer_language(tool_name);
+    // language is inferred per run from its tool driver. runs from unrecognized
+    // tools contribute no signal; if the recognized runs disagree (e.g. a Rust
+    // tool and a Go tool) the language is ambiguous, so report "unknown".
+    let language = sarif
+        .runs
+        .iter()
+        .map(|run| infer_language(&run.tool.driver.name))
+        .filter(|lang| lang != "unknown")
+        .reduce(|acc, lang| if acc == lang { acc } else { "unknown".into() })
+        .unwrap_or_else(|| "unknown".into());
 
-    let results = run.results.as_deref().unwrap_or(&[]);
+    // collect occurrences from *every* run: a SARIF 2.1.0 file may legitimately
+    // contain multiple runs (one per tool invocation or analysis target), so
+    // processing only runs[0] would silently under-count unsafe code.
     let mut occurrences: Vec<Occurrence> = Vec::new();
 
-    for result in results {
-        let message = result
-            .message
-            .text
-            .clone()
-            .unwrap_or_else(|| "unknown".into());
+    for run in &sarif.runs {
+        let results = run.results.as_deref().unwrap_or(&[]);
 
-        let locations = result.locations.as_deref().unwrap_or(&[]);
-        if locations.is_empty() {
-            continue;
-        }
-
-        for location in locations {
-            let phys = match &location.physical_location {
-                Some(pl) => pl,
-                None => continue,
-            };
-
-            let file = phys
-                .artifact_location
-                .as_ref()
-                .and_then(|al| al.uri.clone())
+        for result in results {
+            let message = result
+                .message
+                .text
+                .clone()
                 .unwrap_or_else(|| "unknown".into());
 
-            let line = phys.region.as_ref().and_then(|r| r.start_line).unwrap_or(0) as u32;
+            let locations = result.locations.as_deref().unwrap_or(&[]);
+            if locations.is_empty() {
+                continue;
+            }
 
-            let col = phys
-                .region
-                .as_ref()
-                .and_then(|r| r.start_column)
-                .unwrap_or(0) as u32;
+            for location in locations {
+                let phys = match &location.physical_location {
+                    Some(pl) => pl,
+                    None => continue,
+                };
 
-            let unit_name = extract_unit_name(&file);
+                let file = phys
+                    .artifact_location
+                    .as_ref()
+                    .and_then(|al| al.uri.clone())
+                    .unwrap_or_else(|| "unknown".into());
 
-            occurrences.push(Occurrence {
-                unit: unit_name,
-                file: PathBuf::from(&file),
-                line,
-                col,
-                message: Some(message.clone()),
-            });
+                let line = phys.region.as_ref().and_then(|r| r.start_line).unwrap_or(0) as u32;
+
+                let col = phys
+                    .region
+                    .as_ref()
+                    .and_then(|r| r.start_column)
+                    .unwrap_or(0) as u32;
+
+                let unit_name = extract_unit_name(&file);
+
+                occurrences.push(Occurrence {
+                    unit: unit_name,
+                    file: PathBuf::from(&file),
+                    line,
+                    col,
+                    message: Some(message.clone()),
+                });
+            }
         }
     }
 
@@ -264,12 +280,19 @@ mod tests {
     }
 
     fn make_sarif(results: Vec<sarif::Result>) -> Sarif {
-        let driver = sarif::ToolComponent::builder().name("test-tool").build();
+        make_multi_run_sarif(vec![make_run("test-tool", results)])
+    }
+
+    fn make_run(driver_name: &str, results: Vec<sarif::Result>) -> sarif::Run {
+        let driver = sarif::ToolComponent::builder().name(driver_name).build();
         let tool = sarif::Tool::builder().driver(driver).build();
-        let run = sarif::Run::builder().tool(tool).results(results).build();
+        sarif::Run::builder().tool(tool).results(results).build()
+    }
+
+    fn make_multi_run_sarif(runs: Vec<sarif::Run>) -> Sarif {
         sarif::Sarif::builder()
             .version(serde_json::json!("2.1.0"))
-            .runs(vec![run])
+            .runs(runs)
             .build()
     }
 
@@ -441,5 +464,100 @@ mod tests {
         assert_eq!(result.units[0].unsafe_count, 2);
         assert_eq!(result.units[1].name, "crate_b");
         assert_eq!(result.units[1].unsafe_count, 1);
+    }
+
+    #[test]
+    fn test_convert_sarif_multiple_runs() {
+        // two runs, each reporting occurrences in a different crate. every run
+        // must be counted, not just the first.
+        let run1 = make_run(
+            "test-tool",
+            vec![
+                make_sarif_result("crate_a/src/lib.rs", 10, 1, "in crate_a"),
+                make_sarif_result("crate_a/src/util.rs", 20, 1, "also in crate_a"),
+            ],
+        );
+        let run2 = make_run(
+            "test-tool",
+            vec![make_sarif_result("crate_b/src/lib.rs", 5, 1, "in crate_b")],
+        );
+        let sarif_log = make_multi_run_sarif(vec![run1, run2]);
+
+        let opts = ScanOpts::default();
+        let result = convert_sarif(&sarif_log, &opts).unwrap();
+
+        assert_eq!(result.units.len(), 2);
+        assert_eq!(result.units[0].name, "crate_a");
+        assert_eq!(result.units[0].unsafe_count, 2);
+        assert_eq!(result.units[1].name, "crate_b");
+        assert_eq!(result.units[1].unsafe_count, 1);
+        // all three occurrences across both runs are aggregated.
+        assert_eq!(result.totals.overall_unsafe, 3);
+        assert_eq!(result.details.len(), 3);
+    }
+
+    #[test]
+    fn test_convert_sarif_multiple_runs_same_unit() {
+        // both runs report occurrences in the same crate; the counts must sum.
+        let run1 = make_run(
+            "test-tool",
+            vec![make_sarif_result("crate_a/src/lib.rs", 10, 1, "first")],
+        );
+        let run2 = make_run(
+            "test-tool",
+            vec![
+                make_sarif_result("crate_a/src/lib.rs", 20, 1, "second"),
+                make_sarif_result("crate_a/src/util.rs", 30, 1, "third"),
+            ],
+        );
+        let sarif_log = make_multi_run_sarif(vec![run1, run2]);
+
+        let opts = ScanOpts::default();
+        let result = convert_sarif(&sarif_log, &opts).unwrap();
+
+        assert_eq!(result.units.len(), 1);
+        assert_eq!(result.units[0].name, "crate_a");
+        // 1 from run1 + 2 from run2, summed into the single unit.
+        assert_eq!(result.units[0].unsafe_count, 3);
+        assert_eq!(result.totals.overall_unsafe, 3);
+        assert_eq!(result.details.len(), 3);
+    }
+
+    #[test]
+    fn test_convert_sarif_language_agreeing_runs() {
+        // multiple runs from Rust tools keep the Rust language.
+        let run1 = make_run(
+            "cargo-clippy",
+            vec![make_sarif_result("crate_a/src/lib.rs", 10, 1, "a")],
+        );
+        let run2 = make_run(
+            "rustc",
+            vec![make_sarif_result("crate_b/src/lib.rs", 5, 1, "b")],
+        );
+        let sarif_log = make_multi_run_sarif(vec![run1, run2]);
+
+        let opts = ScanOpts::default();
+        let result = convert_sarif(&sarif_log, &opts).unwrap();
+        assert_eq!(result.language, "rust");
+    }
+
+    #[test]
+    fn test_convert_sarif_language_conflicting_runs() {
+        // runs from tools targeting different languages are ambiguous -> unknown.
+        let run1 = make_run(
+            "cargo-clippy",
+            vec![make_sarif_result("crate_a/src/lib.rs", 10, 1, "rusty")],
+        );
+        let run2 = make_run(
+            "go-geiger",
+            vec![make_sarif_result("pkg/main.go", 5, 1, "gopher")],
+        );
+        let sarif_log = make_multi_run_sarif(vec![run1, run2]);
+
+        let opts = ScanOpts::default();
+        let result = convert_sarif(&sarif_log, &opts).unwrap();
+        assert_eq!(result.language, "unknown");
+        // both runs' occurrences are still counted despite the language conflict.
+        assert_eq!(result.totals.overall_unsafe, 2);
     }
 }
