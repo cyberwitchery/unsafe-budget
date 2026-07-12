@@ -38,7 +38,10 @@ pub const GO_GEIGER: &str = "go_geiger";
 pub const SARIF: &str = "sarif";
 
 /// get an analyzer by ID.
-pub fn get_analyzer(id: &str) -> Result<Box<dyn Analyzer>> {
+///
+/// `timeout` (seconds) bounds the plugin discovery probe when the requested ID
+/// is not a built-in analyzer; `None` leaves it unbounded.
+pub fn get_analyzer(id: &str, timeout: Option<u64>) -> Result<Box<dyn Analyzer>> {
     match id {
         RUSTC_UNSAFE_LINT => Ok(Box::new(rustc::RustcAnalyzer)),
         CARGO_GEIGER => Ok(Box::new(cargo_geiger::CargoGeigerAnalyzer)),
@@ -46,7 +49,7 @@ pub fn get_analyzer(id: &str) -> Result<Box<dyn Analyzer>> {
         SARIF => Ok(Box::new(sarif::SarifAnalyzer)),
         _ => {
             // check for external plugin
-            let plugins = plugin::discover_plugins();
+            let plugins = plugin::discover_plugins(timeout);
             if let Some(info) = plugins.iter().find(|p| p.id == id) {
                 if let Some(ref path) = info.path {
                     return Ok(Box::new(plugin::PluginAnalyzer {
@@ -91,7 +94,10 @@ pub fn detect_analyzer(opts: &ScanOpts) -> Result<Box<dyn Analyzer>> {
 }
 
 /// list all available analyzers (built-in + discovered plugins).
-pub fn list_analyzers() -> Vec<AnalyzerInfo> {
+///
+/// `timeout` (seconds) bounds each plugin's discovery probe; `None` leaves it
+/// unbounded.
+pub fn list_analyzers(timeout: Option<u64>) -> Vec<AnalyzerInfo> {
     let mut analyzers = vec![
         AnalyzerInfo {
             id: RUSTC_UNSAFE_LINT.into(),
@@ -119,7 +125,7 @@ pub fn list_analyzers() -> Vec<AnalyzerInfo> {
         },
     ];
 
-    analyzers.extend(plugin::discover_plugins());
+    analyzers.extend(plugin::discover_plugins(timeout));
     analyzers
 }
 
@@ -219,35 +225,35 @@ mod tests {
 
     #[test]
     fn test_get_analyzer_rustc() {
-        let analyzer = get_analyzer(RUSTC_UNSAFE_LINT).unwrap();
+        let analyzer = get_analyzer(RUSTC_UNSAFE_LINT, None).unwrap();
         assert_eq!(analyzer.id(), "rustc_unsafe_lint");
         assert_eq!(analyzer.language(), "rust");
     }
 
     #[test]
     fn test_get_analyzer_cargo_geiger() {
-        let analyzer = get_analyzer(CARGO_GEIGER).unwrap();
+        let analyzer = get_analyzer(CARGO_GEIGER, None).unwrap();
         assert_eq!(analyzer.id(), "cargo_geiger");
         assert_eq!(analyzer.language(), "rust");
     }
 
     #[test]
     fn test_get_analyzer_go_geiger() {
-        let analyzer = get_analyzer(GO_GEIGER).unwrap();
+        let analyzer = get_analyzer(GO_GEIGER, None).unwrap();
         assert_eq!(analyzer.id(), "go_geiger");
         assert_eq!(analyzer.language(), "go");
     }
 
     #[test]
     fn test_get_analyzer_sarif() {
-        let analyzer = get_analyzer(SARIF).unwrap();
+        let analyzer = get_analyzer(SARIF, None).unwrap();
         assert_eq!(analyzer.id(), "sarif");
         assert_eq!(analyzer.language(), "unknown");
     }
 
     #[test]
     fn test_get_analyzer_unknown() {
-        let result = get_analyzer("unknown_analyzer");
+        let result = get_analyzer("unknown_analyzer", None);
         assert!(result.is_err());
     }
 
@@ -260,7 +266,7 @@ mod tests {
 
     #[test]
     fn test_list_analyzers_has_builtins() {
-        let analyzers = list_analyzers();
+        let analyzers = list_analyzers(None);
 
         // should have at least the 4 built-in analyzers
         assert!(analyzers.len() >= 4);
@@ -274,7 +280,7 @@ mod tests {
 
     #[test]
     fn test_list_analyzers_builtins_are_marked() {
-        let analyzers = list_analyzers();
+        let analyzers = list_analyzers(None);
 
         let rustc = analyzers
             .iter()

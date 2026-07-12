@@ -129,7 +129,12 @@ fn cmd_update(args: ScanArgs) -> Result<ExitCode> {
 }
 
 fn cmd_plugins(args: crate::cli::PluginsArgs) -> Result<ExitCode> {
-    let plugins = list_analyzers();
+    // honor a configured plugin/analyzer timeout for the discovery probe so a
+    // hung plugin's `--info` cannot wedge the listing. No config file leaves the
+    // timeout unset (unbounded), matching the opt-in default.
+    let config = Config::load_from_dir(&std::env::current_dir()?)?;
+    let timeout = config.plugin_timeout_secs.or(config.timeout_secs);
+    let plugins = list_analyzers(timeout);
     output::print_plugins(&plugins, args.format)?;
     Ok(ExitCode::SUCCESS)
 }
@@ -138,7 +143,7 @@ fn get_analyzer_for_args(args: &ScanArgs, opts: &ScanOpts) -> Result<Box<dyn Ana
     if args.analyzer == "auto" {
         detect_analyzer(opts)
     } else {
-        get_analyzer(&args.analyzer)
+        get_analyzer(&args.analyzer, opts.plugin_timeout_secs)
     }
 }
 

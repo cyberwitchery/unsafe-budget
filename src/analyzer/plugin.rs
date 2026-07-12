@@ -3,7 +3,7 @@ use crate::analyzer::{Analyzer, AnalyzerInfo};
 use crate::error::{Error, Result};
 use crate::model::{ScanOpts, ScanResult};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::time::Duration;
 
 const PLUGIN_PREFIX: &str = "unsafe-budget-plugin-";
@@ -30,7 +30,10 @@ impl Analyzer for PluginAnalyzer {
 }
 
 /// discover plugin executables on PATH.
-pub fn discover_plugins() -> Vec<AnalyzerInfo> {
+///
+/// `timeout` (seconds) bounds each plugin's `--info` probe; `None` leaves the
+/// probe unbounded, matching the crate's opt-in timeout philosophy.
+pub fn discover_plugins(timeout: Option<u64>) -> Vec<AnalyzerInfo> {
     let path_var = match std::env::var("PATH") {
         Ok(p) => p,
         Err(_) => return Vec::new(),
@@ -46,8 +49,8 @@ pub fn discover_plugins() -> Vec<AnalyzerInfo> {
                     if name.starts_with(PLUGIN_PREFIX) && is_executable(&path) {
                         let id = name.strip_prefix(PLUGIN_PREFIX).unwrap_or(name);
                         // try to get language from plugin
-                        let language =
-                            probe_plugin_language(&path).unwrap_or_else(|| "unknown".into());
+                        let language = probe_plugin_language(&path, timeout)
+                            .unwrap_or_else(|| "unknown".into());
                         plugins.push(AnalyzerInfo {
                             id: id.into(),
                             language,
@@ -81,13 +84,19 @@ fn is_executable(path: &Path) -> bool {
 }
 
 /// try to get plugin language by running with --info.
-fn probe_plugin_language(path: &Path) -> Option<String> {
-    let output = Command::new(path)
-        .arg("--info")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output()
-        .ok()?;
+///
+/// `timeout` (seconds) bounds the probe through the shared [`process::run_process`]
+/// runner; `None` keeps the historical unbounded spawn. A probe that fails to
+/// run, exits non-zero, or exceeds the deadline yields `None`, so a hung plugin
+/// falls back to an "unknown" language instead of blocking discovery.
+fn probe_plugin_language(path: &Path, timeout: Option<u64>) -> Option<String> {
+    let mut cmd = Command::new(path);
+    cmd.arg("--info");
+
+    let output = match process::run_process(&mut cmd, timeout.map(Duration::from_secs)).ok()? {
+        Run::Completed(out) => out,
+        Run::TimedOut => return None,
+    };
 
     if !output.status.success() {
         return None;
@@ -255,7 +264,7 @@ mod tests {
         let _lock = test_spawn_guard();
         let tmp = TempDir::new().unwrap();
         let p = make_script(tmp.path(), "plugin", r#"echo '{"language":"python"}'"#);
-        assert_eq!(probe_plugin_language(&p), Some("python".into()));
+        assert_eq!(probe_plugin_language(&p, None), Some("python".into()));
     }
 
     #[test]
@@ -263,7 +272,7 @@ mod tests {
         let _lock = test_spawn_guard();
         let tmp = TempDir::new().unwrap();
         let p = make_script(tmp.path(), "plugin", r#"echo '{"version":"1"}'"#);
-        assert_eq!(probe_plugin_language(&p), None);
+        assert_eq!(probe_plugin_language(&p, None), None);
     }
 
     #[test]
@@ -271,16 +280,45 @@ mod tests {
         let _lock = test_spawn_guard();
         let tmp = TempDir::new().unwrap();
         let p = make_script(tmp.path(), "plugin", "exit 1");
-        assert_eq!(probe_plugin_language(&p), None);
+        assert_eq!(probe_plugin_language(&p, None), None);
     }
 
     #[test]
     fn probe_returns_none_for_nonexistent_binary() {
         let _lock = test_spawn_guard();
         assert_eq!(
-            probe_plugin_language(&PathBuf::from("/no/such/binary")),
+            probe_plugin_language(&PathBuf::from("/no/such/binary"), None),
             None
         );
+    }
+
+    #[test]
+    fn probe_times_out_slow_plugin() {
+        // serialize spawns to avoid the ETXTBSY fork-race (see the run_plugin
+        // timeout tests below).
+        let _lock = test_spawn_guard();
+        // `exec sleep` replaces the shell in place so the child *is* sleep;
+        // killing it on timeout closes the pipes directly (no orphaned
+        // grandchild holding them open).
+        let tmp = TempDir::new().unwrap();
+        let p = make_script(tmp.path(), "unsafe-budget-plugin-slow", "exec sleep 60\n");
+        // the probe outlives the 1s deadline, so it is killed and reported as a
+        // failed probe (None) rather than hanging for the full 60s.
+        assert_eq!(probe_plugin_language(&p, Some(1)), None);
+    }
+
+    #[test]
+    fn probe_fast_plugin_completes_within_timeout() {
+        let _lock = test_spawn_guard();
+        // a plugin that answers immediately finishes well inside the deadline,
+        // so a set timeout does not interfere with a normal probe.
+        let tmp = TempDir::new().unwrap();
+        let p = make_script(
+            tmp.path(),
+            "unsafe-budget-plugin-fast",
+            r#"echo '{"language":"python"}'"#,
+        );
+        assert_eq!(probe_plugin_language(&p, Some(10)), Some("python".into()));
     }
 
     // --- discover_plugins ---
@@ -298,7 +336,7 @@ mod tests {
         let old_path = std::env::var("PATH").unwrap_or_default();
         std::env::set_var("PATH", format!("{}:{old_path}", tmp.path().display()));
 
-        let plugins = discover_plugins();
+        let plugins = discover_plugins(None);
 
         std::env::set_var("PATH", &old_path);
 
@@ -319,7 +357,7 @@ mod tests {
         let old_path = std::env::var("PATH").unwrap_or_default();
         std::env::set_var("PATH", format!("{}:{old_path}", tmp.path().display()));
 
-        let plugins = discover_plugins();
+        let plugins = discover_plugins(None);
 
         std::env::set_var("PATH", &old_path);
 
@@ -338,7 +376,7 @@ mod tests {
         let old_path = std::env::var("PATH").unwrap_or_default();
         std::env::set_var("PATH", format!("{}:{old_path}", tmp.path().display()));
 
-        let plugins = discover_plugins();
+        let plugins = discover_plugins(None);
 
         std::env::set_var("PATH", &old_path);
 
@@ -357,7 +395,7 @@ mod tests {
         let old_path = std::env::var("PATH").unwrap_or_default();
         std::env::set_var("PATH", format!("{}:{old_path}", tmp.path().display()));
 
-        let plugins = discover_plugins();
+        let plugins = discover_plugins(None);
 
         std::env::set_var("PATH", &old_path);
 
@@ -433,7 +471,7 @@ mod tests {
             ),
         );
 
-        let plugins = discover_plugins();
+        let plugins = discover_plugins(None);
 
         std::env::set_var("PATH", &old_path);
 
