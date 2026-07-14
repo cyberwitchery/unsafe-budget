@@ -127,17 +127,7 @@ fn parse_geiger_output(
             "unknown".into()
         });
 
-        // determine if this is a workspace package or dependency
-        // dependencies are typically in vendor/ or go module cache
-        let is_dep = file.to_string_lossy().contains("/vendor/")
-            || file.to_string_lossy().contains("/go/pkg/mod/");
-
-        let kind = if is_dep {
-            UnitKind::Dep
-        } else {
-            UnitKind::Workspace
-        };
-
+        let kind = super::classify_unit_kind(&file);
         let entry = counts.entry(pkg_name.clone()).or_insert((kind, 0));
         entry.1 += 1;
 
@@ -259,6 +249,25 @@ mod tests {
     fn test_parse_geiger_output_vendor_deps() {
         let output =
             b"/home/user/project/vendor/github.com/pkg/errors/errors.go:100:5: unsafe.Pointer\n";
+
+        let opts = ScanOpts {
+            include_deps: true,
+            ..Default::default()
+        };
+        let (units, details, _) = parse_geiger_output(output, &opts).unwrap();
+
+        assert_eq!(units.len(), 1);
+        assert_eq!(units[0].name, "github.com/pkg/errors");
+        assert_eq!(units[0].kind, UnitKind::Dep);
+        assert_eq!(details.len(), 1);
+    }
+
+    #[test]
+    fn test_parse_geiger_output_module_cache_deps() {
+        // regression: go module cache paths stay classified as dependencies
+        // after consolidating onto the shared classify_unit_kind helper.
+        let output =
+            b"/home/user/go/pkg/mod/github.com/pkg/errors@v0.9.1/errors.go:100:5: unsafe.Pointer\n";
 
         let opts = ScanOpts {
             include_deps: true,
