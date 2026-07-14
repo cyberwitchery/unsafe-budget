@@ -156,6 +156,30 @@ pub(crate) fn apply_cargo_flags(cmd: &mut Command, opts: &ScanOpts) {
     }
 }
 
+/// classify a source-file path as a workspace unit or an external dependency.
+///
+/// returns [`UnitKind::Dep`] when the path contains an unambiguous
+/// dependency-cache marker for one of the ecosystems this tool targets, and
+/// [`UnitKind::Workspace`] otherwise. defaulting to workspace is the
+/// conservative direction: an unrecognized path is never over-reported as a
+/// dependency.
+pub(crate) fn classify_unit_kind(path: &std::path::Path) -> UnitKind {
+    // dependency-cache markers, one per ecosystem.
+    const DEP_MARKERS: &[&str] = &[
+        "/.cargo/registry/", // Rust: crates.io / registry download cache
+        "/.cargo/git/",      // Rust: git-dependency checkout cache
+        "/vendor/",          // Go: vendored dependencies
+        "/go/pkg/mod/",      // Go: module download cache
+    ];
+
+    let path = path.to_string_lossy();
+    if DEP_MARKERS.iter().any(|marker| path.contains(marker)) {
+        UnitKind::Dep
+    } else {
+        UnitKind::Workspace
+    }
+}
+
 /// aggregate pre-collected unit counts and occurrences into sorted, filtered
 /// results.
 ///
@@ -221,7 +245,7 @@ pub(crate) fn test_spawn_guard() -> std::sync::MutexGuard<'static, ()> {
 mod tests {
     use super::*;
     use std::collections::HashMap;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     #[test]
     fn test_get_analyzer_rustc() {
@@ -429,6 +453,43 @@ mod tests {
 
         assert!(units.is_empty());
         assert!(details.is_empty());
+    }
+
+    #[test]
+    fn test_classify_unit_kind_cargo_registry_is_dep() {
+        let path =
+            Path::new("/home/user/.cargo/registry/src/index.crates.io-abc/libc-0.2.0/src/lib.rs");
+        assert_eq!(classify_unit_kind(path), UnitKind::Dep);
+    }
+
+    #[test]
+    fn test_classify_unit_kind_cargo_git_is_dep() {
+        let path = Path::new("/home/user/.cargo/git/checkouts/some-crate-abc/rev/src/lib.rs");
+        assert_eq!(classify_unit_kind(path), UnitKind::Dep);
+    }
+
+    #[test]
+    fn test_classify_unit_kind_go_vendor_is_dep() {
+        let path = Path::new("/home/user/project/vendor/github.com/pkg/errors/errors.go");
+        assert_eq!(classify_unit_kind(path), UnitKind::Dep);
+    }
+
+    #[test]
+    fn test_classify_unit_kind_go_module_cache_is_dep() {
+        let path = Path::new("/home/user/go/pkg/mod/github.com/pkg/errors@v0.9.1/errors.go");
+        assert_eq!(classify_unit_kind(path), UnitKind::Dep);
+    }
+
+    #[test]
+    fn test_classify_unit_kind_workspace_default() {
+        assert_eq!(
+            classify_unit_kind(Path::new("crate_a/src/lib.rs")),
+            UnitKind::Workspace
+        );
+        assert_eq!(
+            classify_unit_kind(Path::new("/home/user/project/src/main.rs")),
+            UnitKind::Workspace
+        );
     }
 
     #[test]

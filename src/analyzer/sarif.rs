@@ -194,9 +194,8 @@ fn aggregate(occurrences: Vec<Occurrence>, opts: &ScanOpts) -> (Vec<Unit>, Vec<O
     let mut counts: HashMap<String, (UnitKind, u64)> = HashMap::new();
 
     for occ in &occurrences {
-        let entry = counts
-            .entry(occ.unit.clone())
-            .or_insert((UnitKind::Workspace, 0));
+        let kind = super::classify_unit_kind(&occ.file);
+        let entry = counts.entry(occ.unit.clone()).or_insert((kind, 0));
         entry.1 += 1;
     }
 
@@ -464,6 +463,67 @@ mod tests {
         assert_eq!(result.units[0].unsafe_count, 2);
         assert_eq!(result.units[1].name, "crate_b");
         assert_eq!(result.units[1].unsafe_count, 1);
+    }
+
+    #[test]
+    fn test_convert_sarif_workspace_only_filters_deps() {
+        // one workspace occurrence and one dependency-cache occurrence.
+        let sarif_log = make_sarif(vec![
+            make_sarif_result("crate_a/src/lib.rs", 10, 1, "workspace unsafe"),
+            make_sarif_result(
+                "/home/user/go/pkg/mod/github.com/pkg/errors@v0.9.1/errors.go",
+                5,
+                1,
+                "dependency unsafe",
+            ),
+        ]);
+
+        let opts = ScanOpts {
+            workspace_only: true,
+            include_deps: true,
+            ..Default::default()
+        };
+        let result = convert_sarif(&sarif_log, &opts).unwrap();
+
+        // the dependency unit is filtered out; only the workspace crate remains.
+        assert_eq!(result.units.len(), 1);
+        assert_eq!(result.units[0].name, "crate_a");
+        assert_eq!(result.units[0].kind, UnitKind::Workspace);
+        assert_eq!(result.totals.deps_unsafe, 0);
+        // the filtered dependency's detail occurrence is dropped too.
+        assert_eq!(result.details.len(), 1);
+    }
+
+    #[test]
+    fn test_convert_sarif_reports_dependency_unsafe() {
+        // occurrences under a cargo registry path and a go module cache path
+        // are both classified as dependencies and counted toward deps_unsafe.
+        let sarif_log = make_sarif(vec![
+            make_sarif_result("my_crate/src/lib.rs", 1, 1, "workspace"),
+            make_sarif_result(
+                "/home/user/.cargo/registry/src/index.crates.io-abc/libc-0.2.0/src/lib.rs",
+                2,
+                1,
+                "registry dep",
+            ),
+            make_sarif_result(
+                "/home/user/go/pkg/mod/github.com/pkg/errors@v0.9.1/errors.go",
+                3,
+                1,
+                "module cache dep",
+            ),
+        ]);
+
+        let opts = ScanOpts {
+            include_deps: true,
+            ..Default::default()
+        };
+        let result = convert_sarif(&sarif_log, &opts).unwrap();
+
+        assert_eq!(result.totals.workspace_unsafe, 1);
+        assert_eq!(result.totals.deps_unsafe, 2);
+        assert_eq!(result.totals.overall_unsafe, 3);
+        assert!(result.units.iter().any(|u| u.kind == UnitKind::Dep));
     }
 
     #[test]
