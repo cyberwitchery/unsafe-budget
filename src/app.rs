@@ -30,12 +30,7 @@ fn run(cli: cli::Cli) -> Result<ExitCode> {
     }
 }
 
-/// whether occurrence details should be kept in the output.
-///
-/// `--details` is a display toggle for the text renderer's per-occurrence
-/// section. JSON and SARIF are machine-readable and must always carry the full
-/// occurrence details and locations, so details are only dropped for text
-/// output when the flag is absent.
+// text output drops occurrence details without --details; machine formats always keep them
 fn should_retain_details(details_flag: bool, format: Format) -> bool {
     details_flag || format != Format::Text
 }
@@ -49,7 +44,6 @@ fn cmd_scan(args: ScanArgs) -> Result<ExitCode> {
 
     result = apply_ignore_filter(result, &config.ignore);
 
-    // details are a display toggle for text output; JSON/SARIF always keep them
     if !should_retain_details(args.details, args.format) {
         result.details.clear();
     }
@@ -100,7 +94,6 @@ fn cmd_check(args: ScanArgs) -> Result<ExitCode> {
 
     let mut check_result = budget::check(&result, baseline.as_ref(), &config)?;
 
-    // details are a display toggle for text output; JSON/SARIF always keep them
     if !should_retain_details(args.details, args.format) {
         check_result.scan.details.clear();
     }
@@ -583,7 +576,7 @@ mod tests {
         assert!(should_retain_details(false, Format::Sarif));
     }
 
-    /// apply the same detail-gating the commands do before routing to output.
+    // apply the same detail-gating the commands do before routing to output
     fn gate_details(mut result: ScanResult, details_flag: bool, format: Format) -> ScanResult {
         if !should_retain_details(details_flag, format) {
             result.details.clear();
@@ -600,8 +593,7 @@ mod tests {
 
     #[test]
     fn scan_sarif_without_details_flag_keeps_occurrence_results() {
-        // regression: SARIF must emit one located result per occurrence even
-        // when --details is absent (it is a display flag, not a data filter).
+        // regression: SARIF keeps a located result per occurrence even without --details
         let result = gate_details(make_result_with_details(), false, Format::Sarif);
         let sarif = crate::sarif::scan_to_sarif(&result);
         let results = sarif.runs[0].results.as_ref().unwrap();
@@ -625,8 +617,7 @@ mod tests {
 
     #[test]
     fn check_sarif_without_details_flag_keeps_violation_locations() {
-        // regression: check --format sarif must attach locations to violations
-        // (build_location_map is empty when details were cleared).
+        // regression: check --format sarif keeps violation locations without --details
         let scan = gate_details(make_result_with_details(), false, Format::Sarif);
         let check = CheckResult {
             scan,
