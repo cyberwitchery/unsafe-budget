@@ -30,6 +30,11 @@ fn run(cli: cli::Cli) -> Result<ExitCode> {
     }
 }
 
+// text output drops occurrence details without --details; machine formats always keep them
+fn should_retain_details(details_flag: bool, format: Format) -> bool {
+    details_flag || format != Format::Text
+}
+
 fn cmd_scan(args: ScanArgs) -> Result<ExitCode> {
     let config = load_config(&args)?;
     let opts = build_scan_opts(&args, &config);
@@ -39,8 +44,7 @@ fn cmd_scan(args: ScanArgs) -> Result<ExitCode> {
 
     result = apply_ignore_filter(result, &config.ignore);
 
-    // filter details if not requested
-    if !args.details {
+    if !should_retain_details(args.details, args.format) {
         result.details.clear();
     }
 
@@ -90,8 +94,7 @@ fn cmd_check(args: ScanArgs) -> Result<ExitCode> {
 
     let mut check_result = budget::check(&result, baseline.as_ref(), &config)?;
 
-    // filter details if not requested
-    if !args.details {
+    if !should_retain_details(args.details, args.format) {
         check_result.scan.details.clear();
     }
 
@@ -247,7 +250,7 @@ fn build_baseline(result: &ScanResult, analyzer: &dyn Analyzer) -> Baseline {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Occurrence, Scope, Unit, UnitKind};
+    use crate::model::{CheckResult, Occurrence, Scope, Unit, UnitKind, Violation};
     use std::path::PathBuf;
 
     fn make_scope() -> Scope {
@@ -559,6 +562,87 @@ mod tests {
 
         assert_eq!(filtered.details.len(), 3);
         assert_eq!(filtered.totals.overall_unsafe, 3);
+    }
+
+    #[test]
+    fn should_retain_details_keeps_machine_output_intact() {
+        // --details retains occurrences for every format
+        assert!(should_retain_details(true, Format::Text));
+        assert!(should_retain_details(true, Format::Json));
+        assert!(should_retain_details(true, Format::Sarif));
+        // without --details, only text drops them; JSON and SARIF keep them
+        assert!(!should_retain_details(false, Format::Text));
+        assert!(should_retain_details(false, Format::Json));
+        assert!(should_retain_details(false, Format::Sarif));
+    }
+
+    // apply the same detail-gating the commands do before routing to output
+    fn gate_details(mut result: ScanResult, details_flag: bool, format: Format) -> ScanResult {
+        if !should_retain_details(details_flag, format) {
+            result.details.clear();
+        }
+        result
+    }
+
+    #[test]
+    fn scan_text_without_details_flag_drops_occurrences() {
+        // text behaviour is unchanged: no --details means no Details section
+        let result = gate_details(make_result_with_details(), false, Format::Text);
+        assert!(result.details.is_empty());
+    }
+
+    #[test]
+    fn scan_sarif_without_details_flag_keeps_occurrence_results() {
+        // regression: SARIF keeps a located result per occurrence even without --details
+        let result = gate_details(make_result_with_details(), false, Format::Sarif);
+        let sarif = crate::sarif::scan_to_sarif(&result);
+        let results = sarif.runs[0].results.as_ref().unwrap();
+        assert_eq!(results.len(), 4);
+        assert!(
+            results.iter().all(|r| r.locations.is_some()),
+            "every occurrence result must carry a location"
+        );
+    }
+
+    #[test]
+    fn scan_json_without_details_flag_keeps_details() {
+        // mirror of the SARIF case for the JSON serialization machines consume
+        let result = gate_details(make_result_with_details(), false, Format::Json);
+        let json = serde_json::to_value(&result).unwrap();
+        let details = json["details"]
+            .as_array()
+            .expect("json output must retain the details array");
+        assert_eq!(details.len(), 4);
+    }
+
+    #[test]
+    fn check_sarif_without_details_flag_keeps_violation_locations() {
+        // regression: check --format sarif keeps violation locations without --details
+        let scan = gate_details(make_result_with_details(), false, Format::Sarif);
+        let check = CheckResult {
+            scan,
+            violations: vec![Violation {
+                unit: "my_crate".into(),
+                kind: UnitKind::Workspace,
+                baseline: 0,
+                actual: 3,
+                delta: 3,
+            }],
+            warnings: vec![],
+            passed: false,
+        };
+        let sarif = crate::sarif::check_to_sarif(&check);
+        let results = sarif.runs[0].results.as_ref().unwrap();
+        let violation = results
+            .iter()
+            .find(|r| r.rule_id.as_deref() == Some("budget_violation"))
+            .expect("violation result present");
+        let locations = violation
+            .locations
+            .as_ref()
+            .expect("violation must carry the occurrence locations");
+        // my_crate has 3 occurrences in make_result_with_details
+        assert_eq!(locations.len(), 3);
     }
 
     fn make_baseline_with_analyzer(analyzer_id: &str) -> Baseline {
