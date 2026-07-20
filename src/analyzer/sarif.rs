@@ -62,6 +62,7 @@ fn convert_sarif(sarif: &Sarif, opts: &ScanOpts) -> Result<ScanResult> {
     let mut occurrences: Vec<Occurrence> = Vec::new();
 
     for run in &sarif.runs {
+        let own_run = is_own_run(run);
         let results = run.results.as_deref().unwrap_or(&[]);
 
         for result in results {
@@ -96,8 +97,10 @@ fn convert_sarif(sarif: &Sarif, opts: &ScanOpts) -> Result<ScanResult> {
                     .and_then(|r| r.start_column)
                     .unwrap_or(0) as u32;
 
-                let unit_name =
-                    logical_unit_name(location).unwrap_or_else(|| extract_unit_name(&file));
+                let unit_name = own_run
+                    .then(|| logical_unit_name(location))
+                    .flatten()
+                    .unwrap_or_else(|| extract_unit_name(&file));
 
                 occurrences.push(Occurrence {
                     unit: unit_name,
@@ -161,11 +164,25 @@ fn run_language(run: &sarif::Run) -> String {
         .unwrap_or_else(|| infer_language(&run.tool.driver.name))
 }
 
+/// whether a run was written by unsafe-budget.
+///
+/// keyed on the [`PROP_NAMESPACE`] property bag, which every log we emit
+/// carries. `tool.driver.name` would also identify us, but it is a display
+/// string that a rename or a rebranded build changes, and the language channel
+/// already trusts this bag — one provenance marker for both, not two.
+fn is_own_run(run: &sarif::Run) -> bool {
+    run.properties
+        .as_ref()
+        .is_some_and(|props| props.additional_properties.contains_key(PROP_NAMESPACE))
+}
+
 /// read the unit name a location records as a logical location.
 ///
-/// only logical locations tagged [`UNIT_LOGICAL_KIND`] are accepted. other
-/// tools use `logicalLocations` for functions, types and namespaces, and
-/// treating one of those as a unit would silently regroup third-party results.
+/// only consulted for runs [`is_own_run`] accepts, and only logical locations
+/// tagged [`UNIT_LOGICAL_KIND`] are accepted. `module` is a standard SARIF kind
+/// that other tools use for their own purposes, alongside `function` and
+/// `type`; without the provenance gate, honouring it would hand unit identity
+/// to any third-party log that happens to emit one.
 fn logical_unit_name(location: &sarif::Location) -> Option<String> {
     location
         .logical_locations
@@ -763,19 +780,68 @@ mod tests {
         );
     }
 
+    fn logical_location(kind: &str, name: &str) -> sarif::LogicalLocation {
+        sarif::LogicalLocation::builder()
+            .fully_qualified_name(name.to_string())
+            .kind(kind.to_string())
+            .build()
+    }
+
     #[test]
     fn test_non_module_logical_location_is_ignored() {
         // other tools use logicalLocations for functions and types; treating one
         // as a unit would silently regroup their results.
         let mut result = make_sarif_result("crate_a/src/lib.rs", 10, 1, "unsafe");
         result.locations.as_mut().unwrap()[0].logical_locations =
-            Some(vec![sarif::LogicalLocation::builder()
-                .fully_qualified_name("crate_a::foo::do_thing")
-                .kind("function")
-                .build()]);
+            Some(vec![logical_location("function", "crate_a::foo::do_thing")]);
 
         let opts = ScanOpts::default();
         let converted = convert_sarif(&make_sarif(vec![result]), &opts).unwrap();
+
+        assert_eq!(converted.units.len(), 1);
+        assert_eq!(converted.units[0].name, "crate_a");
+    }
+
+    #[test]
+    fn test_third_party_module_logical_location_is_ignored() {
+        // "module" is a standard SARIF kind, so a third-party log may emit one
+        // for its own purposes. those names must not take over unit identity:
+        // caps keyed on the path-derived names would go silently inert on
+        // upgrade, the exact failure this channel exists to remove.
+        let mut a = make_sarif_result("mypkg/src/a.c", 10, 1, "unsafe");
+        a.locations.as_mut().unwrap()[0].logical_locations = Some(vec![logical_location(
+            UNIT_LOGICAL_KIND,
+            "com.example.SomeModule",
+        )]);
+        let mut b = make_sarif_result("mypkg/src/b.c", 20, 1, "unsafe");
+        b.locations.as_mut().unwrap()[0].logical_locations = Some(vec![logical_location(
+            UNIT_LOGICAL_KIND,
+            "com.example.OtherModule",
+        )]);
+
+        let opts = ScanOpts::default();
+        let sarif_log = make_multi_run_sarif(vec![make_run("CodeQL", vec![a, b])]);
+        let converted = convert_sarif(&sarif_log, &opts).unwrap();
+
+        // the path-derived result, i.e. what this input read as before the
+        // logical-location channel existed.
+        let names: Vec<_> = converted.units.iter().map(|u| u.name.as_str()).collect();
+        assert_eq!(names, vec!["mypkg"]);
+    }
+
+    #[test]
+    fn test_own_run_still_requires_the_module_kind() {
+        // provenance is not the only condition: inside our own runs a logical
+        // location only names a unit if we tagged it as one, so emitting other
+        // kinds later cannot silently regroup anything.
+        let mut result = make_sarif_result("crate_a/src/lib.rs", 10, 1, "unsafe");
+        result.locations.as_mut().unwrap()[0].logical_locations =
+            Some(vec![logical_location("function", "crate_a::foo::do_thing")]);
+        let mut run = make_run("unsafe-budget", vec![result]);
+        run.properties = Some(property_bag("rust"));
+
+        let opts = ScanOpts::default();
+        let converted = convert_sarif(&make_multi_run_sarif(vec![run]), &opts).unwrap();
 
         assert_eq!(converted.units.len(), 1);
         assert_eq!(converted.units[0].name, "crate_a");

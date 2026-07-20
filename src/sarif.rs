@@ -27,9 +27,11 @@ pub(crate) const PROP_LANGUAGE: &str = "language";
 
 /// `logicalLocation.kind` marking the unit a result belongs to.
 ///
-/// the reader only trusts logical locations carrying this kind, so logical
-/// locations another tool emits for functions or types can never be mistaken
-/// for unit names.
+/// this is a standard SARIF kind rather than a private one, so it identifies
+/// nothing on its own: the reader accepts it only on runs carrying the
+/// [`PROP_NAMESPACE`] property bag. logical locations another tool emits —
+/// whether for functions, types, or its own idea of a module — can therefore
+/// never be mistaken for unit names.
 pub(crate) const UNIT_LOGICAL_KIND: &str = "module";
 
 /// convert a scan result into a SARIF 2.1.0 log.
