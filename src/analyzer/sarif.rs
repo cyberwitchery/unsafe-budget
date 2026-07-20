@@ -791,6 +791,27 @@ mod tests {
     }
 
     #[test]
+    fn test_mixed_run_log_resolves_units_per_run() {
+        let mut theirs = make_sarif_result("theirpkg/src/a.c", 10, 1, "unsafe");
+        theirs.locations.as_mut().unwrap()[0].logical_locations = Some(vec![logical_location(
+            UNIT_LOGICAL_KIND,
+            "com.example.TheirModule",
+        )]);
+        let mut ours = make_sarif_result("ourpkg/src/b.rs", 20, 1, "unsafe");
+        ours.locations.as_mut().unwrap()[0].logical_locations =
+            Some(vec![logical_location(UNIT_LOGICAL_KIND, "libc")]);
+        let mut own_run = make_run("unsafe-budget", vec![ours]);
+        own_run.properties = Some(property_bag("rust"));
+
+        let opts = ScanOpts::default();
+        let sarif_log = make_multi_run_sarif(vec![make_run("CodeQL", vec![theirs]), own_run]);
+        let converted = convert_sarif(&sarif_log, &opts).unwrap();
+
+        let names: Vec<_> = converted.units.iter().map(|u| u.name.as_str()).collect();
+        assert_eq!(names, vec!["libc", "theirpkg"]);
+    }
+
+    #[test]
     fn test_own_run_still_requires_the_module_kind() {
         let mut result = make_sarif_result("crate_a/src/lib.rs", 10, 1, "unsafe");
         result.locations.as_mut().unwrap()[0].logical_locations =
