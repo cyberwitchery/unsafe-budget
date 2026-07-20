@@ -14,24 +14,13 @@ const RULE_BUDGET_VIOLATION: &str = "budget_violation";
 const RULE_BUDGET_WARNING: &str = "budget_warning";
 const RULE_PARSE_WARNING: &str = "parse_warning";
 
-/// `run.properties` namespace holding the fields the SARIF analyzer reads back
-/// from our own output. namespaced so merging logs from several tools cannot
-/// collide.
+/// `run.properties` namespace marking a run as our own output.
 pub(crate) const PROP_NAMESPACE: &str = "unsafe-budget";
 
 /// key under [`PROP_NAMESPACE`] carrying the programming language of the scan.
-///
-/// deliberately not `run.language`, which SARIF 2.1.0 defines as an RFC 5646
-/// natural-language culture code for the log's human-readable strings.
 pub(crate) const PROP_LANGUAGE: &str = "language";
 
 /// `logicalLocation.kind` marking the unit a result belongs to.
-///
-/// this is a standard SARIF kind rather than a private one, so it identifies
-/// nothing on its own: the reader accepts it only on runs carrying the
-/// [`PROP_NAMESPACE`] property bag. logical locations another tool emits —
-/// whether for functions, types, or its own idea of a module — can therefore
-/// never be mistaken for unit names.
 pub(crate) const UNIT_LOGICAL_KIND: &str = "module";
 
 /// convert a scan result into a SARIF 2.1.0 log.
@@ -122,9 +111,6 @@ pub fn check_to_sarif(result: &CheckResult) -> sarif::Sarif {
         .build()
 }
 
-/// build the single run of a log, recording `language` in the run's property
-/// bag so re-ingesting our own output does not have to guess it from the
-/// driver name.
 fn make_run(tool: sarif::Tool, results: Vec<sarif::Result>, language: &str) -> sarif::Run {
     let mut fields = serde_json::Map::new();
     fields.insert(
@@ -239,11 +225,6 @@ fn make_budget_result(
     }
 }
 
-/// build the location of an occurrence.
-///
-/// the unit is emitted as a logical location alongside the physical one: the
-/// artifact URI alone cannot express which crate or package a file belongs to,
-/// so without it the unit has to be re-derived from the path on the way back in.
 fn make_location(occ: &crate::model::Occurrence) -> sarif::Location {
     sarif::Location::builder()
         .physical_location(
@@ -731,8 +712,6 @@ mod tests {
             "https://json.schemastore.org/sarif-2.1.0.json"
         );
 
-        // the unit and the language must reach the wire, not just the struct:
-        // this is the shape the SARIF analyzer reads back.
         let run = &parsed["runs"][0];
         assert_eq!(run["properties"]["unsafe-budget"]["language"], "rust");
 

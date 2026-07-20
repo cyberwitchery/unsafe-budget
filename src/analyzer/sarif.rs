@@ -44,10 +44,9 @@ fn convert_sarif(sarif: &Sarif, opts: &ScanOpts) -> Result<ScanResult> {
         });
     }
 
-    // language comes from each run's property bag when we wrote it ourselves,
-    // and is inferred from the tool driver otherwise. runs from unrecognized
-    // tools contribute no signal; if the recognized runs disagree (e.g. a Rust
-    // tool and a Go tool) the language is ambiguous, so report "unknown".
+    // language is resolved per run. runs from unrecognized tools contribute no
+    // signal; if the recognized runs disagree (e.g. a Rust tool and a Go tool)
+    // the language is ambiguous, so report "unknown".
     let language = sarif
         .runs
         .iter()
@@ -141,10 +140,6 @@ fn has_leading_word(haystack: &str, word: &str) -> bool {
     false
 }
 
-/// read the language a run records in its property bag.
-///
-/// only SARIF written by unsafe-budget carries this; anything else falls
-/// through to [`infer_language`].
 fn property_language(run: &sarif::Run) -> Option<String> {
     run.properties
         .as_ref()?
@@ -155,9 +150,7 @@ fn property_language(run: &sarif::Run) -> Option<String> {
         .map(str::to_string)
 }
 
-/// determine a run's language, preferring the recorded value over the
-/// driver-name heuristic. a recorded `"unknown"` carries no more information
-/// than an absent one, so it falls back too.
+/// the recorded language if it is meaningful, else the driver-name heuristic.
 fn run_language(run: &sarif::Run) -> String {
     property_language(run)
         .filter(|lang| lang != "unknown")
@@ -165,24 +158,13 @@ fn run_language(run: &sarif::Run) -> String {
 }
 
 /// whether a run was written by unsafe-budget.
-///
-/// keyed on the [`PROP_NAMESPACE`] property bag, which every log we emit
-/// carries. `tool.driver.name` would also identify us, but it is a display
-/// string that a rename or a rebranded build changes, and the language channel
-/// already trusts this bag — one provenance marker for both, not two.
 fn is_own_run(run: &sarif::Run) -> bool {
     run.properties
         .as_ref()
         .is_some_and(|props| props.additional_properties.contains_key(PROP_NAMESPACE))
 }
 
-/// read the unit name a location records as a logical location.
-///
-/// only consulted for runs [`is_own_run`] accepts, and only logical locations
-/// tagged [`UNIT_LOGICAL_KIND`] are accepted. `module` is a standard SARIF kind
-/// that other tools use for their own purposes, alongside `function` and
-/// `type`; without the provenance gate, honouring it would hand unit identity
-/// to any third-party log that happens to emit one.
+/// the unit a location names, valid only for runs [`is_own_run`] accepts.
 fn logical_unit_name(location: &sarif::Location) -> Option<String> {
     location
         .logical_locations
@@ -208,9 +190,6 @@ fn infer_language(tool_name: &str) -> String {
 }
 
 /// extract a unit name from an artifact URI.
-///
-/// this is the fallback for input that never carried unit identity, which is
-/// every SARIF file not written by unsafe-budget itself.
 ///
 /// looks for a `src` path component and uses the directory immediately
 /// before it as the crate/package name. This handles Rust workspace
@@ -680,9 +659,6 @@ mod tests {
 
     #[test]
     fn test_roundtrip_preserves_unit_and_language() {
-        // the documented "emit sarif, then ingest it again" workflow must not
-        // lose unit identity or the language. both paths below are ones the
-        // filename heuristic gets wrong on its own.
         let opts = ScanOpts {
             include_deps: true,
             ..Default::default()
@@ -727,25 +703,18 @@ mod tests {
 
         let names: Vec<_> = back.units.iter().map(|u| u.name.as_str()).collect();
         assert_eq!(names, vec!["libc", "my_crate"]);
-        // specifically not what deriving the unit from the path would yield:
-        // the registry directory and the git revision hash.
         assert!(!names.contains(&"registry"));
         assert!(!names.contains(&"9f8e7d6"));
 
         assert_eq!(back.details.len(), 2);
         assert_eq!(back.details[0].unit, "libc");
         assert_eq!(back.details[1].unit, "my_crate");
-        // paths still classify as dependencies, so caps keyed by crate name
-        // now have a name to match against.
         assert!(back.units.iter().all(|u| u.kind == UnitKind::Dep));
         assert_eq!(back.totals.deps_unsafe, 2);
     }
 
     #[test]
     fn test_third_party_sarif_ingest_is_unchanged() {
-        // sample.sarif is clippy-sarif output: no logicalLocations and no
-        // property bag. it must keep resolving through the path heuristic and
-        // the driver-name language inference exactly as it did before.
         let path =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sample.sarif");
         let opts = ScanOpts {
@@ -789,8 +758,6 @@ mod tests {
 
     #[test]
     fn test_non_module_logical_location_is_ignored() {
-        // other tools use logicalLocations for functions and types; treating one
-        // as a unit would silently regroup their results.
         let mut result = make_sarif_result("crate_a/src/lib.rs", 10, 1, "unsafe");
         result.locations.as_mut().unwrap()[0].logical_locations =
             Some(vec![logical_location("function", "crate_a::foo::do_thing")]);
@@ -804,10 +771,6 @@ mod tests {
 
     #[test]
     fn test_third_party_module_logical_location_is_ignored() {
-        // "module" is a standard SARIF kind, so a third-party log may emit one
-        // for its own purposes. those names must not take over unit identity:
-        // caps keyed on the path-derived names would go silently inert on
-        // upgrade, the exact failure this channel exists to remove.
         let mut a = make_sarif_result("mypkg/src/a.c", 10, 1, "unsafe");
         a.locations.as_mut().unwrap()[0].logical_locations = Some(vec![logical_location(
             UNIT_LOGICAL_KIND,
@@ -823,17 +786,12 @@ mod tests {
         let sarif_log = make_multi_run_sarif(vec![make_run("CodeQL", vec![a, b])]);
         let converted = convert_sarif(&sarif_log, &opts).unwrap();
 
-        // the path-derived result, i.e. what this input read as before the
-        // logical-location channel existed.
         let names: Vec<_> = converted.units.iter().map(|u| u.name.as_str()).collect();
         assert_eq!(names, vec!["mypkg"]);
     }
 
     #[test]
     fn test_own_run_still_requires_the_module_kind() {
-        // provenance is not the only condition: inside our own runs a logical
-        // location only names a unit if we tagged it as one, so emitting other
-        // kinds later cannot silently regroup anything.
         let mut result = make_sarif_result("crate_a/src/lib.rs", 10, 1, "unsafe");
         result.locations.as_mut().unwrap()[0].logical_locations =
             Some(vec![logical_location("function", "crate_a::foo::do_thing")]);
@@ -849,8 +807,6 @@ mod tests {
 
     #[test]
     fn test_run_property_language_beats_unrecognized_driver() {
-        // our own driver name carries no language signal, so the property bag
-        // is the only thing standing between a round-trip and "unknown".
         let mut run = make_run("unsafe-budget", vec![]);
         run.properties = Some(property_bag("go"));
 
