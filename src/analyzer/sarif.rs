@@ -7,7 +7,8 @@
 use crate::analyzer::Analyzer;
 use crate::error::{Error, Result};
 use crate::model::{Occurrence, ScanOpts, ScanResult, Unit, UnitKind};
-use serde_sarif::sarif::Sarif;
+use crate::sarif::{PROP_LANGUAGE, PROP_NAMESPACE, UNIT_LOGICAL_KIND};
+use serde_sarif::sarif::{self, Sarif};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -43,13 +44,14 @@ fn convert_sarif(sarif: &Sarif, opts: &ScanOpts) -> Result<ScanResult> {
         });
     }
 
-    // language is inferred per run from its tool driver. runs from unrecognized
+    // language comes from each run's property bag when we wrote it ourselves,
+    // and is inferred from the tool driver otherwise. runs from unrecognized
     // tools contribute no signal; if the recognized runs disagree (e.g. a Rust
     // tool and a Go tool) the language is ambiguous, so report "unknown".
     let language = sarif
         .runs
         .iter()
-        .map(|run| infer_language(&run.tool.driver.name))
+        .map(run_language)
         .filter(|lang| lang != "unknown")
         .reduce(|acc, lang| if acc == lang { acc } else { "unknown".into() })
         .unwrap_or_else(|| "unknown".into());
@@ -94,7 +96,8 @@ fn convert_sarif(sarif: &Sarif, opts: &ScanOpts) -> Result<ScanResult> {
                     .and_then(|r| r.start_column)
                     .unwrap_or(0) as u32;
 
-                let unit_name = extract_unit_name(&file);
+                let unit_name =
+                    logical_unit_name(location).unwrap_or_else(|| extract_unit_name(&file));
 
                 occurrences.push(Occurrence {
                     unit: unit_name,
@@ -135,6 +138,44 @@ fn has_leading_word(haystack: &str, word: &str) -> bool {
     false
 }
 
+/// read the language a run records in its property bag.
+///
+/// only SARIF written by unsafe-budget carries this; anything else falls
+/// through to [`infer_language`].
+fn property_language(run: &sarif::Run) -> Option<String> {
+    run.properties
+        .as_ref()?
+        .additional_properties
+        .get(PROP_NAMESPACE)?
+        .get(PROP_LANGUAGE)?
+        .as_str()
+        .map(str::to_string)
+}
+
+/// determine a run's language, preferring the recorded value over the
+/// driver-name heuristic. a recorded `"unknown"` carries no more information
+/// than an absent one, so it falls back too.
+fn run_language(run: &sarif::Run) -> String {
+    property_language(run)
+        .filter(|lang| lang != "unknown")
+        .unwrap_or_else(|| infer_language(&run.tool.driver.name))
+}
+
+/// read the unit name a location records as a logical location.
+///
+/// only logical locations tagged [`UNIT_LOGICAL_KIND`] are accepted. other
+/// tools use `logicalLocations` for functions, types and namespaces, and
+/// treating one of those as a unit would silently regroup third-party results.
+fn logical_unit_name(location: &sarif::Location) -> Option<String> {
+    location
+        .logical_locations
+        .as_ref()?
+        .iter()
+        .find(|loc| loc.kind.as_deref() == Some(UNIT_LOGICAL_KIND))
+        .and_then(|loc| loc.fully_qualified_name.clone())
+        .filter(|name| !name.is_empty())
+}
+
 /// infer language from the SARIF tool driver name.
 fn infer_language(tool_name: &str) -> String {
     let lower = tool_name.to_lowercase();
@@ -150,6 +191,9 @@ fn infer_language(tool_name: &str) -> String {
 }
 
 /// extract a unit name from an artifact URI.
+///
+/// this is the fallback for input that never carried unit identity, which is
+/// every SARIF file not written by unsafe-budget itself.
 ///
 /// looks for a `src` path component and uses the directory immediately
 /// before it as the crate/package name. This handles Rust workspace
@@ -598,6 +642,164 @@ mod tests {
 
         let opts = ScanOpts::default();
         let result = convert_sarif(&sarif_log, &opts).unwrap();
+        assert_eq!(result.language, "rust");
+    }
+
+    fn property_bag(language: &str) -> sarif::PropertyBag {
+        let mut fields = serde_json::Map::new();
+        fields.insert(
+            PROP_LANGUAGE.to_string(),
+            serde_json::Value::String(language.into()),
+        );
+        let mut props = std::collections::BTreeMap::new();
+        props.insert(
+            PROP_NAMESPACE.to_string(),
+            serde_json::Value::Object(fields),
+        );
+        sarif::PropertyBag::builder()
+            .additional_properties(props)
+            .build()
+    }
+
+    #[test]
+    fn test_roundtrip_preserves_unit_and_language() {
+        // the documented "emit sarif, then ingest it again" workflow must not
+        // lose unit identity or the language. both paths below are ones the
+        // filename heuristic gets wrong on its own.
+        let opts = ScanOpts {
+            include_deps: true,
+            ..Default::default()
+        };
+        let details = vec![
+            Occurrence {
+                unit: "libc".into(),
+                file: PathBuf::from(
+                    "/home/u/.cargo/registry/src/index.crates.io-abc/libc-0.2.0/src/lib.rs",
+                ),
+                line: 7,
+                col: 1,
+                message: Some("unsafe".into()),
+            },
+            Occurrence {
+                unit: "my_crate".into(),
+                file: PathBuf::from("/home/u/.cargo/git/checkouts/my_crate-abc/9f8e7d6/src/lib.rs"),
+                line: 9,
+                col: 1,
+                message: Some("unsafe".into()),
+            },
+        ];
+        let units = vec![
+            Unit {
+                name: "libc".into(),
+                kind: UnitKind::Dep,
+                unsafe_count: 1,
+            },
+            Unit {
+                name: "my_crate".into(),
+                kind: UnitKind::Dep,
+                unsafe_count: 1,
+            },
+        ];
+        let scan = ScanResult::from_parts("rustc_unsafe_lint", "rust", &opts, units, details);
+
+        let json = serde_json::to_string(&crate::sarif::scan_to_sarif(&scan)).unwrap();
+        let reparsed: Sarif = serde_json::from_str(&json).unwrap();
+        let back = convert_sarif(&reparsed, &opts).unwrap();
+
+        assert_eq!(back.language, "rust");
+
+        let names: Vec<_> = back.units.iter().map(|u| u.name.as_str()).collect();
+        assert_eq!(names, vec!["libc", "my_crate"]);
+        // specifically not what deriving the unit from the path would yield:
+        // the registry directory and the git revision hash.
+        assert!(!names.contains(&"registry"));
+        assert!(!names.contains(&"9f8e7d6"));
+
+        assert_eq!(back.details.len(), 2);
+        assert_eq!(back.details[0].unit, "libc");
+        assert_eq!(back.details[1].unit, "my_crate");
+        // paths still classify as dependencies, so caps keyed by crate name
+        // now have a name to match against.
+        assert!(back.units.iter().all(|u| u.kind == UnitKind::Dep));
+        assert_eq!(back.totals.deps_unsafe, 2);
+    }
+
+    #[test]
+    fn test_third_party_sarif_ingest_is_unchanged() {
+        // sample.sarif is clippy-sarif output: no logicalLocations and no
+        // property bag. it must keep resolving through the path heuristic and
+        // the driver-name language inference exactly as it did before.
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sample.sarif");
+        let opts = ScanOpts {
+            manifest_path: Some(path),
+            ..Default::default()
+        };
+        let result = SarifAnalyzer.run(&opts).unwrap();
+
+        assert_eq!(result.language, "rust");
+        assert_eq!(result.units.len(), 1);
+        assert_eq!(result.units[0].name, "src");
+        assert_eq!(result.units[0].unsafe_count, 3);
+
+        let located: Vec<_> = result
+            .details
+            .iter()
+            .map(|d| {
+                (
+                    d.unit.as_str(),
+                    d.file.to_string_lossy().to_string(),
+                    d.line,
+                )
+            })
+            .collect();
+        assert_eq!(
+            located,
+            vec![
+                ("src", "src/ffi.rs".to_string(), 42),
+                ("src", "src/lib.rs".to_string(), 10),
+                ("src", "src/lib.rs".to_string(), 25),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_non_module_logical_location_is_ignored() {
+        // other tools use logicalLocations for functions and types; treating one
+        // as a unit would silently regroup their results.
+        let mut result = make_sarif_result("crate_a/src/lib.rs", 10, 1, "unsafe");
+        result.locations.as_mut().unwrap()[0].logical_locations =
+            Some(vec![sarif::LogicalLocation::builder()
+                .fully_qualified_name("crate_a::foo::do_thing")
+                .kind("function")
+                .build()]);
+
+        let opts = ScanOpts::default();
+        let converted = convert_sarif(&make_sarif(vec![result]), &opts).unwrap();
+
+        assert_eq!(converted.units.len(), 1);
+        assert_eq!(converted.units[0].name, "crate_a");
+    }
+
+    #[test]
+    fn test_run_property_language_beats_unrecognized_driver() {
+        // our own driver name carries no language signal, so the property bag
+        // is the only thing standing between a round-trip and "unknown".
+        let mut run = make_run("unsafe-budget", vec![]);
+        run.properties = Some(property_bag("go"));
+
+        let opts = ScanOpts::default();
+        let result = convert_sarif(&make_multi_run_sarif(vec![run]), &opts).unwrap();
+        assert_eq!(result.language, "go");
+    }
+
+    #[test]
+    fn test_run_property_language_unknown_falls_back_to_driver() {
+        let mut run = make_run("cargo-clippy", vec![]);
+        run.properties = Some(property_bag("unknown"));
+
+        let opts = ScanOpts::default();
+        let result = convert_sarif(&make_multi_run_sarif(vec![run]), &opts).unwrap();
         assert_eq!(result.language, "rust");
     }
 
