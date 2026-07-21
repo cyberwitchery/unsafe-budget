@@ -7,7 +7,8 @@
 use crate::analyzer::Analyzer;
 use crate::error::{Error, Result};
 use crate::model::{Occurrence, ScanOpts, ScanResult, Unit, UnitKind};
-use serde_sarif::sarif::Sarif;
+use crate::sarif::{PROP_LANGUAGE, PROP_NAMESPACE, UNIT_LOGICAL_KIND};
+use serde_sarif::sarif::{self, Sarif};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -43,13 +44,13 @@ fn convert_sarif(sarif: &Sarif, opts: &ScanOpts) -> Result<ScanResult> {
         });
     }
 
-    // language is inferred per run from its tool driver. runs from unrecognized
-    // tools contribute no signal; if the recognized runs disagree (e.g. a Rust
-    // tool and a Go tool) the language is ambiguous, so report "unknown".
+    // language is resolved per run. runs from unrecognized tools contribute no
+    // signal; if the recognized runs disagree (e.g. a Rust tool and a Go tool)
+    // the language is ambiguous, so report "unknown".
     let language = sarif
         .runs
         .iter()
-        .map(|run| infer_language(&run.tool.driver.name))
+        .map(run_language)
         .filter(|lang| lang != "unknown")
         .reduce(|acc, lang| if acc == lang { acc } else { "unknown".into() })
         .unwrap_or_else(|| "unknown".into());
@@ -60,6 +61,7 @@ fn convert_sarif(sarif: &Sarif, opts: &ScanOpts) -> Result<ScanResult> {
     let mut occurrences: Vec<Occurrence> = Vec::new();
 
     for run in &sarif.runs {
+        let own_run = is_own_run(run);
         let results = run.results.as_deref().unwrap_or(&[]);
 
         for result in results {
@@ -94,7 +96,10 @@ fn convert_sarif(sarif: &Sarif, opts: &ScanOpts) -> Result<ScanResult> {
                     .and_then(|r| r.start_column)
                     .unwrap_or(0) as u32;
 
-                let unit_name = extract_unit_name(&file);
+                let unit_name = own_run
+                    .then(|| logical_unit_name(location))
+                    .flatten()
+                    .unwrap_or_else(|| extract_unit_name(&file));
 
                 occurrences.push(Occurrence {
                     unit: unit_name,
@@ -133,6 +138,41 @@ fn has_leading_word(haystack: &str, word: &str) -> bool {
         }
     }
     false
+}
+
+fn property_language(run: &sarif::Run) -> Option<String> {
+    run.properties
+        .as_ref()?
+        .additional_properties
+        .get(PROP_NAMESPACE)?
+        .get(PROP_LANGUAGE)?
+        .as_str()
+        .map(str::to_string)
+}
+
+/// the recorded language if it is meaningful, else the driver-name heuristic.
+fn run_language(run: &sarif::Run) -> String {
+    property_language(run)
+        .filter(|lang| lang != "unknown")
+        .unwrap_or_else(|| infer_language(&run.tool.driver.name))
+}
+
+/// whether a run was written by unsafe-budget.
+fn is_own_run(run: &sarif::Run) -> bool {
+    run.properties
+        .as_ref()
+        .is_some_and(|props| props.additional_properties.contains_key(PROP_NAMESPACE))
+}
+
+/// the unit a location names, valid only for runs [`is_own_run`] accepts.
+fn logical_unit_name(location: &sarif::Location) -> Option<String> {
+    location
+        .logical_locations
+        .as_ref()?
+        .iter()
+        .find(|loc| loc.kind.as_deref() == Some(UNIT_LOGICAL_KIND))
+        .and_then(|loc| loc.fully_qualified_name.clone())
+        .filter(|name| !name.is_empty())
 }
 
 /// infer language from the SARIF tool driver name.
@@ -598,6 +638,211 @@ mod tests {
 
         let opts = ScanOpts::default();
         let result = convert_sarif(&sarif_log, &opts).unwrap();
+        assert_eq!(result.language, "rust");
+    }
+
+    fn property_bag(language: &str) -> sarif::PropertyBag {
+        let mut fields = serde_json::Map::new();
+        fields.insert(
+            PROP_LANGUAGE.to_string(),
+            serde_json::Value::String(language.into()),
+        );
+        let mut props = std::collections::BTreeMap::new();
+        props.insert(
+            PROP_NAMESPACE.to_string(),
+            serde_json::Value::Object(fields),
+        );
+        sarif::PropertyBag::builder()
+            .additional_properties(props)
+            .build()
+    }
+
+    #[test]
+    fn test_roundtrip_preserves_unit_and_language() {
+        let opts = ScanOpts {
+            include_deps: true,
+            ..Default::default()
+        };
+        let details = vec![
+            Occurrence {
+                unit: "libc".into(),
+                file: PathBuf::from(
+                    "/home/u/.cargo/registry/src/index.crates.io-abc/libc-0.2.0/src/lib.rs",
+                ),
+                line: 7,
+                col: 1,
+                message: Some("unsafe".into()),
+            },
+            Occurrence {
+                unit: "my_crate".into(),
+                file: PathBuf::from("/home/u/.cargo/git/checkouts/my_crate-abc/9f8e7d6/src/lib.rs"),
+                line: 9,
+                col: 1,
+                message: Some("unsafe".into()),
+            },
+        ];
+        let units = vec![
+            Unit {
+                name: "libc".into(),
+                kind: UnitKind::Dep,
+                unsafe_count: 1,
+            },
+            Unit {
+                name: "my_crate".into(),
+                kind: UnitKind::Dep,
+                unsafe_count: 1,
+            },
+        ];
+        let scan = ScanResult::from_parts("rustc_unsafe_lint", "rust", &opts, units, details);
+
+        let json = serde_json::to_string(&crate::sarif::scan_to_sarif(&scan)).unwrap();
+        let reparsed: Sarif = serde_json::from_str(&json).unwrap();
+        let back = convert_sarif(&reparsed, &opts).unwrap();
+
+        assert_eq!(back.language, "rust");
+
+        let names: Vec<_> = back.units.iter().map(|u| u.name.as_str()).collect();
+        assert_eq!(names, vec!["libc", "my_crate"]);
+        assert!(!names.contains(&"registry"));
+        assert!(!names.contains(&"9f8e7d6"));
+
+        assert_eq!(back.details.len(), 2);
+        assert_eq!(back.details[0].unit, "libc");
+        assert_eq!(back.details[1].unit, "my_crate");
+        assert!(back.units.iter().all(|u| u.kind == UnitKind::Dep));
+        assert_eq!(back.totals.deps_unsafe, 2);
+    }
+
+    #[test]
+    fn test_third_party_sarif_ingest_is_unchanged() {
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sample.sarif");
+        let opts = ScanOpts {
+            manifest_path: Some(path),
+            ..Default::default()
+        };
+        let result = SarifAnalyzer.run(&opts).unwrap();
+
+        assert_eq!(result.language, "rust");
+        assert_eq!(result.units.len(), 1);
+        assert_eq!(result.units[0].name, "src");
+        assert_eq!(result.units[0].unsafe_count, 3);
+
+        let located: Vec<_> = result
+            .details
+            .iter()
+            .map(|d| {
+                (
+                    d.unit.as_str(),
+                    d.file.to_string_lossy().to_string(),
+                    d.line,
+                )
+            })
+            .collect();
+        assert_eq!(
+            located,
+            vec![
+                ("src", "src/ffi.rs".to_string(), 42),
+                ("src", "src/lib.rs".to_string(), 10),
+                ("src", "src/lib.rs".to_string(), 25),
+            ]
+        );
+    }
+
+    fn logical_location(kind: &str, name: &str) -> sarif::LogicalLocation {
+        sarif::LogicalLocation::builder()
+            .fully_qualified_name(name.to_string())
+            .kind(kind.to_string())
+            .build()
+    }
+
+    #[test]
+    fn test_non_module_logical_location_is_ignored() {
+        let mut result = make_sarif_result("crate_a/src/lib.rs", 10, 1, "unsafe");
+        result.locations.as_mut().unwrap()[0].logical_locations =
+            Some(vec![logical_location("function", "crate_a::foo::do_thing")]);
+
+        let opts = ScanOpts::default();
+        let converted = convert_sarif(&make_sarif(vec![result]), &opts).unwrap();
+
+        assert_eq!(converted.units.len(), 1);
+        assert_eq!(converted.units[0].name, "crate_a");
+    }
+
+    #[test]
+    fn test_third_party_module_logical_location_is_ignored() {
+        let mut a = make_sarif_result("mypkg/src/a.c", 10, 1, "unsafe");
+        a.locations.as_mut().unwrap()[0].logical_locations = Some(vec![logical_location(
+            UNIT_LOGICAL_KIND,
+            "com.example.SomeModule",
+        )]);
+        let mut b = make_sarif_result("mypkg/src/b.c", 20, 1, "unsafe");
+        b.locations.as_mut().unwrap()[0].logical_locations = Some(vec![logical_location(
+            UNIT_LOGICAL_KIND,
+            "com.example.OtherModule",
+        )]);
+
+        let opts = ScanOpts::default();
+        let sarif_log = make_multi_run_sarif(vec![make_run("CodeQL", vec![a, b])]);
+        let converted = convert_sarif(&sarif_log, &opts).unwrap();
+
+        let names: Vec<_> = converted.units.iter().map(|u| u.name.as_str()).collect();
+        assert_eq!(names, vec!["mypkg"]);
+    }
+
+    #[test]
+    fn test_mixed_run_log_resolves_units_per_run() {
+        let mut theirs = make_sarif_result("theirpkg/src/a.c", 10, 1, "unsafe");
+        theirs.locations.as_mut().unwrap()[0].logical_locations = Some(vec![logical_location(
+            UNIT_LOGICAL_KIND,
+            "com.example.TheirModule",
+        )]);
+        let mut ours = make_sarif_result("ourpkg/src/b.rs", 20, 1, "unsafe");
+        ours.locations.as_mut().unwrap()[0].logical_locations =
+            Some(vec![logical_location(UNIT_LOGICAL_KIND, "libc")]);
+        let mut own_run = make_run("unsafe-budget", vec![ours]);
+        own_run.properties = Some(property_bag("rust"));
+
+        let opts = ScanOpts::default();
+        let sarif_log = make_multi_run_sarif(vec![make_run("CodeQL", vec![theirs]), own_run]);
+        let converted = convert_sarif(&sarif_log, &opts).unwrap();
+
+        let names: Vec<_> = converted.units.iter().map(|u| u.name.as_str()).collect();
+        assert_eq!(names, vec!["libc", "theirpkg"]);
+    }
+
+    #[test]
+    fn test_own_run_still_requires_the_module_kind() {
+        let mut result = make_sarif_result("crate_a/src/lib.rs", 10, 1, "unsafe");
+        result.locations.as_mut().unwrap()[0].logical_locations =
+            Some(vec![logical_location("function", "crate_a::foo::do_thing")]);
+        let mut run = make_run("unsafe-budget", vec![result]);
+        run.properties = Some(property_bag("rust"));
+
+        let opts = ScanOpts::default();
+        let converted = convert_sarif(&make_multi_run_sarif(vec![run]), &opts).unwrap();
+
+        assert_eq!(converted.units.len(), 1);
+        assert_eq!(converted.units[0].name, "crate_a");
+    }
+
+    #[test]
+    fn test_run_property_language_beats_unrecognized_driver() {
+        let mut run = make_run("unsafe-budget", vec![]);
+        run.properties = Some(property_bag("go"));
+
+        let opts = ScanOpts::default();
+        let result = convert_sarif(&make_multi_run_sarif(vec![run]), &opts).unwrap();
+        assert_eq!(result.language, "go");
+    }
+
+    #[test]
+    fn test_run_property_language_unknown_falls_back_to_driver() {
+        let mut run = make_run("cargo-clippy", vec![]);
+        run.properties = Some(property_bag("unknown"));
+
+        let opts = ScanOpts::default();
+        let result = convert_sarif(&make_multi_run_sarif(vec![run]), &opts).unwrap();
         assert_eq!(result.language, "rust");
     }
 

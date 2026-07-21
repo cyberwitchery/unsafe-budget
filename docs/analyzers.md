@@ -122,14 +122,19 @@ unsafe-budget check --analyzer sarif --manifest-path results.sarif
 unsafe-budget scan --analyzer sarif --manifest-path results.sarif --format sarif --details
 ```
 
-**unit grouping**: results are grouped by the parent directory of each
-artifact URI. for example, `src/lib.rs` and `src/main.rs` both map to
-the unit `src`.
+**unit grouping**: SARIF written by unsafe-budget records each result's unit
+in `logicalLocations`, and that name is used as-is, so a round-trip keeps the
+crate names the original scan found. for any other SARIF the unit is derived
+from the artifact URI: the directory before a `src` component names the crate
+(`my_crate/src/lib.rs` → `my_crate`), falling back to the first directory
+component (`crate_a/lib.rs` → `crate_a`) and to `unknown` for a bare filename.
 
-**language inference**: the language is inferred from the SARIF tool
-driver name. names containing "rust", "cargo", or "clippy" map to
-`rust`; names containing "go" map to `go`; names containing "gcc" or
-"clang" map to `c`; everything else maps to `unknown`.
+**language inference**: SARIF written by unsafe-budget records the language in
+`run.properties`, and that value is used directly. otherwise the language is
+inferred from the tool driver name: names containing "rust", "cargo", or
+"clippy" map to `rust`; names with "go" at a word boundary (`go-geiger`
+matches, `django` does not) map to `go`; names containing "gcc" or "clang" map
+to `c`; everything else maps to `unknown`.
 
 ## auto-detection
 

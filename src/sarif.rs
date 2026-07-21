@@ -3,7 +3,7 @@
 //! converts scan and check results into SARIF 2.1.0 format
 //! for integration with github code scanning, vs code, and other tools.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use crate::model::{CheckResult, ScanResult};
 use serde_sarif::sarif;
@@ -13,6 +13,15 @@ const RULE_UNSAFE_CODE: &str = "unsafe_code";
 const RULE_BUDGET_VIOLATION: &str = "budget_violation";
 const RULE_BUDGET_WARNING: &str = "budget_warning";
 const RULE_PARSE_WARNING: &str = "parse_warning";
+
+/// `run.properties` namespace marking a run as our own output.
+pub(crate) const PROP_NAMESPACE: &str = "unsafe-budget";
+
+/// key under [`PROP_NAMESPACE`] carrying the programming language of the scan.
+pub(crate) const PROP_LANGUAGE: &str = "language";
+
+/// `logicalLocation.kind` marking the unit a result belongs to.
+pub(crate) const UNIT_LOGICAL_KIND: &str = "module";
 
 /// convert a scan result into a SARIF 2.1.0 log.
 ///
@@ -33,10 +42,7 @@ pub fn scan_to_sarif(result: &ScanResult) -> sarif::Sarif {
     sarif::Sarif::builder()
         .version(serde_json::json!("2.1.0"))
         .schema(SARIF_SCHEMA.to_string())
-        .runs(vec![sarif::Run::builder()
-            .tool(tool)
-            .results(results)
-            .build()])
+        .runs(vec![make_run(tool, results, &result.language)])
         .build()
 }
 
@@ -101,10 +107,30 @@ pub fn check_to_sarif(result: &CheckResult) -> sarif::Sarif {
     sarif::Sarif::builder()
         .version(serde_json::json!("2.1.0"))
         .schema(SARIF_SCHEMA.to_string())
-        .runs(vec![sarif::Run::builder()
-            .tool(tool)
-            .results(results)
-            .build()])
+        .runs(vec![make_run(tool, results, &result.scan.language)])
+        .build()
+}
+
+fn make_run(tool: sarif::Tool, results: Vec<sarif::Result>, language: &str) -> sarif::Run {
+    let mut fields = serde_json::Map::new();
+    fields.insert(
+        PROP_LANGUAGE.to_string(),
+        serde_json::Value::String(language.to_string()),
+    );
+    let mut properties = BTreeMap::new();
+    properties.insert(
+        PROP_NAMESPACE.to_string(),
+        serde_json::Value::Object(fields),
+    );
+
+    sarif::Run::builder()
+        .tool(tool)
+        .results(results)
+        .properties(
+            sarif::PropertyBag::builder()
+                .additional_properties(properties)
+                .build(),
+        )
         .build()
 }
 
@@ -216,6 +242,10 @@ fn make_location(occ: &crate::model::Occurrence) -> sarif::Location {
                 )
                 .build(),
         )
+        .logical_locations(vec![sarif::LogicalLocation::builder()
+            .fully_qualified_name(occ.unit.clone())
+            .kind(UNIT_LOGICAL_KIND)
+            .build()])
         .build()
 }
 
@@ -662,7 +692,7 @@ mod tests {
     }
 
     #[test]
-    fn test_sarif_output_roundtrip() {
+    fn test_scan_to_sarif_serialized_shape() {
         let details = vec![Occurrence {
             unit: "my_crate".into(),
             file: PathBuf::from("src/lib.rs"),
@@ -673,7 +703,6 @@ mod tests {
         let scan = make_scan_result(details);
         let sarif_out = scan_to_sarif(&scan);
 
-        // serialize and parse back
         let json = serde_json::to_string_pretty(&sarif_out).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
 
@@ -682,8 +711,13 @@ mod tests {
             parsed["$schema"],
             "https://json.schemastore.org/sarif-2.1.0.json"
         );
-        assert!(parsed["runs"].is_array());
-        assert!(parsed["runs"][0]["results"].is_array());
+
+        let run = &parsed["runs"][0];
+        assert_eq!(run["properties"]["unsafe-budget"]["language"], "rust");
+
+        let logical = &run["results"][0]["locations"][0]["logicalLocations"][0];
+        assert_eq!(logical["fullyQualifiedName"], "my_crate");
+        assert_eq!(logical["kind"], "module");
     }
 
     #[test]
