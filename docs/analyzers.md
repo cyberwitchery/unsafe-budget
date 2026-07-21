@@ -172,6 +172,15 @@ plugins output json to stdout:
 }
 ```
 
+The host does not trust this output verbatim. `analyzer_id` and `scope` are
+overwritten with the values unsafe-budget itself used; dependency units (those
+whose `kind` is `dep`) are filtered out when `--workspace-only`/`--no-deps` is in
+effect; and `totals` are recomputed from the surviving units — exactly as for the
+built-in analyzers. A plugin's `tool_version`, `language`, `units`, and `details`
+are preserved as reported. Plugins must still emit valid `scope`, `analyzer_id`,
+and `totals` fields for the JSON to parse, but their values are advisory: mark
+each unit's `kind` correctly and the host handles scoping and totals.
+
 ### plugin info
 
 plugins can respond to `--info` with:
