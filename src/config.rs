@@ -16,6 +16,7 @@ pub enum Mode {
 
 /// caps configuration for explicit limits.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Caps {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default: Option<u64>,
@@ -39,6 +40,7 @@ pub struct Caps {
 /// reason = "ffi boundary, reviewed 2026-04-12"
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct IgnoreEntry {
     /// file path relative to the project root.
     pub file: PathBuf,
@@ -51,6 +53,7 @@ pub struct IgnoreEntry {
 
 /// warning configuration for near-budget usage.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Warnings {
     /// warn when usage reaches this fraction of budget, e.g. 0.8 for 80%.
     pub threshold: f64,
@@ -58,6 +61,7 @@ pub struct Warnings {
 
 /// main configuration from unsafe-budget.toml.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     #[serde(default)]
     pub mode: Mode,
@@ -425,5 +429,117 @@ line = 7
         assert!(result.is_ok());
         let config = result.unwrap();
         assert_eq!(config.mode, Mode::Ratchet);
+    }
+
+    #[test]
+    fn test_full_valid_config_parses() {
+        let toml = r#"
+mode = "ratchet"
+include_deps = true
+workspace_only = false
+ignore_units = ["test_crate"]
+plugin_timeout_secs = 30
+timeout_secs = 300
+
+[[ignore]]
+file = "src/ffi.rs"
+line = 42
+reason = "ffi boundary"
+
+[caps]
+default = 100
+
+[caps.workspace]
+my_crate = 10
+
+[caps.deps]
+libc = 100
+
+[warnings]
+threshold = 0.8
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert_eq!(config.plugin_timeout_secs, Some(30));
+        assert_eq!(config.timeout_secs, Some(300));
+        assert_eq!(config.ignore.len(), 1);
+        assert_eq!(config.caps.as_ref().unwrap().deps.get("libc"), Some(&100));
+        assert_eq!(config.warnings.as_ref().unwrap().threshold, 0.8);
+    }
+
+    #[test]
+    fn test_config_rejects_unknown_top_level_key() {
+        let toml = r#"
+mode = "caps"
+workspce_only = true
+"#;
+        assert!(toml::from_str::<Config>(toml).is_err());
+    }
+
+    #[test]
+    fn test_config_load_rejects_unknown_key() {
+        use tempfile::TempDir;
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("unsafe-budget.toml");
+        std::fs::write(&path, "include_deps = true\nunknown_key = 1\n").unwrap();
+        assert!(Config::load(&path).is_err());
+    }
+
+    #[test]
+    fn test_caps_rejects_unknown_key() {
+        let toml = r#"
+[caps]
+defualt = 10
+"#;
+        assert!(toml::from_str::<Config>(toml).is_err());
+    }
+
+    #[test]
+    fn test_warnings_rejects_unknown_key() {
+        let toml = r#"
+[warnings]
+threshold = 0.8
+threshhold = 0.9
+"#;
+        assert!(toml::from_str::<Config>(toml).is_err());
+    }
+
+    #[test]
+    fn test_ignore_entry_rejects_unknown_key() {
+        let toml = r#"
+[[ignore]]
+file = "src/ffi.rs"
+line = 42
+resaon = "typo"
+"#;
+        assert!(toml::from_str::<Config>(toml).is_err());
+    }
+
+    #[test]
+    fn test_baseline_tolerates_unknown_field() {
+        let baseline = Baseline {
+            tool_version: "0.1.0".into(),
+            analyzer_id: "test".into(),
+            scope: Scope {
+                workspace_only: false,
+                include_deps: true,
+                features: vec![],
+                all_features: false,
+                no_default_features: false,
+                all_targets: false,
+                targets: vec![],
+                manifest_path: None,
+            },
+            totals: Totals::default(),
+            units: vec![BaselineUnit {
+                name: "my_crate".into(),
+                kind: UnitKind::Workspace,
+                unsafe_count: 10,
+            }],
+        };
+        let serialized = toml::to_string_pretty(&baseline).unwrap();
+        let with_unknown = format!("future_field = \"written by a newer tool\"\n{}", serialized);
+        let parsed: Baseline = toml::from_str(&with_unknown).unwrap();
+        assert_eq!(parsed.tool_version, "0.1.0");
+        assert_eq!(parsed.units.len(), 1);
     }
 }
