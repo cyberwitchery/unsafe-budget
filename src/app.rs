@@ -201,13 +201,13 @@ fn build_scan_opts(args: &ScanArgs, config: &Config) -> ScanOpts {
     }
 }
 
-/// remove occurrences that match an `[[ignore]]` config entry and recompute unit
-/// counts and totals. A match requires both the file path and line number to be
-/// equal; the `reason` field is documentation only.
+/// remove occurrences that match an `[[ignore]]` config entry and subtract them
+/// from the owning unit's count and from the totals. A match requires both the
+/// file path and line number to be equal; the `reason` field is documentation
+/// only.
 ///
-/// if `ignores` is empty this is a no-op. If the scan result has no detail
-/// occurrences (e.g. cargo_geiger only provides aggregate counts), this is also
-/// a no-op — there are no individual occurrences to match against.
+/// if `ignores` is empty, or the scan result has no detail occurrences (e.g.
+/// cargo_geiger only provides aggregate counts), this is a no-op.
 fn apply_ignore_filter(mut result: ScanResult, ignores: &[IgnoreEntry]) -> ScanResult {
     if ignores.is_empty() || result.details.is_empty() {
         return result;
@@ -218,20 +218,22 @@ fn apply_ignore_filter(mut result: ScanResult, ignores: &[IgnoreEntry]) -> ScanR
         .map(|rule| (rule.file.as_path(), rule.line))
         .collect();
 
-    result
-        .details
-        .retain(|occ| !ignore_set.contains(&(occ.file.as_path(), occ.line)));
+    let mut removed: HashMap<String, u64> = HashMap::new();
+    result.details.retain(|occ| {
+        if ignore_set.contains(&(occ.file.as_path(), occ.line)) {
+            *removed.entry(occ.unit.clone()).or_default() += 1;
+            false
+        } else {
+            true
+        }
+    });
 
-    // recompute per-unit counts from the filtered details.
-    let mut counts: HashMap<&str, u64> = HashMap::new();
-    for occ in &result.details {
-        *counts.entry(occ.unit.as_str()).or_default() += 1;
-    }
     for unit in &mut result.units {
-        unit.unsafe_count = counts.get(unit.name.as_str()).copied().unwrap_or(0);
+        if let Some(n) = removed.get(&unit.name) {
+            unit.unsafe_count = unit.unsafe_count.saturating_sub(*n);
+        }
     }
 
-    // recompute totals.
     result.totals = Totals::from_units(&result.units);
 
     result
@@ -347,6 +349,64 @@ mod tests {
                 overall_unsafe: 210,
             },
             details: vec![],
+            parse_warnings: vec![],
+        }
+    }
+
+    /// a plugin's self-reported counts alongside an incomplete occurrence list.
+    fn make_result_with_partial_details() -> ScanResult {
+        ScanResult {
+            tool_version: "0.1.0".into(),
+            analyzer_id: "my_plugin".into(),
+            language: "rust".into(),
+            scope: make_scope(),
+            units: vec![
+                Unit {
+                    name: "plugin_crate".into(),
+                    kind: UnitKind::Workspace,
+                    unsafe_count: 12,
+                },
+                Unit {
+                    name: "other_crate".into(),
+                    kind: UnitKind::Workspace,
+                    unsafe_count: 1,
+                },
+            ],
+            totals: Totals {
+                workspace_unsafe: 13,
+                deps_unsafe: 0,
+                overall_unsafe: 13,
+            },
+            details: vec![
+                Occurrence {
+                    unit: "plugin_crate".into(),
+                    file: PathBuf::from("src/a.rs"),
+                    line: 1,
+                    col: 1,
+                    message: None,
+                },
+                Occurrence {
+                    unit: "plugin_crate".into(),
+                    file: PathBuf::from("src/a.rs"),
+                    line: 2,
+                    col: 1,
+                    message: None,
+                },
+                Occurrence {
+                    unit: "plugin_crate".into(),
+                    file: PathBuf::from("src/b.rs"),
+                    line: 3,
+                    col: 1,
+                    message: None,
+                },
+                Occurrence {
+                    unit: "other_crate".into(),
+                    file: PathBuf::from("other/src/lib.rs"),
+                    line: 5,
+                    col: 1,
+                    message: None,
+                },
+            ],
             parse_warnings: vec![],
         }
     }
@@ -472,6 +532,96 @@ mod tests {
         assert_eq!(filtered.units[0].unsafe_count, 10);
         assert_eq!(filtered.units[1].unsafe_count, 200);
         assert_eq!(filtered.totals.overall_unsafe, 210);
+    }
+
+    #[test]
+    fn ignore_filter_keeps_count_of_unit_with_partial_details() {
+        let result = make_result_with_partial_details();
+        let ignores = vec![IgnoreEntry {
+            file: PathBuf::from("other/src/lib.rs"),
+            line: 5,
+            reason: None,
+        }];
+        let filtered = apply_ignore_filter(result, &ignores);
+
+        assert_eq!(filtered.units[0].unsafe_count, 12); // untouched by the ignore
+        assert_eq!(filtered.units[1].unsafe_count, 0); // its only occurrence removed
+        assert_eq!(filtered.totals.overall_unsafe, 12);
+    }
+
+    #[test]
+    fn ignore_filter_subtracts_from_unit_with_partial_details() {
+        let result = make_result_with_partial_details();
+        let ignores = vec![IgnoreEntry {
+            file: PathBuf::from("src/a.rs"),
+            line: 2,
+            reason: None,
+        }];
+        let filtered = apply_ignore_filter(result, &ignores);
+
+        assert_eq!(filtered.details.len(), 3);
+        assert_eq!(filtered.units[0].unsafe_count, 11); // 12 - 1
+        assert_eq!(filtered.units[1].unsafe_count, 1);
+        assert_eq!(filtered.totals.overall_unsafe, 12);
+    }
+
+    #[test]
+    fn ignore_filter_saturates_when_occurrences_exceed_count() {
+        let mut result = make_result_with_partial_details();
+        result.units[0].unsafe_count = 2;
+        let ignores = vec![
+            IgnoreEntry {
+                file: PathBuf::from("src/a.rs"),
+                line: 1,
+                reason: None,
+            },
+            IgnoreEntry {
+                file: PathBuf::from("src/a.rs"),
+                line: 2,
+                reason: None,
+            },
+            IgnoreEntry {
+                file: PathBuf::from("src/b.rs"),
+                line: 3,
+                reason: None,
+            },
+        ];
+        let filtered = apply_ignore_filter(result, &ignores);
+
+        assert_eq!(filtered.units[0].unsafe_count, 0);
+        assert_eq!(filtered.totals.overall_unsafe, 1);
+    }
+
+    #[test]
+    fn ignore_filter_subtraction_equals_recompute_when_details_complete() {
+        let result = make_result_with_details();
+        let ignores = vec![
+            IgnoreEntry {
+                file: PathBuf::from("src/lib.rs"),
+                line: 20,
+                reason: None,
+            },
+            IgnoreEntry {
+                file: PathBuf::from("other/src/lib.rs"),
+                line: 5,
+                reason: None,
+            },
+        ];
+        let filtered = apply_ignore_filter(result, &ignores);
+
+        let mut surviving: HashMap<&str, u64> = HashMap::new();
+        for occ in &filtered.details {
+            *surviving.entry(occ.unit.as_str()).or_default() += 1;
+        }
+        for unit in &filtered.units {
+            assert_eq!(
+                unit.unsafe_count,
+                surviving.get(unit.name.as_str()).copied().unwrap_or(0),
+                "unit {}",
+                unit.name
+            );
+        }
+        assert_eq!(filtered.totals.overall_unsafe, 2);
     }
 
     #[test]
