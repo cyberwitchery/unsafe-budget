@@ -192,12 +192,9 @@ fn infer_language(tool_name: &str) -> String {
 /// extract a unit name from an artifact URI.
 ///
 /// looks for a `src` path component and uses the directory immediately
-/// before it as the crate/package name. This handles Rust workspace
-/// layouts where every crate has `crate_name/src/lib.rs` — without
-/// this, all such paths would collapse into unit `"src"`.
-///
-/// falls back to the first directory component when no `src` segment
-/// is found, or `"unknown"` for bare filenames.
+/// before it as the crate/package name (`crate_name/src/lib.rs` →
+/// `crate_name`). falls back to the first directory component when no
+/// `src` segment is found, or `"unknown"` for bare filenames.
 fn extract_unit_name(uri: &str) -> String {
     let path_str = uri.strip_prefix("file://").unwrap_or(uri);
     let path = std::path::Path::new(path_str);
@@ -225,7 +222,7 @@ fn extract_unit_name(uri: &str) -> String {
         }
     }
 
-    // no "src" found, or "src" is the first component — use the first
+    // no "src" found, or "src" is the first component: use the first
     // directory as the unit name.
     dirs[0].clone()
 }

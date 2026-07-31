@@ -19,13 +19,16 @@ options:
 | `--workspace-only` | skip dependencies |
 | `--include-deps` | include dependencies (default) |
 | `--no-deps` | exclude dependencies |
-| `--details` | show line-level occurrences |
+| `--details` | show line-level occurrences in text output |
 | `--features <f1,f2>` | cargo features to enable |
 | `--all-features` | enable all features |
 | `--no-default-features` | disable default features |
 | `--all-targets` | build all targets |
+| `--targets <t1,t2>` | target triple(s) to build |
 | `--manifest-path <path>` | path to Cargo.toml, go.mod, or .sarif file |
 | `--config <path>` | path to config file |
+| `--timeout <secs>` | kill external analyzer/plugin subprocesses after this long |
+| `--plugin-timeout <secs>` | plugin-specific timeout, takes precedence over `--timeout` |
 
 ### check
 
@@ -79,9 +82,19 @@ workspace_only = false
 # units to ignore in budget checks
 ignore_units = ["test_helpers", "benches"]
 
+# kill external analyzers/plugins after N seconds (optional, unbounded by default)
+timeout_secs = 300
+plugin_timeout_secs = 300  # plugin-specific, takes precedence
+
+# specific occurrences to exclude from counts
+[[ignore]]
+file = "src/ffi.rs"
+line = 42
+reason = "ffi boundary, reviewed 2026-04-12"
+
 # caps mode configuration
 [caps]
-default = 100  # default cap for dependencies
+default = 100  # cap for any unit without an explicit entry
 
 [caps.workspace]
 my_crate = 10
@@ -112,6 +125,7 @@ include_deps = true
 [totals]
 workspace_unsafe = 10
 deps_unsafe = 42
+overall_unsafe = 52
 
 [[units]]
 name = "my_crate"
@@ -145,14 +159,14 @@ unsafe-budget scan --analyzer sarif --manifest-path results.sarif
 ### sarif output
 
 ```bash
-# emit sarif from a scan (use --details for line-level results)
-unsafe-budget scan --format sarif --details
+# emit sarif from a scan
+unsafe-budget scan --format sarif
 
 # emit sarif from a check (violations become error-level results)
-unsafe-budget check --format sarif --details
+unsafe-budget check --format sarif
 
 # ingest sarif, apply budget, emit sarif
-unsafe-budget check --analyzer sarif --manifest-path results.sarif --format sarif --details
+unsafe-budget check --analyzer sarif --manifest-path results.sarif --format sarif
 ```
 
 ### go project

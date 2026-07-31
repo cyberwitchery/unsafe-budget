@@ -2,8 +2,8 @@
 //!
 //! an unsafe code budget gate for ci pipelines.
 //!
-//! this library provides the core functionality for tracking unsafe code usage
-//! in rust and go projects, comparing against baselines, and enforcing budgets.
+//! tracks unsafe code usage in rust and go projects, compares it against
+//! baselines, and enforces budgets.
 //!
 //! ## quick example
 //!
@@ -28,6 +28,7 @@
 //! - [`config`] - configuration and baseline file handling
 //! - [`model`] - core data types (ScanResult, Unit, etc.)
 //! - [`output`] - text and json formatters
+//! - [`sarif`] - SARIF 2.1.0 conversion
 
 pub mod analyzer;
 pub mod app;

@@ -63,7 +63,7 @@ exits with code 2 if any unit exceeds its baseline.
 
 ```bash
 # install go-geiger
-go install github.com/preeve9534/go-geiger@latest
+go install github.com/jlauinger/go-geiger@latest
 
 # scan (auto-detected from go.mod)
 cd your-go-project
@@ -76,7 +76,7 @@ unsafe-budget can both produce and consume SARIF 2.1.0 files:
 
 ```bash
 # emit sarif from a scan
-unsafe-budget scan --format sarif --details > results.sarif
+unsafe-budget scan --format sarif > results.sarif
 
 # ingest sarif from another tool
 unsafe-budget scan --analyzer sarif --manifest-path results.sarif

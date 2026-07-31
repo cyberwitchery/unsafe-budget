@@ -9,7 +9,7 @@ default analyzer for rust projects.
 **backend**: `cargo check --message-format=json` with `RUSTFLAGS=-Wunsafe_code`
 
 **features**:
-- counts `unsafe {}` blocks via compiler diagnostics
+- counts `unsafe` usage via compiler diagnostics
 - distinguishes workspace vs dependency crates
 - provides line-level occurrence details
 - no additional tools required
@@ -54,7 +54,7 @@ analyzer for go projects.
 
 **usage**:
 ```bash
-go install github.com/preeve9534/go-geiger@latest
+go install github.com/jlauinger/go-geiger@latest
 unsafe-budget scan --analyzer go_geiger
 ```
 
@@ -140,7 +140,7 @@ to `c`; everything else maps to `unknown`.
 
 when `--analyzer auto` (the default):
 
-1. checks for `go.mod` → uses `go_geiger`
+1. checks for `go.mod` or `go.sum` → uses `go_geiger`
 2. checks for `Cargo.toml` → uses `rustc_unsafe_lint`
 3. falls back to `rustc_unsafe_lint`
 
@@ -177,14 +177,12 @@ plugins output json to stdout:
 }
 ```
 
-The host does not trust this output verbatim. `analyzer_id` and `scope` are
-overwritten with the values unsafe-budget itself used; dependency units (those
-whose `kind` is `dep`) are filtered out when `--workspace-only`/`--no-deps` is in
-effect; and `totals` are recomputed from the surviving units — exactly as for the
-built-in analyzers. A plugin's `tool_version`, `language`, `units`, and `details`
-are preserved as reported. Plugins must still emit valid `scope`, `analyzer_id`,
-and `totals` fields for the JSON to parse, but their values are advisory: mark
-each unit's `kind` correctly and the host handles scoping and totals.
+the host sanitizes this output: `analyzer_id` and `scope` are overwritten with
+its own values, units whose `kind` is `dep` are filtered out under
+`--workspace-only`/`--no-deps`, and `totals` are recomputed from the surviving
+units. `tool_version`, `language`, `units`, and `details` are kept as reported.
+`scope`, `analyzer_id`, and `totals` must still be present for the JSON to
+parse.
 
 ### plugin info
 

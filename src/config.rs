@@ -92,9 +92,8 @@ pub struct Config {
     /// timeout in seconds for external analyzer and plugin subprocesses.
     ///
     /// bounds the built-in external analyzers (`cargo geiger`, `go-geiger`,
-    /// `cargo check`) as well as plugins, so a hung external tool cannot block a
-    /// CI pipeline. `plugin_timeout_secs` still takes precedence for plugins.
-    /// Defaults to no timeout, preserving unbounded runs.
+    /// `cargo check`) as well as plugins. `plugin_timeout_secs` takes
+    /// precedence for plugins. unset means no timeout.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_secs: Option<u64>,
 }

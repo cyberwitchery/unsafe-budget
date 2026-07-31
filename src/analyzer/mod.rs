@@ -48,7 +48,6 @@ pub fn get_analyzer(id: &str, timeout: Option<u64>) -> Result<Box<dyn Analyzer>>
         GO_GEIGER => Ok(Box::new(go_geiger::GoGeigerAnalyzer)),
         SARIF => Ok(Box::new(sarif::SarifAnalyzer)),
         _ => {
-            // check for external plugin
             let plugins = plugin::discover_plugins(timeout);
             if let Some(info) = plugins.iter().find(|p| p.id == id) {
                 if let Some(ref path) = info.path {
@@ -79,17 +78,15 @@ pub fn detect_analyzer(opts: &ScanOpts) -> Result<Box<dyn Analyzer>> {
         None => std::env::current_dir()?,
     };
 
-    // check for Go project
     if dir.join("go.mod").exists() || dir.join("go.sum").exists() {
         return Ok(Box::new(go_geiger::GoGeigerAnalyzer));
     }
 
-    // check for Rust project (default)
     if dir.join("Cargo.toml").exists() {
         return Ok(Box::new(rustc::RustcAnalyzer));
     }
 
-    // default to rustc
+    // no project marker found; fall back to rustc
     Ok(Box::new(rustc::RustcAnalyzer))
 }
 
@@ -160,11 +157,8 @@ pub(crate) fn apply_cargo_flags(cmd: &mut Command, opts: &ScanOpts) {
 ///
 /// returns [`UnitKind::Dep`] when the path contains an unambiguous
 /// dependency-cache marker for one of the ecosystems this tool targets, and
-/// [`UnitKind::Workspace`] otherwise. defaulting to workspace is the
-/// conservative direction: an unrecognized path is never over-reported as a
-/// dependency.
+/// [`UnitKind::Workspace`] otherwise.
 pub(crate) fn classify_unit_kind(path: &std::path::Path) -> UnitKind {
-    // dependency-cache markers, one per ecosystem.
     const DEP_MARKERS: &[&str] = &[
         "/.cargo/registry/", // Rust: crates.io / registry download cache
         "/.cargo/git/",      // Rust: git-dependency checkout cache

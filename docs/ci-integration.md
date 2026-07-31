@@ -188,14 +188,7 @@ unsafe-budget:
 | 1 | runtime error |
 | 2 | budget violation |
 
-use exit code 2 to distinguish budget failures from other errors:
-
-```yaml
-# github actions
-- name: check unsafe budget
-  run: unsafe-budget check
-  continue-on-error: false  # fail the job on violation
-```
+exit code 2 distinguishes budget violations from other errors.
 
 ## sarif + github code scanning
 

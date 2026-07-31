@@ -10,12 +10,11 @@ unsafe-budget is a single binary that orchestrates unsafe code analysis across m
 │  (commands) │     │   (trait)    │     │  (engine)   │
 └─────────────┘     └──────────────┘     └─────────────┘
                            │                    │
-                    ┌──────┴──────┐             ▼
-                    ▼             ▼        ┌─────────┐
-              ┌─────────┐   ┌─────────┐    │ config  │
-              │  rustc  │   │   go    │    │baseline │
-              │ geiger  │   │ geiger  │    └─────────┘
-              └─────────┘   └─────────┘
+                           ▼                    ▼
+                  rustc · cargo geiger     ┌─────────┐
+                  go geiger · sarif        │ config  │
+                  external plugins         │baseline │
+                                           └─────────┘
 ```
 
 ## data flow
@@ -23,7 +22,7 @@ unsafe-budget is a single binary that orchestrates unsafe code analysis across m
 1. **cli** parses arguments into `ScanOpts`
 2. **analyzer** runs external tools and normalizes output to `ScanResult`
 3. **budget** compares `ScanResult` against baseline/caps
-4. **output** renders results as text or json
+4. **output** renders results as text, json, or sarif
 
 ## core types
 
@@ -54,6 +53,7 @@ pub struct ScanResult {
     pub units: Vec<Unit>,
     pub totals: Totals,
     pub details: Vec<Occurrence>,
+    pub parse_warnings: Vec<ParseWarning>,
 }
 ```
 
@@ -75,8 +75,8 @@ all analyzers implement:
 
 ```rust
 pub trait Analyzer {
-    fn id(&self) -> &'static str;
-    fn language(&self) -> &'static str;
+    fn id(&self) -> &str;
+    fn language(&self) -> &str;
     fn run(&self, opts: &ScanOpts) -> Result<ScanResult>;
 }
 ```
@@ -93,4 +93,4 @@ compares against explicit limits in config. fails if any unit exceeds its cap.
 
 ## plugin discovery
 
-external plugins are executables named `unsafe-budget-plugin-*` on PATH. they receive options via environment variables and output json to stdout.
+external plugins are executables named `unsafe-budget-plugin-*` on PATH. they receive options via environment variables and output json to stdout. the host overrides `analyzer_id` and `scope`, filters dependency units per scope, and recomputes `totals` from the surviving units.

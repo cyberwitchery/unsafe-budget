@@ -37,7 +37,7 @@ pub struct ScanOpts {
     pub all_targets: bool,
     /// specific target triples to build for.
     pub targets: Vec<String>,
-    /// path to Cargo.toml or go.mod.
+    /// path to Cargo.toml, go.mod, or a .sarif file (sarif analyzer).
     pub manifest_path: Option<PathBuf>,
     /// timeout in seconds for external plugin execution.
     pub plugin_timeout_secs: Option<u64>,
@@ -164,8 +164,6 @@ impl std::fmt::Display for UnitKind {
 
 /// a compilation unit (crate, package, or module).
 ///
-/// represents a single unit of code that can contain unsafe code.
-///
 /// # example
 ///
 /// ```
@@ -238,10 +236,7 @@ impl Totals {
     }
 }
 
-/// the main scan result - normalized output from any analyzer.
-///
-/// this is the core data structure that all analyzers produce.
-/// it provides a language-agnostic view of unsafe code usage.
+/// the main scan result, the normalized output every analyzer produces.
 ///
 /// # example
 ///
@@ -329,9 +324,8 @@ impl ScanResult {
 /// a warning emitted during output parsing.
 ///
 /// records when an analyzer encounters a line it cannot fully parse
-/// but can safely skip.  these are accumulated in [`ScanResult`] so
-/// they flow through json/sarif output instead of being written to
-/// stderr.
+/// but can safely skip. accumulated in [`ScanResult`] and rendered in
+/// text/json/sarif output.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ParseWarning {
     /// human-readable description of what went wrong.

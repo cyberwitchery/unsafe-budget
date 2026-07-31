@@ -1,8 +1,7 @@
 //! shared runner for external analyzer and plugin subprocesses.
 //!
-//! centralizes the spawn + pipe-drain + optional-timeout logic so the built-in
-//! analyzers and the plugin system share a single, tested implementation
-//! instead of duplicating the delicate deadlock-avoidance dance.
+//! centralizes the spawn + pipe-drain + optional-timeout logic for the
+//! built-in analyzers and the plugin system.
 
 use std::io::{self, Read as _};
 use std::process::{Child, Command, ExitStatus, Stdio};
@@ -62,7 +61,7 @@ fn run_with_timeout(cmd: &mut Command, timeout: Duration) -> io::Result<Run> {
     // grandchildren that inherited the stdio pipes (a `cargo`/`rustc` under
     // `cargo geiger`, a `go build` under `go-geiger`) holding the write ends
     // open, and the drain-thread joins below would then block until that
-    // orphaned tree finished on its own — so the deadline would not be a real
+    // orphaned tree finished on its own, so the deadline would not be a real
     // wall-clock cap.
     set_own_process_group(cmd);
 
@@ -96,7 +95,7 @@ fn run_with_timeout(cmd: &mut Command, timeout: Duration) -> io::Result<Run> {
             }))
         }
         None => {
-            // timed out — kill the whole tree so every inherited pipe write end
+            // timed out: kill the whole tree so every inherited pipe write end
             // closes, then join the now-unblocked drain threads before returning.
             kill_child_tree(&mut child);
             stdout_thread.join().ok();
@@ -199,7 +198,7 @@ mod tests {
 
     // the analyzers this runner protects (cargo geiger, go-geiger) do their real
     // work in grandchildren that inherit the stdio pipes, so the timeout must
-    // reap the whole process tree — not just the direct child.
+    // reap the whole process tree, not just the direct child.
     #[cfg(unix)]
     #[test]
     fn timeout_kills_whole_process_tree_promptly() {

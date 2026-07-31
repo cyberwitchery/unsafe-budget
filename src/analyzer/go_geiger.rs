@@ -264,8 +264,7 @@ mod tests {
 
     #[test]
     fn test_parse_geiger_output_module_cache_deps() {
-        // regression: go module cache paths stay classified as dependencies
-        // after consolidating onto the shared classify_unit_kind helper.
+        // go module cache paths are classified as dependencies
         let output =
             b"/home/user/go/pkg/mod/github.com/pkg/errors@v0.9.1/errors.go:100:5: unsafe.Pointer\n";
 

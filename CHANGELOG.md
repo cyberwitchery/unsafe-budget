@@ -2,20 +2,20 @@
 
 ## Unreleased
 
-- fix: configuring any `[[ignore]]` entry no longer undercounts units whose analyzer reports a unit's unsafe count without listing every occurrence behind it. Previously each unit's count was recomputed from its surviving occurrences, so as soon as a single `[[ignore]]` entry existed — even one matching an unrelated file — such a unit was rewritten down to however many occurrences it happened to report, or to zero if it reported none, and the understated numbers flowed into the budget verdict and the saved baseline. Ignored occurrences are now subtracted from the reported count instead. The built-in analyzers were unaffected; this only reached results from external plugin analyzers.
-- fix: unknown keys in `unsafe-budget.toml` (including inside `[caps]`, `[warnings]`, and `[[ignore]]`) are now a hard parse error instead of being silently ignored, so a typo like `defualt` no longer quietly drops a cap and lets the gate pass on code it was configured to fail. The `unsafe-budget.lock` baseline format is unchanged and still tolerates unknown fields for forward compatibility.
-- fix: SARIF output now carries unit names and the scanned language, so the documented "emit SARIF, then ingest it again" round-trip no longer loses both. Previously the unit had to be guessed back from each file path — collapsing a dependency to `registry` or to a git revision hash, so `[caps.deps]`/`[caps.workspace]` entries keyed by crate name could never match a SARIF import — and the language always came back as `unknown`. GitHub code scanning alerts now also carry the owning unit. SARIF from other tools (clippy-sarif, semgrep, CodeQL) is read exactly as before.
-- fix: SARIF imports now honor workspace/dependency scoping. Occurrences whose file path falls in a dependency cache (Rust `~/.cargo/registry`, `~/.cargo/git`; Go `vendor/`, `go/pkg/mod/`) are classified as dependencies, so `--workspace-only`/`--no-deps`, dependency caps, and the `deps_unsafe` total now apply to SARIF scans as they already did for the other analyzers. Previously every SARIF unit was treated as a workspace crate, silently ignoring all of that scoping.
-- fix: `scan`/`check --format json|sarif` now always include per-occurrence details and locations, regardless of `--details`. Previously the display-oriented `--details` flag also gated the machine-readable output, so without it `scan --format sarif` emitted zero occurrence results and `check --format sarif` emitted budget violations with no `locations` (and JSON dropped its `details`). GitHub code scanning and other consumers received empty or location-less reports unless a human happened to pass a text-display flag. `--details` now only toggles the text renderer's Details section.
-- fix: SARIF files containing multiple runs are now counted in full. Previously only the first run's results were read, so a multi-run SARIF import (e.g. one run per tool invocation or analysis target) silently dropped every occurrence in the remaining runs and could pass a budget it should have failed.
-- fix: `--workspace-only` now scans every workspace member, not just the current package. Previously, in a workspace with a root package plus sibling crates, only the root was compiled, so unsafe code in sibling members was silently counted as zero and the gate could pass when it should have failed.
-- add a general `timeout_secs` (config) and `--timeout` (CLI) option that bounds the built-in external analyzer subprocesses (`cargo geiger`, `go-geiger`, `cargo check`). On Unix the timeout kills the analyzer's entire subprocess tree, so a hang deep inside a spawned compile or registry fetch can no longer keep a CI pipeline running past the deadline; on non-Unix platforms only the direct analyzer process is killed. Off by default (unbounded), and `--plugin-timeout`/`plugin_timeout_secs` still take precedence for plugins.
-- fix: a configured plugin/analyzer timeout (`--plugin-timeout`/`--timeout` or `plugin_timeout_secs`/`timeout_secs`) now also bounds plugin discovery. Previously the `--info` probe that identifies each discovered plugin ran unbounded, so a hung or slow plugin could block `unsafe-budget plugins`, analyzer auto-selection, and any scan even when a timeout was set; a probe that exceeds the deadline is now treated as a failed probe and the plugin falls back to an `unknown` language. Still unbounded by default.
-- fix: external plugin analyzers now honor the scan's scope and dependency filtering and report totals consistent with their findings, matching the built-in analyzers. Previously a plugin's output was trusted verbatim: a plugin that ignored `--workspace-only`/`--no-deps` returned unscoped dependency counts, totals that disagreed with the reported units flowed unchanged into output and the saved baseline, and a plugin echoing a stale scope or a mismatched analyzer id made every later `check` emit an unclearable "scan scope differs from baseline" warning (or fail outright with an "analyzer mismatch" error). The host now filters dependency units, recomputes totals, and overrides the scope and analyzer id at the plugin boundary.
+- fix: `[[ignore]]` entries now subtract ignored occurrences from each unit's reported count instead of recomputing the count from surviving occurrences, which undercounted units whose analyzer reports counts without listing every occurrence (only external plugin analyzers produce these).
+- fix: unknown keys in `unsafe-budget.toml` (including inside `[caps]`, `[warnings]`, and `[[ignore]]`) are now a hard parse error instead of being silently ignored, so a typo like `defualt` no longer drops a cap. the `unsafe-budget.lock` baseline still tolerates unknown fields.
+- fix: SARIF output now records unit names (`logicalLocations`) and the scanned language (`run.properties`), and the sarif analyzer reads them back, so an emit-then-ingest round-trip keeps both instead of re-deriving units from file paths. SARIF from other tools is read as before.
+- fix: the sarif analyzer classifies occurrences under dependency caches (`~/.cargo/registry`, `~/.cargo/git`, `vendor/`, `go/pkg/mod/`) as dependencies, so `--workspace-only`/`--no-deps`, dependency caps, and the `deps_unsafe` total now apply to SARIF scans; previously every SARIF unit counted as workspace.
+- fix: `--format json|sarif` always includes per-occurrence details and locations; `--details` now only toggles the text renderer's Details section. previously machine-readable output omitted occurrences unless `--details` was passed.
+- fix: SARIF files with multiple runs are counted in full; previously only the first run's results were read.
+- fix: `--workspace-only` compiles every workspace member; previously only the current package was built, so unsafe code in sibling members counted as zero.
+- add `timeout_secs` (config) and `--timeout` (CLI) to bound the built-in external analyzer subprocesses (`cargo geiger`, `go-geiger`, `cargo check`). on Unix the whole subprocess tree is killed, elsewhere only the direct child. off by default; `--plugin-timeout`/`plugin_timeout_secs` take precedence for plugins.
+- fix: a configured timeout also bounds the plugin discovery `--info` probe; a probe exceeding the deadline counts as failed and the plugin's language falls back to `unknown`. previously a hung probe blocked `unsafe-budget plugins`, analyzer auto-selection, and scans.
+- fix: plugin output is sanitized at the analyzer boundary: the host overrides `analyzer_id` and `scope`, filters dependency units per `--workspace-only`/`--no-deps`, and recomputes `totals`, matching the built-in analyzers. previously a nonconforming plugin could skew totals and baselines and cause persistent scope-mismatch warnings on `check`.
 
 ## [0.4.2] - 2026-07-05
 
-- fix: git, sparse-registry, and alternative/private-registry dependencies are now identified by their real crate name instead of garbage like `index.crates.io` or `bar?rev=abc`; previously the wrong name never matched the dependency's baseline/cap entry, so it either escaped enforcement or triggered spurious "new unit" violations.
+- fix: git, sparse-registry, and alternative/private-registry dependencies are now identified by their real crate name instead of `index.crates.io` or `bar?rev=abc`; previously the wrong name never matched the dependency's baseline/cap entry, so it either escaped enforcement or triggered spurious "new unit" violations.
 - `--include-deps` and `--no-deps` now conflict at the CLI level, preventing contradictory invocations that previously had undefined behavior.
 - fix: `run_cargo_check` no longer swallows unexpected cargo failures (missing toolchain, linker errors, network failures); any non-zero exit with empty stdout is now an error instead of a silent false-negative.
 
@@ -23,7 +23,7 @@
 
 - fix: `caps.default` now applies to workspace crates that have no explicit `[caps.workspace]` entry, instead of silently skipping them from budget checks.
 - the `check` command now rejects a baseline created with a different analyzer (e.g. a `rustc_unsafe_lint` baseline checked with `cargo_geiger`), which previously caused false passes/failures from mismatched unit names.
-- the `go_geiger` analyzer now warns (to stderr, via `ParseWarning`) on malformed output instead of silently mishandling it: lines with bad line/col numbers or fewer than three colon-delimited parts are skipped, and a fallback to an `"unknown"` package is surfaced.
+- the `go_geiger` analyzer now warns (via `ParseWarning` in the scan output) on malformed output instead of silently mishandling it: lines with bad line/col numbers or fewer than three colon-delimited parts are skipped, and a fallback to an `"unknown"` package is surfaced.
 
 ## [0.4.0] - 2026-05-06
 
@@ -65,10 +65,11 @@ initial release.
 - works standalone or as a cargo subcommand (`cargo unsafe-budget`).
 - text and JSON output; baseline file (`unsafe-budget.lock`) and configuration via `unsafe-budget.toml`.
 
+[0.4.2]: https://github.com/cyberwitchery/unsafe-budget/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/cyberwitchery/unsafe-budget/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/cyberwitchery/unsafe-budget/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/cyberwitchery/unsafe-budget/releases/tag/v0.3.0
 [0.2.0]: https://github.com/cyberwitchery/unsafe-budget/releases/tag/v0.2.0
 [0.1.1]: https://github.com/cyberwitchery/unsafe-budget/releases/tag/v0.1.1
 [0.1.0]: https://github.com/cyberwitchery/unsafe-budget/releases/tag/v0.1.0
-[unreleased]: https://github.com/cyberwitchery/unsafe-budget/compare/v0.4.1...HEAD
+[unreleased]: https://github.com/cyberwitchery/unsafe-budget/compare/v0.4.2...HEAD

@@ -16,7 +16,7 @@ guidelines for ai agents working on this codebase.
 2. read relevant existing code first
 3. make minimal, focused changes
 4. add tests for new functionality
-5. run `./ci.sh` before submitting
+5. run `scripts/ci.sh` before submitting
 
 ## rust-specific
 

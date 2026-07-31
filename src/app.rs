@@ -60,7 +60,6 @@ fn cmd_check(args: ScanArgs) -> Result<ExitCode> {
     let result = analyzer.run(&opts)?;
     let result = apply_ignore_filter(result, &config.ignore);
 
-    // load baseline for ratchet mode
     let baseline = match config.mode {
         crate::config::Mode::Ratchet => {
             let dir = get_project_dir(&args)?;
@@ -69,7 +68,6 @@ fn cmd_check(args: ScanArgs) -> Result<ExitCode> {
         crate::config::Mode::Caps => None,
     };
 
-    // reject baselines created with a different analyzer
     if let Some(bl) = baseline.as_ref() {
         if bl.analyzer_id != result.analyzer_id {
             return Err(Error::Baseline(format!(
@@ -80,7 +78,6 @@ fn cmd_check(args: ScanArgs) -> Result<ExitCode> {
         }
     }
 
-    // warn when the current scan scope differs from the baseline scope
     if let Some(bl) = baseline.as_ref() {
         let current_scope = Scope::from(&opts);
         let diffs = bl.scope.diff_fields(&current_scope);
@@ -132,9 +129,8 @@ fn cmd_update(args: ScanArgs) -> Result<ExitCode> {
 }
 
 fn cmd_plugins(args: crate::cli::PluginsArgs) -> Result<ExitCode> {
-    // honor a configured plugin/analyzer timeout for the discovery probe so a
-    // hung plugin's `--info` cannot wedge the listing. No config file leaves the
-    // timeout unset (unbounded), matching the opt-in default.
+    // a configured timeout also bounds the discovery probe, so a hung plugin's
+    // `--info` cannot wedge the listing
     let config = Config::load_from_dir(&std::env::current_dir()?)?;
     let timeout = config.plugin_timeout_secs.or(config.timeout_secs);
     let plugins = list_analyzers(timeout);
@@ -168,7 +164,6 @@ fn get_project_dir(args: &ScanArgs) -> Result<std::path::PathBuf> {
 }
 
 fn build_scan_opts(args: &ScanArgs, config: &Config) -> ScanOpts {
-    // CLI flags override config
     let include_deps = if args.no_deps {
         false
     } else if args.include_deps {
@@ -180,8 +175,7 @@ fn build_scan_opts(args: &ScanArgs, config: &Config) -> ScanOpts {
     let workspace_only = args.workspace_only || config.workspace_only;
 
     // the general timeout bounds the built-in external analyzers and, unless a
-    // plugin-specific override is set, plugins too. Leaving it unset preserves
-    // the previous unbounded behaviour for both.
+    // plugin-specific override is set, plugins too
     let general_timeout = args.timeout.or(config.timeout_secs);
 
     ScanOpts {
@@ -490,7 +484,7 @@ mod tests {
 
     #[test]
     fn ignore_filter_no_details_preserves_counts() {
-        // this is the cargo_geiger bug: aggregate counts with no details.
+        // aggregate counts with no details (cargo_geiger's output shape)
         let result = make_result_without_details();
         let ignores = vec![IgnoreEntry {
             file: PathBuf::from("src/lib.rs"),
@@ -499,7 +493,7 @@ mod tests {
         }];
         let filtered = apply_ignore_filter(result, &ignores);
 
-        // counts must NOT be zeroed.
+        // counts must not be zeroed
         assert_eq!(filtered.units[0].unsafe_count, 10);
         assert_eq!(filtered.units[1].unsafe_count, 200);
         assert_eq!(filtered.totals.workspace_unsafe, 10);
@@ -626,7 +620,7 @@ mod tests {
 
     #[test]
     fn ignore_filter_removes_all_occurrences_zeros_counts() {
-        // when details ARE present and all are filtered, counts should go to 0.
+        // when details are present and all are filtered, counts go to 0
         let result = make_result_with_details();
         let ignores = vec![
             IgnoreEntry {
@@ -691,9 +685,6 @@ mod tests {
 
     #[test]
     fn ignore_filter_many_ignores_scales_linearly() {
-        // regression: ensure that a large number of ignore rules does not cause
-        // quadratic behaviour. With O(n*m) filtering this would iterate
-        // 4 * 1000 = 4000 times; with a HashSet it's 4 lookups + 1000 inserts.
         let result = make_result_with_details();
         let mut ignores: Vec<IgnoreEntry> = (0..1000)
             .map(|i| IgnoreEntry {
@@ -702,7 +693,7 @@ mod tests {
                 reason: None,
             })
             .collect();
-        // slip in one real match.
+        // one real match among the 1000 misses
         ignores.push(IgnoreEntry {
             file: PathBuf::from("src/ffi.rs"),
             line: 42,
@@ -823,7 +814,7 @@ mod tests {
         // verify the mismatch is detectable:
         assert_ne!(baseline.analyzer_id, scan.analyzer_id);
 
-        // verify the check still runs (no panic) — budget sees mismatched units:
+        // verify the check still runs (no panic); budget sees mismatched units:
         let _result = budget::check(&scan, Some(&baseline), &config).unwrap();
 
         // verify the error message we'd produce in cmd_check:

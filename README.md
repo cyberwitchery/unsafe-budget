@@ -66,7 +66,7 @@ cargo unsafe-budget update
 
 ```bash
 unsafe-budget scan --format json          # json output
-unsafe-budget scan --format sarif --details # sarif output for code scanning
+unsafe-budget scan --format sarif         # sarif output for code scanning
 unsafe-budget scan --analyzer cargo_geiger # explicit analyzer
 unsafe-budget scan --workspace-only       # skip dependencies
 unsafe-budget scan --details              # show line-level occurrences
@@ -114,7 +114,7 @@ threshold = 0.8
 
 | id | language | backend |
 |----|----------|---------|
-| `rustc_unsafe_lint` | rust | `cargo check -Wunsafe_code` |
+| `rustc_unsafe_lint` | rust | `cargo check` with `RUSTFLAGS=-Wunsafe_code` |
 | `cargo_geiger` | rust | `cargo-geiger` |
 | `go_geiger` | go | `go-geiger` |
 | `sarif` | any | reads `.sarif` files |
@@ -122,12 +122,11 @@ threshold = 0.8
 ## library usage
 
 ```rust
-use unsafe_budget::analyzer::{get_analyzer, detect_analyzer};
+use unsafe_budget::analyzer::detect_analyzer;
 use unsafe_budget::model::ScanOpts;
-use unsafe_budget::budget;
 
 let opts = ScanOpts::default();
-let analyzer = detect_analyzer(&opts);
+let analyzer = detect_analyzer(&opts)?;
 let result = analyzer.run(&opts)?;
 
 println!("total unsafe: {}", result.totals.overall_unsafe);

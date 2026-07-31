@@ -57,9 +57,8 @@ fn test_scan_sample_workspace() {
 #[test]
 #[ignore = "requires cargo build first"]
 fn test_workspace_only_scans_sibling_members() {
-    // Regression: `--workspace-only` must compile every workspace member, not
-    // just the root package. A sibling crate's unsafe code was previously
-    // back-filled as zero, so the gate could pass when it should have failed.
+    // `--workspace-only` compiles every workspace member, not just the root
+    // package; a sibling crate's unsafe code must be counted.
     let binary = project_root().join("target/debug/unsafe-budget");
     if !binary.exists() {
         eprintln!("Skipping integration test - binary not built");

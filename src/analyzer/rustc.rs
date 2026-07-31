@@ -21,16 +21,9 @@ impl Analyzer for RustcAnalyzer {
     }
 
     fn run(&self, opts: &ScanOpts) -> Result<ScanResult> {
-        // get workspace metadata to identify workspace members
         let workspace_members = get_workspace_members(opts)?;
-
-        // run cargo check with unsafe_code warnings enabled
         let (stdout, _stderr) = run_cargo_check(opts)?;
-
-        // parse diagnostics
         let occurrences = parse_diagnostics(&stdout, &workspace_members)?;
-
-        // aggregate into units
         let (units, details) = aggregate_occurrences(occurrences, &workspace_members, opts);
 
         Ok(ScanResult::from_parts(
@@ -73,7 +66,6 @@ fn build_cargo_check_command(opts: &ScanOpts) -> Command {
     let mut cmd = Command::new("cargo");
     cmd.arg("check").arg("--message-format=json");
 
-    // set RUSTFLAGS to enable unsafe_code lint
     let existing_flags = std::env::var("RUSTFLAGS").unwrap_or_default();
     let new_flags = if existing_flags.is_empty() {
         "-Wunsafe_code".into()
@@ -152,20 +144,18 @@ fn parse_diagnostics(
 
         let message: Message = match serde_json::from_str(&line) {
             Ok(m) => m,
-            Err(_) => continue, // Skip non-JSON lines
+            Err(_) => continue, // skip non-JSON lines
         };
 
         if let Message::CompilerMessage(compiler_msg) = message {
             let diag = &compiler_msg.message;
 
-            // check if this is an unsafe_code warning
             let is_unsafe = diag.code.as_ref().is_some_and(|c| c.code == "unsafe_code");
 
             if !is_unsafe {
                 continue;
             }
 
-            // get the primary span for location
             let span = diag.spans.iter().find(|s| s.is_primary);
 
             let (file, line, col) = if let Some(span) = span {
@@ -175,13 +165,11 @@ fn parse_diagnostics(
                     span.column_start as u32,
                 )
             } else {
-                continue; // Skip if no location
+                continue;
             };
 
-            // determine the unit name from package_id
             let unit_name = extract_package_name(&compiler_msg.package_id.repr);
 
-            // deduplicate
             let key = (unit_name.clone(), file.clone(), line, col);
             if seen.contains(&key) {
                 continue;
@@ -395,7 +383,7 @@ mod tests {
 
     #[test]
     fn test_extract_package_name_sparse_format() {
-        // sparse crates-io index: previously mis-parsed to "index.crates.io" via the path branch
+        // sparse crates-io index
         assert_eq!(
             extract_package_name("sparse+https://index.crates.io/#serde@1.0.0"),
             "serde"
@@ -614,9 +602,8 @@ mod tests {
 
     #[test]
     fn test_cargo_check_command_always_scans_whole_workspace() {
-        // regression: `--workspace-only` must still compile every workspace
-        // member, so `--workspace` is added regardless of the flag. narrowing
-        // the compile set here would leave sibling members counted as zero.
+        // `--workspace` is added regardless of `--workspace-only`; narrowing
+        // the compile set would leave sibling members counted as zero.
         for workspace_only in [false, true] {
             let opts = ScanOpts {
                 workspace_only,

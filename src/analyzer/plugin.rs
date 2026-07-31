@@ -33,7 +33,7 @@ impl Analyzer for PluginAnalyzer {
 /// discover plugin executables on PATH.
 ///
 /// `timeout` (seconds) bounds each plugin's `--info` probe; `None` leaves the
-/// probe unbounded, matching the crate's opt-in timeout philosophy.
+/// probe unbounded.
 pub fn discover_plugins(timeout: Option<u64>) -> Vec<AnalyzerInfo> {
     let path_var = match std::env::var("PATH") {
         Ok(p) => p,
@@ -49,7 +49,6 @@ pub fn discover_plugins(timeout: Option<u64>) -> Vec<AnalyzerInfo> {
                 if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
                     if name.starts_with(PLUGIN_PREFIX) && is_executable(&path) {
                         let id = name.strip_prefix(PLUGIN_PREFIX).unwrap_or(name);
-                        // try to get language from plugin
                         let language = probe_plugin_language(&path, timeout)
                             .unwrap_or_else(|| "unknown".into());
                         plugins.push(AnalyzerInfo {
@@ -86,10 +85,10 @@ fn is_executable(path: &Path) -> bool {
 
 /// try to get plugin language by running with --info.
 ///
-/// `timeout` (seconds) bounds the probe through the shared [`process::run_process`]
-/// runner; `None` keeps the historical unbounded spawn. A probe that fails to
-/// run, exits non-zero, or exceeds the deadline yields `None`, so a hung plugin
-/// falls back to an "unknown" language instead of blocking discovery.
+/// `timeout` (seconds) bounds the probe; `None` leaves it unbounded. A probe
+/// that fails to run, exits non-zero, or exceeds the deadline yields `None`,
+/// so a hung plugin falls back to an "unknown" language instead of blocking
+/// discovery.
 fn probe_plugin_language(path: &Path, timeout: Option<u64>) -> Option<String> {
     let mut cmd = Command::new(path);
     cmd.arg("--info");
@@ -118,7 +117,6 @@ fn build_plugin_cmd(path: &Path, opts: &ScanOpts) -> Command {
     let mut cmd = Command::new(path);
     cmd.arg("--format").arg("json");
 
-    // pass options via environment
     cmd.env(
         "UNSAFE_BUDGET_WORKSPACE_ONLY",
         opts.workspace_only.to_string(),
@@ -468,7 +466,7 @@ mod tests {
         // serialize spawns to avoid the ETXTBSY fork-race (see the slow-plugin
         // test above).
         let _lock = test_spawn_guard();
-        // the plugin exits quickly — the error is a JSON parse failure, not a
+        // the plugin exits quickly; the error is a JSON parse failure, not a
         // timeout, proving it ran to completion within the deadline.
         let tmp = TempDir::new().unwrap();
         let p = make_script(tmp.path(), "unsafe-budget-plugin-fast", "echo not-json\n");

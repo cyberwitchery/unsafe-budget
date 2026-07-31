@@ -68,7 +68,7 @@ pub struct ScanArgs {
     #[arg(long, value_delimiter = ',')]
     pub targets: Vec<String>,
 
-    /// path to Cargo.toml
+    /// path to Cargo.toml, go.mod, or a .sarif file (sarif analyzer)
     #[arg(long)]
     pub manifest_path: Option<PathBuf>,
 
