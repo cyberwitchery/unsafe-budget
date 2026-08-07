@@ -2,7 +2,7 @@ use crate::analyzer::process::{self, Run};
 use crate::analyzer::Analyzer;
 use crate::error::{Error, Result};
 use crate::model::{Occurrence, ScanOpts, ScanResult, Unit, UnitKind};
-use cargo_metadata::{Message, MetadataCommand};
+use cargo_metadata::{Message, MetadataCommand, Package, PackageId};
 use std::collections::{HashMap, HashSet};
 use std::io::BufRead;
 use std::path::PathBuf;
@@ -46,16 +46,15 @@ fn get_workspace_members(opts: &ScanOpts) -> Result<HashSet<String>> {
 
     let metadata = cmd.exec()?;
 
+    // pre-build an id -> package lookup so member resolution is linear rather
+    // than O(members x packages) via a nested `.find()`.
+    let package_by_id: HashMap<&PackageId, &Package> =
+        metadata.packages.iter().map(|p| (&p.id, p)).collect();
+
     let members: HashSet<String> = metadata
         .workspace_members
         .iter()
-        .filter_map(|id| {
-            metadata
-                .packages
-                .iter()
-                .find(|p| &p.id == id)
-                .map(|p| p.name.to_string())
-        })
+        .filter_map(|id| package_by_id.get(id).map(|p| p.name.to_string()))
         .collect();
 
     Ok(members)
