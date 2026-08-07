@@ -1,6 +1,6 @@
 # changelog
 
-## Unreleased
+## [0.5.0] - 2026-08-08
 
 - fix: `[[ignore]]` entries now subtract ignored occurrences from each unit's reported count instead of recomputing the count from surviving occurrences, which undercounted units whose analyzer reports counts without listing every occurrence (only external plugin analyzers produce these).
 - fix: unknown keys in `unsafe-budget.toml` (including inside `[caps]`, `[warnings]`, and `[[ignore]]`) are now a hard parse error instead of being silently ignored, so a typo like `defualt` no longer drops a cap. the `unsafe-budget.lock` baseline still tolerates unknown fields.
