@@ -3,7 +3,7 @@
 //! centralizes the spawn + pipe-drain + optional-timeout logic for the
 //! built-in analyzers and the plugin system.
 
-use std::io::{self, Read as _};
+use std::io;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::Duration;
 use wait_timeout::ChildExt;
@@ -70,38 +70,59 @@ fn run_with_timeout(cmd: &mut Command, timeout: Duration) -> io::Result<Run> {
     // drain stdout and stderr on background threads so a child that produces
     // lots of output cannot deadlock by filling the OS pipe buffer while we
     // block in wait_timeout.
-    let mut stdout_pipe = child.stdout.take().expect("stdout piped");
-    let mut stderr_pipe = child.stderr.take().expect("stderr piped");
+    let stdout_pipe = child.stdout.take().expect("stdout piped");
+    let stderr_pipe = child.stderr.take().expect("stderr piped");
 
-    let stdout_thread = std::thread::spawn(move || {
-        let mut buf = Vec::new();
-        stdout_pipe.read_to_end(&mut buf).ok();
-        buf
-    });
-    let stderr_thread = std::thread::spawn(move || {
-        let mut buf = Vec::new();
-        stderr_pipe.read_to_end(&mut buf).ok();
-        buf
-    });
+    let stdout_thread = std::thread::spawn(move || drain(stdout_pipe));
+    let stderr_thread = std::thread::spawn(move || drain(stderr_pipe));
 
     match child.wait_timeout(timeout)? {
         Some(status) => {
-            let stdout = stdout_thread.join().unwrap_or_default();
-            let stderr = stderr_thread.join().unwrap_or_default();
+            // join both before propagating, so one failed stream still reaps the
+            // other drain thread.
+            let stdout = finish_drain(stdout_thread.join(), "stdout");
+            let stderr = finish_drain(stderr_thread.join(), "stderr");
             Ok(Run::Completed(Output {
                 status,
-                stdout,
-                stderr,
+                stdout: stdout?,
+                stderr: stderr?,
             }))
         }
         None => {
             // timed out: kill the whole tree so every inherited pipe write end
             // closes, then join the now-unblocked drain threads before returning.
+            // the kill cuts those reads short by design, so their errors are
+            // discarded along with the buffers.
             kill_child_tree(&mut child);
             stdout_thread.join().ok();
             stderr_thread.join().ok();
             Ok(Run::TimedOut)
         }
+    }
+}
+
+/// read one of the child's pipes to end, yielding a read that fails partway as
+/// an error rather than as the bytes collected so far.
+fn drain<R: io::Read>(mut pipe: R) -> io::Result<Vec<u8>> {
+    let mut buf = Vec::new();
+    pipe.read_to_end(&mut buf)?;
+    Ok(buf)
+}
+
+/// turn a joined drain thread into its buffer, naming `stream` in either failure.
+fn finish_drain(
+    joined: std::thread::Result<io::Result<Vec<u8>>>,
+    stream: &str,
+) -> io::Result<Vec<u8>> {
+    match joined {
+        Ok(Ok(buf)) => Ok(buf),
+        Ok(Err(e)) => Err(io::Error::new(
+            e.kind(),
+            format!("failed to read child {stream}: {e}"),
+        )),
+        Err(_) => Err(io::Error::other(format!(
+            "the {stream} drain thread panicked"
+        ))),
     }
 }
 
@@ -149,6 +170,68 @@ fn kill_child_tree(child: &mut Child) {
 mod tests {
     use super::*;
     use crate::analyzer::test_spawn_guard;
+
+    /// yields `head`, then fails instead of reporting EOF.
+    struct FailingReader {
+        head: io::Cursor<Vec<u8>>,
+    }
+
+    impl FailingReader {
+        fn new(head: &[u8]) -> Self {
+            Self {
+                head: io::Cursor::new(head.to_vec()),
+            }
+        }
+    }
+
+    impl io::Read for FailingReader {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            match io::Read::read(&mut self.head, buf)? {
+                0 => Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "pipe died mid-stream",
+                )),
+                n => Ok(n),
+            }
+        }
+    }
+
+    #[test]
+    fn failing_reader_yields_its_bytes_before_erroring() {
+        let mut reader = FailingReader::new(b"partial output");
+        let mut buf = Vec::new();
+        io::Read::read_to_end(&mut reader, &mut buf).ok();
+        assert_eq!(buf, b"partial output");
+    }
+
+    #[test]
+    fn drain_returns_the_whole_stream() {
+        assert_eq!(drain(&b"complete output"[..]).unwrap(), b"complete output");
+    }
+
+    #[test]
+    fn drain_errors_on_a_read_that_fails_partway() {
+        let err = drain(FailingReader::new(b"partial output")).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::BrokenPipe);
+    }
+
+    #[test]
+    fn finish_drain_names_the_stream_and_keeps_the_error_kind() {
+        let failed: std::thread::Result<io::Result<Vec<u8>>> = Ok(Err(io::Error::new(
+            io::ErrorKind::BrokenPipe,
+            "pipe died mid-stream",
+        )));
+        let err = finish_drain(failed, "stdout").unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::BrokenPipe);
+        assert!(err.to_string().contains("stdout"), "{err}");
+    }
+
+    #[test]
+    fn finish_drain_turns_a_panicked_thread_into_an_error() {
+        let panicked: std::thread::Result<io::Result<Vec<u8>>> = Err(Box::new("boom"));
+        let err = finish_drain(panicked, "stderr").unwrap_err();
+        assert!(err.to_string().contains("stderr"), "{err}");
+    }
 
     #[test]
     fn no_timeout_runs_to_completion() {
