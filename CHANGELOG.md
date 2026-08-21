@@ -1,5 +1,9 @@
 # changelog
 
+## Unreleased
+
+- fix: when a timeout is configured, a failed read of an analyzer's or plugin's output is now reported as an error instead of being parsed as if it were that process's complete output. previously the bytes read so far — or nothing at all, if the reader died — were counted as-is, undercounting unsafe occurrences and passing a `check` that should have failed.
+
 ## [0.5.0] - 2026-08-08
 
 - fix: `[[ignore]]` entries now subtract ignored occurrences from each unit's reported count instead of recomputing the count from surviving occurrences, which undercounted units whose analyzer reports counts without listing every occurrence (only external plugin analyzers produce these).
