@@ -6,8 +6,11 @@
 
 use crate::analyzer::Analyzer;
 use crate::error::{Error, Result};
-use crate::model::{Occurrence, ScanOpts, ScanResult, Unit, UnitKind};
-use crate::sarif::{PROP_LANGUAGE, PROP_NAMESPACE, UNIT_LOGICAL_KIND};
+use crate::model::{Occurrence, ParseWarning, ScanOpts, ScanResult, Unit, UnitKind};
+use crate::sarif::{
+    PROP_LANGUAGE, PROP_NAMESPACE, PROP_UNITS, RULE_PARSE_WARNING, RULE_UNSAFE_CODE,
+    UNIT_LOGICAL_KIND,
+};
 use serde_sarif::sarif::{self, Sarif};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -59,10 +62,14 @@ fn convert_sarif(sarif: &Sarif, opts: &ScanOpts) -> Result<ScanResult> {
     // contain multiple runs (one per tool invocation or analysis target), so
     // processing only runs[0] would silently under-count unsafe code.
     let mut occurrences: Vec<Occurrence> = Vec::new();
+    let mut parse_warnings: Vec<ParseWarning> = Vec::new();
+    let mut counts: HashMap<String, (UnitKind, u64)> = HashMap::new();
 
     for run in &sarif.runs {
         let own_run = is_own_run(run);
+        let recorded = own_run.then(|| recorded_units(run)).flatten();
         let results = run.results.as_deref().unwrap_or(&[]);
+        let mut run_occurrences: Vec<Occurrence> = Vec::new();
 
         for result in results {
             let message = result
@@ -70,6 +77,13 @@ fn convert_sarif(sarif: &Sarif, opts: &ScanOpts) -> Result<ScanResult> {
                 .text
                 .clone()
                 .unwrap_or_else(|| "unknown".into());
+
+            if own_run && result.rule_id.as_deref() != Some(RULE_UNSAFE_CODE) {
+                if result.rule_id.as_deref() == Some(RULE_PARSE_WARNING) {
+                    parse_warnings.push(ParseWarning { message });
+                }
+                continue;
+            }
 
             let locations = result.locations.as_deref().unwrap_or(&[]);
             if locations.is_empty() {
@@ -101,7 +115,7 @@ fn convert_sarif(sarif: &Sarif, opts: &ScanOpts) -> Result<ScanResult> {
                     .flatten()
                     .unwrap_or_else(|| extract_unit_name(&file));
 
-                occurrences.push(Occurrence {
+                run_occurrences.push(Occurrence {
                     unit: unit_name,
                     file: PathBuf::from(&file),
                     line,
@@ -110,13 +124,37 @@ fn convert_sarif(sarif: &Sarif, opts: &ScanOpts) -> Result<ScanResult> {
                 });
             }
         }
+
+        match recorded {
+            Some(units) => accumulate_recorded(&mut counts, units),
+            None => accumulate_derived(&mut counts, &run_occurrences),
+        }
+        occurrences.append(&mut run_occurrences);
     }
 
-    let (units, details) = aggregate(occurrences, opts);
+    let (units, details) = super::aggregate_units(counts, occurrences, opts);
 
-    Ok(ScanResult::from_parts(
-        "sarif", language, opts, units, details,
-    ))
+    let mut scan = ScanResult::from_parts("sarif", language, opts, units, details);
+    scan.parse_warnings = parse_warnings;
+    Ok(scan)
+}
+
+/// fold a run's recorded units into the running per-unit counts; a recorded
+/// kind overrides one another run derived from a file path.
+fn accumulate_recorded(counts: &mut HashMap<String, (UnitKind, u64)>, units: Vec<Unit>) {
+    for unit in units {
+        let entry = counts.entry(unit.name).or_insert((unit.kind, 0));
+        entry.0 = unit.kind;
+        entry.1 += unit.unsafe_count;
+    }
+}
+
+fn accumulate_derived(counts: &mut HashMap<String, (UnitKind, u64)>, occurrences: &[Occurrence]) {
+    for occ in occurrences {
+        let kind = super::classify_unit_kind(&occ.file);
+        let entry = counts.entry(occ.unit.clone()).or_insert((kind, 0));
+        entry.1 += 1;
+    }
 }
 
 /// check whether `word` appears in `haystack` at a left word boundary:
@@ -162,6 +200,20 @@ fn is_own_run(run: &sarif::Run) -> bool {
     run.properties
         .as_ref()
         .is_some_and(|props| props.additional_properties.contains_key(PROP_NAMESPACE))
+}
+
+/// the unit list a run records, valid only for runs [`is_own_run`] accepts.
+///
+/// `None` when the run records none, leaving the caller to derive units from
+/// its occurrences.
+fn recorded_units(run: &sarif::Run) -> Option<Vec<Unit>> {
+    let value = run
+        .properties
+        .as_ref()?
+        .additional_properties
+        .get(PROP_NAMESPACE)?
+        .get(PROP_UNITS)?;
+    serde_json::from_value(value.clone()).ok()
 }
 
 /// the unit a location names, valid only for runs [`is_own_run`] accepts.
@@ -225,18 +277,6 @@ fn extract_unit_name(uri: &str) -> String {
     // no "src" found, or "src" is the first component: use the first
     // directory as the unit name.
     dirs[0].clone()
-}
-
-fn aggregate(occurrences: Vec<Occurrence>, opts: &ScanOpts) -> (Vec<Unit>, Vec<Occurrence>) {
-    let mut counts: HashMap<String, (UnitKind, u64)> = HashMap::new();
-
-    for occ in &occurrences {
-        let kind = super::classify_unit_kind(&occ.file);
-        let entry = counts.entry(occ.unit.clone()).or_insert((kind, 0));
-        entry.1 += 1;
-    }
-
-    super::aggregate_units(counts, occurrences, opts)
 }
 
 #[cfg(test)]
@@ -746,6 +786,12 @@ mod tests {
         );
     }
 
+    fn own_sarif_result(file: &str, line: i64, col: i64, msg: &str) -> sarif::Result {
+        let mut result = make_sarif_result(file, line, col, msg);
+        result.rule_id = Some(RULE_UNSAFE_CODE.to_string());
+        result
+    }
+
     fn logical_location(kind: &str, name: &str) -> sarif::LogicalLocation {
         sarif::LogicalLocation::builder()
             .fully_qualified_name(name.to_string())
@@ -794,7 +840,7 @@ mod tests {
             UNIT_LOGICAL_KIND,
             "com.example.TheirModule",
         )]);
-        let mut ours = make_sarif_result("ourpkg/src/b.rs", 20, 1, "unsafe");
+        let mut ours = own_sarif_result("ourpkg/src/b.rs", 20, 1, "unsafe");
         ours.locations.as_mut().unwrap()[0].logical_locations =
             Some(vec![logical_location(UNIT_LOGICAL_KIND, "libc")]);
         let mut own_run = make_run("unsafe-budget", vec![ours]);
@@ -810,7 +856,7 @@ mod tests {
 
     #[test]
     fn test_own_run_still_requires_the_module_kind() {
-        let mut result = make_sarif_result("crate_a/src/lib.rs", 10, 1, "unsafe");
+        let mut result = own_sarif_result("crate_a/src/lib.rs", 10, 1, "unsafe");
         result.locations.as_mut().unwrap()[0].logical_locations =
             Some(vec![logical_location("function", "crate_a::foo::do_thing")]);
         let mut run = make_run("unsafe-budget", vec![result]);
@@ -861,5 +907,258 @@ mod tests {
         assert_eq!(result.language, "unknown");
         // both runs' occurrences are still counted despite the language conflict.
         assert_eq!(result.totals.overall_unsafe, 2);
+    }
+
+    fn round_trip_opts() -> ScanOpts {
+        ScanOpts {
+            include_deps: true,
+            ..Default::default()
+        }
+    }
+
+    fn round_trip_fixture() -> ScanResult {
+        let units = vec![
+            Unit {
+                name: "app".into(),
+                kind: UnitKind::Workspace,
+                unsafe_count: 3,
+            },
+            Unit {
+                name: "helper".into(),
+                kind: UnitKind::Workspace,
+                unsafe_count: 0,
+            },
+            Unit {
+                name: "libc".into(),
+                kind: UnitKind::Dep,
+                unsafe_count: 2,
+            },
+            Unit {
+                name: "shared".into(),
+                kind: UnitKind::Dep,
+                unsafe_count: 1,
+            },
+        ];
+        let details = vec![
+            Occurrence {
+                unit: "app".into(),
+                file: PathBuf::from("app/src/ffi.rs"),
+                line: 7,
+                col: 1,
+                message: Some("extern call".into()),
+            },
+            Occurrence {
+                unit: "app".into(),
+                file: PathBuf::from("app/src/lib.rs"),
+                line: 10,
+                col: 5,
+                message: Some("unsafe block".into()),
+            },
+            Occurrence {
+                unit: "app".into(),
+                file: PathBuf::from("app/src/lib.rs"),
+                line: 42,
+                col: 9,
+                message: None,
+            },
+            Occurrence {
+                unit: "libc".into(),
+                file: PathBuf::from(
+                    "/home/u/.cargo/registry/src/index.crates.io-abc/libc-0.2.0/src/lib.rs",
+                ),
+                line: 3,
+                col: 1,
+                message: Some("raw pointer deref".into()),
+            },
+            Occurrence {
+                unit: "libc".into(),
+                file: PathBuf::from(
+                    "/home/u/.cargo/registry/src/index.crates.io-abc/libc-0.2.0/src/unix.rs",
+                ),
+                line: 88,
+                col: 2,
+                message: Some("extern block".into()),
+            },
+            Occurrence {
+                unit: "shared".into(),
+                file: PathBuf::from("../shared/src/lib.rs"),
+                line: 12,
+                col: 3,
+                message: Some("union access".into()),
+            },
+        ];
+        let mut scan = ScanResult::from_parts(
+            "rustc_unsafe_lint",
+            "rust",
+            &round_trip_opts(),
+            units,
+            details,
+        );
+        scan.parse_warnings = vec![
+            crate::model::ParseWarning {
+                message: "malformed output line 3: 'garbage'".into(),
+            },
+            crate::model::ParseWarning {
+                message: "could not determine package for /tmp/x.go".into(),
+            },
+        ];
+        scan
+    }
+
+    fn reread(sarif: &Sarif, opts: &ScanOpts) -> ScanResult {
+        let json = serde_json::to_string(sarif).unwrap();
+        let reparsed: Sarif = serde_json::from_str(&json).unwrap();
+        convert_sarif(&reparsed, opts).unwrap()
+    }
+
+    /// the round-trip invariant: everything the format can carry survives.
+    ///
+    /// `tool_version`, `analyzer_id` and `scope` deliberately do not — they
+    /// describe the invocation doing the reading. an occurrence with no message
+    /// comes back carrying the writer's placeholder text, and parse warnings
+    /// come back as a set, since results are sorted for deterministic output.
+    #[test]
+    fn test_own_sarif_round_trip_preserves_the_scan() {
+        let scan = round_trip_fixture();
+        let opts = round_trip_opts();
+        let back = reread(&crate::sarif::scan_to_sarif(&scan), &opts);
+
+        let mut expected = scan.clone();
+        for occ in &mut expected.details {
+            occ.message
+                .get_or_insert_with(|| "unsafe code usage".into());
+        }
+        expected
+            .parse_warnings
+            .sort_by(|a, b| a.message.cmp(&b.message));
+        let mut got = back.clone();
+        got.parse_warnings.sort_by(|a, b| a.message.cmp(&b.message));
+
+        assert_eq!(got.language, expected.language, "language");
+        assert_eq!(got.units, expected.units, "units");
+        assert_eq!(got.totals, expected.totals, "totals");
+        assert_eq!(got.details, expected.details, "details");
+        assert_eq!(
+            got.parse_warnings, expected.parse_warnings,
+            "parse warnings"
+        );
+    }
+
+    #[test]
+    fn test_own_check_sarif_round_trip_ignores_budget_results() {
+        use crate::model::{CheckResult, Violation, Warning};
+        let scan = round_trip_fixture();
+        let check = CheckResult {
+            violations: vec![Violation {
+                unit: "app".into(),
+                kind: UnitKind::Workspace,
+                baseline: 1,
+                actual: 3,
+                delta: 2,
+            }],
+            warnings: vec![Warning {
+                unit: "libc".into(),
+                kind: UnitKind::Dep,
+                budget: 2,
+                actual: 2,
+            }],
+            passed: false,
+            scan: scan.clone(),
+        };
+        let opts = round_trip_opts();
+        let back = reread(&crate::sarif::check_to_sarif(&check), &opts);
+
+        assert_eq!(back.totals, scan.totals, "totals");
+        assert_eq!(back.units, scan.units, "units");
+        assert_eq!(back.details.len(), scan.details.len(), "details");
+        assert_eq!(
+            back.parse_warnings.len(),
+            scan.parse_warnings.len(),
+            "parse warnings"
+        );
+    }
+
+    #[test]
+    fn test_round_trip_keeps_a_unit_whose_count_has_no_occurrences() {
+        let opts = round_trip_opts();
+        let units = vec![Unit {
+            name: "geiger_pkg".into(),
+            kind: UnitKind::Workspace,
+            unsafe_count: 7,
+        }];
+        let scan = ScanResult::from_parts("cargo_geiger", "rust", &opts, units, vec![]);
+        let back = reread(&crate::sarif::scan_to_sarif(&scan), &opts);
+
+        assert_eq!(back.units, scan.units);
+        assert_eq!(back.totals.workspace_unsafe, 7);
+
+        let baseline = crate::config::Baseline {
+            tool_version: "0.1.0".into(),
+            analyzer_id: "sarif".into(),
+            scope: back.scope.clone(),
+            totals: crate::model::Totals::default(),
+            units: vec![crate::config::BaselineUnit {
+                name: "geiger_pkg".into(),
+                kind: UnitKind::Workspace,
+                unsafe_count: 1,
+            }],
+        };
+        let checked =
+            crate::budget::check(&back, Some(&baseline), &crate::config::Config::default())
+                .unwrap();
+
+        assert!(!checked.passed);
+        assert_eq!(checked.violations.len(), 1);
+        assert_eq!(checked.violations[0].unit, "geiger_pkg");
+        assert_eq!(checked.violations[0].actual, 7);
+    }
+
+    #[test]
+    fn test_round_trip_honours_workspace_only() {
+        let scan = round_trip_fixture();
+        let opts = ScanOpts {
+            workspace_only: true,
+            include_deps: true,
+            ..Default::default()
+        };
+        let back = reread(&crate::sarif::scan_to_sarif(&scan), &opts);
+
+        let names: Vec<_> = back.units.iter().map(|u| u.name.as_str()).collect();
+        assert_eq!(names, vec!["app", "helper"]);
+        assert_eq!(back.totals.deps_unsafe, 0);
+        assert!(back.details.iter().all(|occ| occ.unit == "app"));
+    }
+
+    #[test]
+    fn test_own_run_without_recorded_units_falls_back_to_paths() {
+        let mut run = make_run(
+            "unsafe-budget",
+            vec![own_sarif_result(
+                "/home/u/.cargo/registry/src/index.crates.io-abc/libc-0.2.0/src/lib.rs",
+                7,
+                1,
+                "unsafe",
+            )],
+        );
+        run.properties = Some(property_bag("rust"));
+
+        let opts = round_trip_opts();
+        let back = convert_sarif(&make_multi_run_sarif(vec![run]), &opts).unwrap();
+
+        assert_eq!(back.units.len(), 1);
+        assert_eq!(back.units[0].kind, UnitKind::Dep);
+        assert_eq!(back.units[0].unsafe_count, 1);
+    }
+
+    #[test]
+    fn test_third_party_rule_ids_are_not_filtered() {
+        let mut theirs = make_sarif_result("crate_a/src/lib.rs", 10, 1, "their finding");
+        theirs.rule_id = Some("budget_violation".into());
+
+        let opts = ScanOpts::default();
+        let back = convert_sarif(&make_sarif(vec![theirs]), &opts).unwrap();
+
+        assert_eq!(back.totals.overall_unsafe, 1);
+        assert!(back.parse_warnings.is_empty());
     }
 }

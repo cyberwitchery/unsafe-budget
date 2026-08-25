@@ -123,11 +123,22 @@ unsafe-budget scan --analyzer sarif --manifest-path results.sarif --format sarif
 ```
 
 **unit grouping**: SARIF written by unsafe-budget records each result's unit
-in `logicalLocations`, and that name is used as-is, so a round-trip keeps the
-crate names the original scan found. for any other SARIF the unit is derived
-from the artifact URI: the directory before a `src` component names the crate
+in `logicalLocations` and the full unit list — names, workspace/dependency
+kinds and counts — under `run.properties`, so a round-trip reproduces the
+original scan's units exactly, including units with no occurrences. it also
+reads back the `parse_warning` results, and counts only `unsafe_code` results,
+so a `check` report's `budget_violation`/`budget_warning` results are not
+mistaken for unsafe code. for any other SARIF the unit is derived from the
+artifact URI: the directory before a `src` component names the crate
 (`my_crate/src/lib.rs` → `my_crate`), falling back to the first directory
-component (`crate_a/lib.rs` → `crate_a`) and to `unknown` for a bare filename.
+component (`crate_a/lib.rs` → `crate_a`) and to `unknown` for a bare filename,
+its kind from whether the path sits in a dependency cache, and its count from
+the number of results.
+
+what a round-trip does not carry: `--workspace-only`, `--no-deps` and the
+other scope flags of the re-read apply to the recorded units, and the
+recovered result's `analyzer_id` is `sarif` rather than the analyzer that
+produced the file.
 
 **language inference**: SARIF written by unsafe-budget records the language in
 `run.properties`, and that value is used directly. otherwise the language is
