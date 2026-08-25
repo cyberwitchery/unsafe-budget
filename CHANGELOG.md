@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- fix: re-reading unsafe-budget's own SARIF with `--analyzer sarif` now reproduces the scan it was written from. previously the round-trip re-derived each unit's workspace/dependency kind from file paths (shifting `workspace_unsafe`/`deps_unsafe`, the totals `check` gates on), dropped units that had no occurrences (so a `cargo geiger` scan, which reports counts without occurrences, re-read as zero unsafe and passed any budget), dropped every parse warning (so a scan that could not parse its input re-read as a clean scan), and counted a `check` report's budget violations and warnings as unsafe code. SARIF from other tools is read exactly as before.
 - fix: when a timeout is configured, a failed read of an analyzer's or plugin's output is now reported as an error instead of being parsed as if it were that process's complete output. previously the bytes read so far — or nothing at all, if the reader died — were counted as-is, undercounting unsafe occurrences and passing a `check` that should have failed.
 
 ## [0.5.0] - 2026-08-08
