@@ -1,6 +1,6 @@
 [package]
 name = "unsafe-budget"
-version = "0.5.0"
+version = "0.5.1"
 edition = "2021"
 description = "keeps the unsafety demons out. an unsafe code budget gate for CI pipelines."
 license = "MIT"
