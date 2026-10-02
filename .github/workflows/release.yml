@@ -36,10 +36,11 @@ jobs:
             bin_ext: ".exe"
             publish_crates: false
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # v1
         with:
+          toolchain: stable
           targets: ${{ matrix.target }}
 
       - name: build release binaries
@@ -64,13 +65,13 @@ jobs:
           tar -czf "${dist_root}/${archive_base}.tar.gz" -C "${dist_root}" "${archive_base}"
 
       - name: upload packaged binaries
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           files: ${{ runner.temp }}/dist/*.tar.gz
 
       - name: install sbom tool
         if: matrix.publish_crates
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
         with:
           tool: cargo-cyclonedx
 
@@ -97,7 +98,7 @@ jobs:
 
       - name: upload sbom
         if: matrix.publish_crates
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: sbom-${{ github.ref_name }}
           path: "/tmp/unsafe-budget-sbom/sbom-${{ github.ref_name }}.cdx.json"
@@ -105,7 +106,7 @@ jobs:
 
       - name: attach sbom to release
         if: matrix.publish_crates
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           files: /tmp/unsafe-budget-sbom/sbom-${{ github.ref_name }}.cdx.json
 
