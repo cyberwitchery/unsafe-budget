@@ -8,7 +8,7 @@ inputs:
     required: false
     default: check
   args:
-    description: Additional CLI arguments passed to unsafe-budget
+    description: Additional CLI arguments passed to unsafe-budget, split on whitespace
     required: false
     default: ""
   version:
@@ -23,6 +23,17 @@ inputs:
     description: Working directory where unsafe-budget is executed
     required: false
     default: .
+  verify:
+    description: >
+      Verify the downloaded archive's build provenance attestation with
+      `gh attestation verify` before running it. Releases before the first
+      attested one have no attestation and need "false".
+    required: false
+    default: "true"
+  token:
+    description: GitHub token used to resolve "latest" and to verify attestations
+    required: false
+    default: ${{ github.token }}
 
 runs:
   using: composite
@@ -79,6 +90,7 @@ runs:
       env:
         INPUT_VERSION: ${{ inputs.version }}
         INPUT_REPOSITORY: ${{ inputs.repository }}
+        GH_TOKEN: ${{ inputs.token }}
       run: |
         set -euo pipefail
         if [ "${INPUT_VERSION}" != "latest" ]; then
@@ -86,15 +98,9 @@ runs:
           exit 0
         fi
 
-        api_url="https://api.github.com/repos/${INPUT_REPOSITORY}/releases/latest"
-        tag="$(
-          curl -fsSL "${api_url}" \
-            | sed -n 's/.*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p' \
-            | head -n 1
-        )"
-
+        tag="$(gh api "repos/${INPUT_REPOSITORY}/releases/latest" --jq .tag_name)"
         if [ -z "${tag}" ]; then
-          echo "failed to resolve latest release tag from ${api_url}" >&2
+          echo "failed to resolve latest release tag of ${INPUT_REPOSITORY}" >&2
           exit 1
         fi
 
@@ -104,6 +110,8 @@ runs:
       shell: bash
       env:
         INPUT_REPOSITORY: ${{ inputs.repository }}
+        INPUT_VERIFY: ${{ inputs.verify }}
+        GH_TOKEN: ${{ inputs.token }}
         TAG: ${{ steps.version.outputs.tag }}
         TARGET: ${{ steps.detect.outputs.target }}
         BIN_NAME: ${{ steps.detect.outputs.bin_name }}
@@ -118,6 +126,20 @@ runs:
         mkdir -p "${download_dir}" "${extract_dir}" "${install_dir}"
 
         curl -fsSL -o "${download_dir}/${archive}" "${url}"
+
+        case "${INPUT_VERIFY}" in
+          true)
+            gh attestation verify "${download_dir}/${archive}" \
+              --repo "${INPUT_REPOSITORY}" \
+              --signer-workflow "${INPUT_REPOSITORY}/.github/workflows/release.yml"
+            ;;
+          false) ;;
+          *)
+            echo "verify must be true or false, got: ${INPUT_VERIFY}" >&2
+            exit 1
+            ;;
+        esac
+
         tar -xzf "${download_dir}/${archive}" -C "${extract_dir}"
 
         bin_path="$(find "${extract_dir}" -type f -name "${BIN_NAME}" | head -n 1)"
@@ -133,6 +155,10 @@ runs:
     - name: Run unsafe-budget
       shell: bash
       working-directory: ${{ inputs.working-directory }}
+      env:
+        INPUT_MODE: ${{ inputs.mode }}
+        INPUT_ARGS: ${{ inputs.args }}
       run: |
         set -euo pipefail
-        unsafe-budget "${{ inputs.mode }}" ${{ inputs.args }}
+        read -r -a args <<< "${INPUT_ARGS}"
+        unsafe-budget "${INPUT_MODE}" ${args[@]+"${args[@]}"}

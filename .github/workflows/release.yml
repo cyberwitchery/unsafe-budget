@@ -8,13 +8,27 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
-permissions:
-  contents: write
+permissions: {}
 
 jobs:
+  sbom:
+    name: sbom
+    uses: cyberwitchery/.github/.github/workflows/sbom.yml@d8cdf87f9048c369e1ab49281da13e7e72a782fb # main
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    with:
+      mode: release
+
   release:
     name: release ${{ matrix.target }}
+    needs: sbom
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     strategy:
       fail-fast: false
       matrix:
@@ -64,51 +78,28 @@ jobs:
           cp README.md LICENSE "${stage_dir}/"
           tar -czf "${dist_root}/${archive_base}.tar.gz" -C "${dist_root}" "${archive_base}"
 
+      - name: attest binaries
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: ${{ runner.temp }}/dist/*.tar.gz
+
       - name: upload packaged binaries
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           files: ${{ runner.temp }}/dist/*.tar.gz
 
-      - name: install sbom tool
+      - name: download sbom
         if: matrix.publish_crates
-        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          tool: cargo-cyclonedx
-
-      - name: generate sbom
-        if: matrix.publish_crates
-        env:
-          REF_NAME: ${{ github.ref_name }}
-        run: |
-          (cd /tmp && cargo cyclonedx --manifest-path "$GITHUB_WORKSPACE/Cargo.toml" \
-            --format json \
-            --override-filename "sbom-${REF_NAME}.cdx")
-
-      - name: collect sbom files
-        if: matrix.publish_crates
-        env:
-          REF_NAME: ${{ github.ref_name }}
-        run: |
-          set -euo pipefail
-          mkdir -p /tmp/unsafe-budget-sbom
-          find /tmp -maxdepth 1 -type f -name "sbom-${REF_NAME}.cdx.json" \
-            -exec mv {} /tmp/unsafe-budget-sbom/ \;
-          find "$GITHUB_WORKSPACE" -type f -name "sbom-${REF_NAME}.cdx.json" \
-            -exec mv {} /tmp/unsafe-budget-sbom/ \;
-
-      - name: upload sbom
-        if: matrix.publish_crates
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: sbom-${{ github.ref_name }}
-          path: "/tmp/unsafe-budget-sbom/sbom-${{ github.ref_name }}.cdx.json"
-          if-no-files-found: error
+          name: release-evidence
+          path: ${{ runner.temp }}/evidence
 
       - name: attach sbom to release
         if: matrix.publish_crates
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
-          files: /tmp/unsafe-budget-sbom/sbom-${{ github.ref_name }}.cdx.json
+          files: ${{ runner.temp }}/evidence/release/*.cdx.json
 
       - name: publish to crates.io
         if: matrix.publish_crates

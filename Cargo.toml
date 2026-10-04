@@ -8,6 +8,7 @@ repository = "https://github.com/cyberwitchery/unsafe-budget"
 keywords = ["unsafe", "security", "lint", "ci", "audit"]
 categories = ["development-tools", "command-line-utilities"]
 default-run = "unsafe-budget"
+exclude = ["sbom/"]
 
 [[bin]]
 name = "cargo-unsafe-budget"

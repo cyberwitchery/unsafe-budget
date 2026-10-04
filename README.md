@@ -23,9 +23,10 @@ unsafe-budget check
 github actions can also run via the pre-built binary action:
 
 ```yaml
-- uses: cyberwitchery/unsafe-budget@v1
+- uses: cyberwitchery/unsafe-budget@d10776ba7fe8043f31b19ec40bcff26b4da6b94e # v0.5.1
   with:
     mode: check
+    version: v0.5.1
 ```
 
 ## features

@@ -68,9 +68,17 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # Dogfood our own action: downloads the release binary, no compile.
+      # v0.5.1 predates attested releases; drop verify: false once one ships.
       - uses: ./
         with:
           mode: check
+          version: v0.5.1
+          verify: false
+
+  sbom:
+    uses: cyberwitchery/.github/.github/workflows/sbom.yml@d8cdf87f9048c369e1ab49281da13e7e72a782fb # main
+    with:
+      mode: report
 
   deny:
     runs-on: ubuntu-latest
@@ -99,7 +107,7 @@ jobs:
           fail_ci_if_error: false
 
   success:
-    needs: [fmt, clippy, test, doc, deny, coverage, unsafe-budget]
+    needs: [fmt, clippy, test, doc, deny, coverage, unsafe-budget, sbom]
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -111,7 +119,8 @@ jobs:
              [[ "${{ needs.doc.result }}" != "success" ]] ||
              [[ "${{ needs.deny.result }}" != "success" ]] ||
              [[ "${{ needs.coverage.result }}" != "success" ]] ||
-             [[ "${{ needs.unsafe-budget.result }}" != "success" ]]; then
+             [[ "${{ needs.unsafe-budget.result }}" != "success" ]] ||
+             [[ "${{ needs.sbom.result }}" != "success" ]]; then
             echo "one or more jobs failed"
             exit 1
           fi

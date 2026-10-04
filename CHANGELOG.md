@@ -1,5 +1,12 @@
 # changelog
 
+## Unreleased
+
+- the github action verifies the downloaded release archive's build provenance attestation with `gh attestation verify` before running it. releases up to and including v0.5.1 are not attested, so pinning one of them needs `verify: false`.
+- fix: the github action no longer expands `mode` and `args` inside its shell script, so an input can no longer inject shell commands. `args` is now split on whitespace; shell quoting inside it is no longer interpreted.
+- the github action resolves `version: latest` through an authenticated api call (new `token` input), avoiding anonymous rate limits.
+- release binaries and the published crate carry github build provenance and sbom attestations.
+
 ## [0.5.1] - 2026-09-06
 
 - fix: re-reading unsafe-budget's own SARIF with `--analyzer sarif` now reproduces the scan it was written from. previously the round-trip re-derived each unit's workspace/dependency kind from file paths (shifting `workspace_unsafe`/`deps_unsafe`, the totals `check` gates on), dropped units that had no occurrences (so a `cargo geiger` scan, which reports counts without occurrences, re-read as zero unsafe and passed any budget), dropped every parse warning (so a scan that could not parse its input re-read as a clean scan), and counted a `check` report's budget violations and warnings as unsafe code. SARIF from other tools is read exactly as before.

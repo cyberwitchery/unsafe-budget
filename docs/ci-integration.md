@@ -15,28 +15,37 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: cyberwitchery/unsafe-budget@v1
+      - uses: cyberwitchery/unsafe-budget@d10776ba7fe8043f31b19ec40bcff26b4da6b94e # v0.5.1
         with:
           mode: check
+          version: v0.5.1
 ```
 
 the action downloads a pre-built release binary for the current runner and
-runs `unsafe-budget` directly (no `cargo install` required).
+runs `unsafe-budget` directly (no `cargo install` required). pin the action to
+a commit and `version` to the matching tag, so the action code and the binary
+it runs stay fixed.
 
 inputs:
 
 - `mode`: `scan`, `check`, `update`, or `plugins` (default: `check`)
-- `args`: additional cli args (default: empty)
+- `args`: additional cli args, split on whitespace (default: empty)
 - `version`: release tag or `latest` (default: `latest`)
 - `repository`: release source repo (default: `cyberwitchery/unsafe-budget`)
 - `working-directory`: execution directory (default: `.`)
+- `verify`: check the downloaded archive's build provenance with
+  `gh attestation verify` before running it (default: `true`). releases up to
+  and including v0.5.1 are not attested and need `verify: false`.
+- `token`: token for resolving `latest` and verifying attestations
+  (default: `github.token`)
 
 example with extra flags:
 
 ```yaml
-- uses: cyberwitchery/unsafe-budget@v1
+- uses: cyberwitchery/unsafe-budget@d10776ba7fe8043f31b19ec40bcff26b4da6b94e # v0.5.1
   with:
     mode: check
+    version: v0.5.1
     args: --analyzer cargo_geiger --workspace-only
 ```
 
