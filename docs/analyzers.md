@@ -8,6 +8,8 @@ default analyzer for rust projects.
 
 **backend**: `cargo check --message-format=json -vv` with `--force-warn=unsafe_code` appended to `RUSTFLAGS` (or to `CARGO_ENCODED_RUSTFLAGS` when that is set)
 
+with `--targets`, cargo passes these flags to the named targets' units only, so build scripts, proc-macros and build dependencies are checked without the lint and not counted.
+
 **features**:
 - counts `unsafe` usage via compiler diagnostics
 - counts unsafe code in registry and git dependencies, and code under `#[allow(unsafe_code)]` (exempt a reviewed occurrence with `[[ignore]]` instead)

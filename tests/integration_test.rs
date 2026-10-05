@@ -95,8 +95,8 @@ fn test_workspace_only_scans_sibling_members() {
     );
 }
 
-fn git(dir: &Path, args: &[&str]) {
-    let status = Command::new("git")
+fn git(dir: &Path, args: &[&str]) -> String {
+    let output = Command::new("git")
         .args([
             "-c",
             "user.name=fixture",
@@ -107,23 +107,34 @@ fn git(dir: &Path, args: &[&str]) {
         ])
         .args(args)
         .current_dir(dir)
-        .status()
+        .output()
         .expect("failed to run git");
-    assert!(status.success(), "git {args:?} failed");
+    assert!(output.status.success(), "git {args:?} failed: {output:?}");
+    String::from_utf8(output.stdout).unwrap().trim().to_string()
 }
 
-/// `app` consumes `gitdep` from a `file://` git source, which cargo caps like a
-/// registry dependency. each has two unsafe blocks; one of app's is allowed.
-fn write_capped_dependency_fixture(root: &Path) -> PathBuf {
-    let dep = root.join("gitdep");
-    fs::create_dir_all(dep.join("src")).unwrap();
+fn git_crate(root: &Path, name: &str, lib: &str) -> PathBuf {
+    let dir = root.join(name);
+    fs::create_dir_all(dir.join("src")).unwrap();
     fs::write(
-        dep.join("Cargo.toml"),
-        "[package]\nname = \"gitdep\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        dir.join("Cargo.toml"),
+        format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n"),
     )
     .unwrap();
-    fs::write(
-        dep.join("src/lib.rs"),
+    fs::write(dir.join("src/lib.rs"), lib).unwrap();
+    git(&dir, &["init", "-q"]);
+    git(&dir, &["add", "."]);
+    git(&dir, &["commit", "-q", "-m", "initial"]);
+    dir
+}
+
+/// `app` consumes `gitdep` and the `rev`-pinned `revdep` from `file://` git
+/// sources, which cargo caps like registry dependencies. `app` and `gitdep` have
+/// two unsafe blocks each, one of app's allowed; `revdep` has one.
+fn write_capped_dependency_fixture(root: &Path) -> PathBuf {
+    let dep = git_crate(
+        root,
+        "gitdep",
         r#"pub fn one() -> u8 {
     let x = 1u8;
     unsafe { *(&x as *const u8) }
@@ -134,11 +145,17 @@ pub fn two() -> u8 {
     unsafe { *(&x as *const u8) }
 }
 "#,
-    )
-    .unwrap();
-    git(&dep, &["init", "-q"]);
-    git(&dep, &["add", "."]);
-    git(&dep, &["commit", "-q", "-m", "initial"]);
+    );
+    let revdep = git_crate(
+        root,
+        "revdep",
+        r#"pub fn three() -> u8 {
+    let x = 3u8;
+    unsafe { *(&x as *const u8) }
+}
+"#,
+    );
+    let rev = git(&revdep, &["rev-parse", "HEAD"]);
 
     let app = root.join("app");
     fs::create_dir_all(app.join("src")).unwrap();
@@ -146,8 +163,10 @@ pub fn two() -> u8 {
         app.join("Cargo.toml"),
         format!(
             "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n\
-             [dependencies]\ngitdep = {{ git = \"file://{}\" }}\n",
-            dep.display()
+             [dependencies]\ngitdep = {{ git = \"file://{}\" }}\n\
+             revdep = {{ git = \"file://{}\", rev = \"{rev}\" }}\n",
+            dep.display(),
+            revdep.display()
         ),
     )
     .unwrap();
@@ -169,20 +188,37 @@ pub fn allowed() -> u8 {
     app.join("Cargo.toml")
 }
 
-fn scan_fixture(root: &Path, manifest: &Path, extra_args: &[&str]) -> serde_json::Value {
-    let output = Command::new(env!("CARGO_BIN_EXE_unsafe-budget"))
-        .arg("scan")
+fn unsafe_budget(root: &Path, manifest: &Path, args: &[&str]) -> Command {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_unsafe-budget"));
+    cmd.args(args)
         .arg("--manifest-path")
         .arg(manifest)
-        .args(extra_args)
-        .arg("--format")
-        .arg("json")
         .current_dir(root)
-        .env("CARGO_HOME", root.join("cargo-home"))
-        .output()
-        .expect("failed to run unsafe-budget");
-    assert!(output.status.success(), "scan failed: {:?}", output);
-    serde_json::from_slice(&output.stdout).expect("invalid json output")
+        .env("CARGO_HOME", root.join("cargo-home"));
+    cmd
+}
+
+fn run_ok(cmd: &mut Command) -> Vec<u8> {
+    let output = cmd.output().expect("failed to run unsafe-budget");
+    assert!(output.status.success(), "{cmd:?} failed: {output:?}");
+    output.stdout
+}
+
+fn scan_fixture(root: &Path, manifest: &Path, extra_args: &[&str]) -> serde_json::Value {
+    let stdout =
+        run_ok(unsafe_budget(root, manifest, &["scan", "--format", "json"]).args(extra_args));
+    serde_json::from_slice(&stdout).expect("invalid json output")
+}
+
+fn capped_fixture_units() -> Vec<(String, String, u64)> {
+    [
+        ("app", "workspace", 2),
+        ("gitdep", "dep", 2),
+        ("revdep", "dep", 1),
+    ]
+    .into_iter()
+    .map(|(name, kind, count)| (name.to_string(), kind.to_string(), count))
+    .collect()
 }
 
 fn unit_counts(result: &serde_json::Value) -> Vec<(String, String, u64)> {
@@ -206,16 +242,36 @@ fn test_scan_counts_capped_dependency_and_allowed_unsafe() {
     let tmp = tempfile::tempdir().unwrap();
     let manifest = write_capped_dependency_fixture(tmp.path());
 
-    let expected = vec![
-        ("app".to_string(), "workspace".to_string(), 2),
-        ("gitdep".to_string(), "dep".to_string(), 2),
-    ];
     for run in ["cold", "warm"] {
         let result = scan_fixture(tmp.path(), &manifest, &[]);
-        assert_eq!(unit_counts(&result), expected, "{run} scan");
+        assert_eq!(unit_counts(&result), capped_fixture_units(), "{run} scan");
         assert_eq!(result["totals"]["workspace_unsafe"], 2, "{run} scan");
-        assert_eq!(result["totals"]["deps_unsafe"], 2, "{run} scan");
+        assert_eq!(result["totals"]["deps_unsafe"], 3, "{run} scan");
     }
+}
+
+#[test]
+#[ignore = "runs cargo and git"]
+fn test_rev_bump_passes_check_with_empty_encoded_rustflags() {
+    let tmp = tempfile::tempdir().unwrap();
+    let manifest = write_capped_dependency_fixture(tmp.path());
+    let run = |args: &[&str]| {
+        run_ok(unsafe_budget(tmp.path(), &manifest, args).env("CARGO_ENCODED_RUSTFLAGS", ""))
+    };
+
+    let result: serde_json::Value =
+        serde_json::from_slice(&run(&["scan", "--format", "json"])).unwrap();
+    assert_eq!(unit_counts(&result), capped_fixture_units());
+
+    run(&["update"]);
+    let revdep = tmp.path().join("revdep");
+    let old_rev = git(&revdep, &["rev-parse", "HEAD"]);
+    git(&revdep, &["commit", "-q", "--allow-empty", "-m", "bump"]);
+    let new_rev = git(&revdep, &["rev-parse", "HEAD"]);
+    let app_toml = fs::read_to_string(&manifest).unwrap();
+    assert!(app_toml.contains(&old_rev), "{app_toml}");
+    fs::write(&manifest, app_toml.replace(&old_rev, &new_rev)).unwrap();
+    run(&["check"]);
 }
 
 #[test]
