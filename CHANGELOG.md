@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- fix: the default `rustc_unsafe_lint` analyzer now counts unsafe code in registry and git dependencies, and code under `#[allow(unsafe_code)]` or `#![allow(unsafe_code)]`. previously cargo's `--cap-lints allow` silenced every such dependency, so `deps_unsafe` was always 0 even with `include_deps = true`, and an allow attribute took code out of the budget without an `[[ignore]]` entry. baselines written by earlier versions under-count: after upgrading, `check` reports the newly visible dependency (and allowed workspace) unsafe as violations until `unsafe-budget update` is re-run. dependency counts depend on the scanning platform, because some crates compile different code per architecture: run `update` on the platform CI runs `check` on.
+- fix: the `rustc_unsafe_lint` analyzer adds its lint flag to `CARGO_ENCODED_RUSTFLAGS` when that is set. previously cargo ignored the analyzer's `RUSTFLAGS` in that case, so every unit counted 0.
 - the github action verifies the downloaded release archive's build provenance attestation with `gh attestation verify` before running it. releases up to and including v0.5.1 are not attested, so pinning one of them needs `verify: false`.
 - fix: the github action no longer expands `mode` and `args` inside its shell script, so an input can no longer inject shell commands. `args` is now split on whitespace; shell quoting inside it is no longer interpreted.
 - the github action resolves `version: latest` through an authenticated api call (new `token` input), avoiding anonymous rate limits.
