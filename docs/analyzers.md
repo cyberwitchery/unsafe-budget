@@ -6,10 +6,11 @@
 
 default analyzer for rust projects.
 
-**backend**: `cargo check --message-format=json` with `RUSTFLAGS=-Wunsafe_code`
+**backend**: `cargo check --message-format=json -vv` with `--force-warn=unsafe_code` appended to `RUSTFLAGS` (or to `CARGO_ENCODED_RUSTFLAGS` when that is set)
 
 **features**:
 - counts `unsafe` usage via compiler diagnostics
+- counts unsafe code in registry and git dependencies, and code under `#[allow(unsafe_code)]` (exempt a reviewed occurrence with `[[ignore]]` instead)
 - distinguishes workspace vs dependency crates
 - provides line-level occurrence details
 - no additional tools required

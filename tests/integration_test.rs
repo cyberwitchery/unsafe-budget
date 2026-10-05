@@ -1,4 +1,5 @@
-use std::path::PathBuf;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn project_root() -> PathBuf {
@@ -92,6 +93,153 @@ fn test_workspace_only_scans_sibling_members() {
         "sibling member's unsafe code must be counted in --workspace-only mode, found {}",
         count
     );
+}
+
+fn git(dir: &Path, args: &[&str]) {
+    let status = Command::new("git")
+        .args([
+            "-c",
+            "user.name=fixture",
+            "-c",
+            "user.email=fixture@example.com",
+            "-c",
+            "commit.gpgsign=false",
+        ])
+        .args(args)
+        .current_dir(dir)
+        .status()
+        .expect("failed to run git");
+    assert!(status.success(), "git {args:?} failed");
+}
+
+/// `app` consumes `gitdep` from a `file://` git source, which cargo caps like a
+/// registry dependency. each has two unsafe blocks; one of app's is allowed.
+fn write_capped_dependency_fixture(root: &Path) -> PathBuf {
+    let dep = root.join("gitdep");
+    fs::create_dir_all(dep.join("src")).unwrap();
+    fs::write(
+        dep.join("Cargo.toml"),
+        "[package]\nname = \"gitdep\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    fs::write(
+        dep.join("src/lib.rs"),
+        r#"pub fn one() -> u8 {
+    let x = 1u8;
+    unsafe { *(&x as *const u8) }
+}
+
+pub fn two() -> u8 {
+    let x = 2u8;
+    unsafe { *(&x as *const u8) }
+}
+"#,
+    )
+    .unwrap();
+    git(&dep, &["init", "-q"]);
+    git(&dep, &["add", "."]);
+    git(&dep, &["commit", "-q", "-m", "initial"]);
+
+    let app = root.join("app");
+    fs::create_dir_all(app.join("src")).unwrap();
+    fs::write(
+        app.join("Cargo.toml"),
+        format!(
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n\
+             [dependencies]\ngitdep = {{ git = \"file://{}\" }}\n",
+            dep.display()
+        ),
+    )
+    .unwrap();
+    fs::write(
+        app.join("src/lib.rs"),
+        r#"pub fn counted() -> u8 {
+    let x = gitdep::one();
+    unsafe { *(&x as *const u8) }
+}
+
+#[allow(unsafe_code)]
+pub fn allowed() -> u8 {
+    let x = gitdep::two();
+    unsafe { *(&x as *const u8) }
+}
+"#,
+    )
+    .unwrap();
+    app.join("Cargo.toml")
+}
+
+fn scan_fixture(root: &Path, manifest: &Path, extra_args: &[&str]) -> serde_json::Value {
+    let output = Command::new(env!("CARGO_BIN_EXE_unsafe-budget"))
+        .arg("scan")
+        .arg("--manifest-path")
+        .arg(manifest)
+        .args(extra_args)
+        .arg("--format")
+        .arg("json")
+        .current_dir(root)
+        .env("CARGO_HOME", root.join("cargo-home"))
+        .output()
+        .expect("failed to run unsafe-budget");
+    assert!(output.status.success(), "scan failed: {:?}", output);
+    serde_json::from_slice(&output.stdout).expect("invalid json output")
+}
+
+fn unit_counts(result: &serde_json::Value) -> Vec<(String, String, u64)> {
+    result["units"]
+        .as_array()
+        .expect("units should be array")
+        .iter()
+        .map(|u| {
+            (
+                u["name"].as_str().unwrap().to_string(),
+                u["kind"].as_str().unwrap().to_string(),
+                u["unsafe_count"].as_u64().unwrap(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+#[ignore = "runs cargo and git"]
+fn test_scan_counts_capped_dependency_and_allowed_unsafe() {
+    let tmp = tempfile::tempdir().unwrap();
+    let manifest = write_capped_dependency_fixture(tmp.path());
+
+    let expected = vec![
+        ("app".to_string(), "workspace".to_string(), 2),
+        ("gitdep".to_string(), "dep".to_string(), 2),
+    ];
+    for run in ["cold", "warm"] {
+        let result = scan_fixture(tmp.path(), &manifest, &[]);
+        assert_eq!(unit_counts(&result), expected, "{run} scan");
+        assert_eq!(result["totals"]["workspace_unsafe"], 2, "{run} scan");
+        assert_eq!(result["totals"]["deps_unsafe"], 2, "{run} scan");
+    }
+}
+
+#[test]
+#[ignore = "runs cargo and git"]
+fn test_workspace_only_and_no_deps_exclude_dependency_units() {
+    let tmp = tempfile::tempdir().unwrap();
+    let manifest = write_capped_dependency_fixture(tmp.path());
+
+    for flag in ["--workspace-only", "--no-deps"] {
+        let result = scan_fixture(tmp.path(), &manifest, &[flag]);
+        assert_eq!(
+            unit_counts(&result),
+            vec![("app".to_string(), "workspace".to_string(), 2)],
+            "{flag}"
+        );
+        assert_eq!(result["totals"]["deps_unsafe"], 0, "{flag}");
+        let details = result["details"]
+            .as_array()
+            .expect("details should be array");
+        assert!(
+            details.iter().all(|d| d["unit"] == "app"),
+            "{flag}: {details:?}"
+        );
+    }
 }
 
 #[test]

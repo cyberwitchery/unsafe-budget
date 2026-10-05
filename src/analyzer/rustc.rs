@@ -60,18 +60,20 @@ fn get_workspace_members(opts: &ScanOpts) -> Result<HashSet<String>> {
     Ok(members)
 }
 
+/// overrides both `#[allow(unsafe_code)]` in source and cargo's `--cap-lints allow`.
+const UNSAFE_CODE_LINT: &str = "--force-warn=unsafe_code";
+
 /// build the `cargo check` command used to collect unsafe_code diagnostics.
 fn build_cargo_check_command(opts: &ScanOpts) -> Command {
     let mut cmd = Command::new("cargo");
-    cmd.arg("check").arg("--message-format=json");
+    // `-vv` stops cargo capping dependency lints and makes it replay their cached diagnostics.
+    cmd.arg("check").arg("--message-format=json").arg("-vv");
 
-    let existing_flags = std::env::var("RUSTFLAGS").unwrap_or_default();
-    let new_flags = if existing_flags.is_empty() {
-        "-Wunsafe_code".into()
-    } else {
-        format!("{} -Wunsafe_code", existing_flags)
-    };
-    cmd.env("RUSTFLAGS", new_flags);
+    let (var, flags) = rustflags_with_unsafe_lint(
+        std::env::var("CARGO_ENCODED_RUSTFLAGS").ok(),
+        std::env::var("RUSTFLAGS").ok(),
+    );
+    cmd.env(var, flags);
 
     super::apply_cargo_flags(&mut cmd, opts);
 
@@ -83,6 +85,25 @@ fn build_cargo_check_command(opts: &ScanOpts) -> Command {
     cmd.arg("--workspace");
 
     cmd
+}
+
+/// append [`UNSAFE_CODE_LINT`] to the rustflags variable cargo will read,
+/// returning that variable's name and new value.
+fn rustflags_with_unsafe_lint(
+    encoded: Option<String>,
+    plain: Option<String>,
+) -> (&'static str, String) {
+    // cargo ignores RUSTFLAGS whenever CARGO_ENCODED_RUSTFLAGS is set, even to "".
+    let (var, existing, separator) = match encoded {
+        Some(flags) => ("CARGO_ENCODED_RUSTFLAGS", flags, '\x1f'),
+        None => ("RUSTFLAGS", plain.unwrap_or_default(), ' '),
+    };
+    let flags = if existing.is_empty() {
+        UNSAFE_CODE_LINT.to_string()
+    } else {
+        format!("{existing}{separator}{UNSAFE_CODE_LINT}")
+    };
+    (var, flags)
 }
 
 /// run cargo check and capture output.
@@ -618,5 +639,69 @@ mod tests {
                 "cargo check must pass --workspace (workspace_only={workspace_only}), got {args:?}"
             );
         }
+    }
+
+    #[test]
+    fn test_cargo_check_command_forces_unsafe_lint_and_lints_dependencies() {
+        let cmd = build_cargo_check_command(&ScanOpts::default());
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert!(args.contains(&"-vv".to_string()), "got {args:?}");
+
+        let rustflags: Vec<String> = cmd
+            .get_envs()
+            .filter(|(k, _)| *k == "RUSTFLAGS" || *k == "CARGO_ENCODED_RUSTFLAGS")
+            .filter_map(|(_, v)| v.map(|v| v.to_string_lossy().into_owned()))
+            .collect();
+        assert_eq!(rustflags.len(), 1, "got {rustflags:?}");
+        assert!(
+            rustflags[0].ends_with(UNSAFE_CODE_LINT),
+            "got {rustflags:?}"
+        );
+    }
+
+    #[test]
+    fn test_rustflags_with_unsafe_lint_without_existing_flags() {
+        let expected = ("RUSTFLAGS", "--force-warn=unsafe_code".to_string());
+        assert_eq!(rustflags_with_unsafe_lint(None, None), expected);
+        assert_eq!(
+            rustflags_with_unsafe_lint(None, Some(String::new())),
+            expected
+        );
+    }
+
+    #[test]
+    fn test_rustflags_with_unsafe_lint_preserves_rustflags() {
+        assert_eq!(
+            rustflags_with_unsafe_lint(None, Some("-C opt-level=1 --cfg foo".into())),
+            (
+                "RUSTFLAGS",
+                "-C opt-level=1 --cfg foo --force-warn=unsafe_code".to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn test_rustflags_with_unsafe_lint_appends_to_encoded_rustflags() {
+        assert_eq!(
+            rustflags_with_unsafe_lint(Some("--cfg\x1ffoo".into()), Some("-Dwarnings".into())),
+            (
+                "CARGO_ENCODED_RUSTFLAGS",
+                "--cfg\x1ffoo\x1f--force-warn=unsafe_code".to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn test_rustflags_with_unsafe_lint_fills_empty_encoded_rustflags() {
+        assert_eq!(
+            rustflags_with_unsafe_lint(Some(String::new()), Some("-Dwarnings".into())),
+            (
+                "CARGO_ENCODED_RUSTFLAGS",
+                "--force-warn=unsafe_code".to_string()
+            )
+        );
     }
 }

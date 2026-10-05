@@ -115,7 +115,7 @@ threshold = 0.8
 
 | id | language | backend |
 |----|----------|---------|
-| `rustc_unsafe_lint` | rust | `cargo check` with `RUSTFLAGS=-Wunsafe_code` |
+| `rustc_unsafe_lint` | rust | `cargo check -vv` with `RUSTFLAGS=--force-warn=unsafe_code` |
 | `cargo_geiger` | rust | `cargo-geiger` |
 | `go_geiger` | go | `go-geiger` |
 | `sarif` | any | reads `.sarif` files |
