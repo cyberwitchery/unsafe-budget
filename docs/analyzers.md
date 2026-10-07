@@ -132,11 +132,22 @@ original scan's units exactly, including units with no occurrences. it also
 reads back the `parse_warning` results, and counts only `unsafe_code` results,
 so a `check` report's `budget_violation`/`budget_warning` results are not
 mistaken for unsafe code. for any other SARIF the unit is derived from the
-artifact URI: the directory before a `src` component names the crate
+artifact's file path: a cargo registry file names its crate without the
+version, as the rust analyzers do
+(`…/registry/src/<index>/serde-1.0.200/src/lib.rs` → `serde`); otherwise the
+directory before the `src` component nearest the file names the crate
 (`my_crate/src/lib.rs` → `my_crate`), falling back to the first directory
-component (`crate_a/lib.rs` → `crate_a`) and to `unknown` for a bare filename,
-its kind from whether the path sits in a dependency cache, and its count from
-the number of results.
+component (`crate_a/lib.rs` → `crate_a`) and to `unknown` for a bare filename.
+its kind comes from whether the path sits in a dependency cache, and its count
+from the number of results.
+
+**paths and URIs**: SARIF output writes each path as an RFC 3986 URI
+reference: a percent-encoded relative reference for a relative path, a `file:`
+URI for an absolute one; a plain path such as `src/lib.rs` is unchanged. on
+input, relative references and local `file:` URIs are decoded back to the file
+paths `[[ignore]]` entries match. a path relative to a `uriBaseId` stays
+relative; the base is resolved through `run.originalUriBaseIds` only to tell
+dependency files from workspace files.
 
 what a round-trip does not carry: `--workspace-only`, `--no-deps` and the
 other scope flags of the re-read apply to the recorded units, and the
