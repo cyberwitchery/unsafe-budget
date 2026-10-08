@@ -250,15 +250,20 @@ fn strip_colon_guard(path: String) -> String {
     }
 }
 
-/// the path a `uriBaseId` stands for, following `run.originalUriBaseIds`.
+/// the path a `uriBaseId` stands for, following `run.originalUriBaseIds`, with
+/// an absolute base in the chain cut down to `/`.
 fn resolve_base(run: &sarif::Run, id: &str) -> Option<String> {
     let bases = run.original_uri_base_ids.as_ref()?;
     let mut resolved = String::new();
+    let mut anchored = false;
     let mut id = id;
     for _ in 0..bases.len() {
         let base = bases.get(id)?;
         let path = base.uri.as_deref().map(uri_to_path).unwrap_or_default();
-        resolved = join_base(&path, &resolved);
+        if !anchored {
+            anchored = is_absolute(&path);
+            resolved = join_base(if anchored { "/" } else { &path }, &resolved);
+        }
         match base.uri_base_id.as_deref() {
             Some(parent) => id = parent,
             None => return Some(resolved).filter(|path| !path.is_empty()),
@@ -267,8 +272,12 @@ fn resolve_base(run: &sarif::Run, id: &str) -> Option<String> {
     None
 }
 
+fn is_absolute(path: &str) -> bool {
+    path.starts_with('/') || Path::new(path).is_absolute()
+}
+
 fn join_base(base: &str, path: &str) -> String {
-    if base.is_empty() || path.starts_with('/') || Path::new(path).is_absolute() {
+    if base.is_empty() || is_absolute(path) {
         path.to_string()
     } else if path.is_empty() {
         base.to_string()
@@ -1472,6 +1481,37 @@ mod tests {
         assert_eq!(back.details[0].file, Path::new("serde-1.0.200/src/lib.rs"));
         assert_eq!(back.units[0].kind, UnitKind::Dep);
         assert_eq!(back.totals.deps_unsafe, 1);
+    }
+
+    #[test]
+    fn test_dependency_marker_in_absolute_base_does_not_classify_files() {
+        let results = vec![
+            with_base(
+                make_sarif_result("core/src/lib.rs", 3, 1, "unsafe"),
+                "%SRCROOT%",
+            ),
+            with_base(
+                make_sarif_result("cli/src/main.rs", 5, 1, "unsafe"),
+                "%SRCROOT%",
+            ),
+        ];
+        let run = with_bases(
+            make_run("CodeQL", results),
+            &[("%SRCROOT%", "file:///home/runner/work/vendor/vendor/")],
+        );
+
+        let opts = ScanOpts {
+            workspace_only: true,
+            ..Default::default()
+        };
+        let back = convert_sarif(&make_multi_run_sarif(vec![run]), &opts).unwrap();
+
+        assert_eq!(back.units.len(), 2);
+        assert!(back
+            .units
+            .iter()
+            .all(|unit| unit.kind == UnitKind::Workspace));
+        assert_eq!(back.totals.workspace_unsafe, 2);
     }
 
     #[test]
