@@ -132,9 +132,18 @@ original scan's units exactly, including units with no occurrences. it also
 reads back the `parse_warning` results, and counts only `unsafe_code` results,
 so a `check` report's `budget_violation`/`budget_warning` results are not
 mistaken for unsafe code. for any other SARIF the unit is derived from the
-artifact's file path: a cargo registry file names its crate without the
+artifact's file path. a file the analyzer classifies as a dependency is named
+after that dependency: a cargo registry file after its crate without the
 version, as the rust analyzers do
-(`…/registry/src/<index>/serde-1.0.200/src/lib.rs` → `serde`); otherwise the
+(`…/registry/src/<index>/serde-1.0.200/src/lib.rs` → `serde`); a cargo git
+checkout file after the directory before the nearest `src` below the revision,
+or else the checkout's repository
+(`…/git/checkouts/my_crate-<hash>/<rev>/src/lib.rs` → `my_crate`); a go module
+cache file after its module
+(`…/go/pkg/mod/github.com/pkg/errors@v0.9.1/errors.go` →
+`github.com/pkg/errors`) and a `.go` file under `vendor/` after its package
+path, as the go_geiger analyzer does; any other file under `vendor/` after the
+directory directly below it (`vendor/serde/src/lib.rs` → `serde`). otherwise the
 directory before the `src` component nearest the file names the crate
 (`my_crate/src/lib.rs` → `my_crate`), falling back to the first directory
 component (`crate_a/lib.rs` → `crate_a`) and to `unknown` for a bare filename.
@@ -147,7 +156,7 @@ URI for an absolute one; a plain path such as `src/lib.rs` is unchanged. on
 input, relative references and local `file:` URIs are decoded back to the file
 paths `[[ignore]]` entries match. a path relative to a `uriBaseId` stays
 relative; the base is resolved through `run.originalUriBaseIds` only to tell
-dependency files from workspace files.
+dependency files from workspace files and to name dependency units.
 
 what a round-trip does not carry: `--workspace-only`, `--no-deps` and the
 other scope flags of the re-read apply to the recorded units, and the

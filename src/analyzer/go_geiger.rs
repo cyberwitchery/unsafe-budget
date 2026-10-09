@@ -152,29 +152,35 @@ fn parse_geiger_output(
 fn extract_go_package(file: &std::path::Path) -> Option<String> {
     let path_str = file.to_string_lossy();
 
-    // check for vendor path
-    if let Some(idx) = path_str.find("/vendor/") {
-        let after_vendor = &path_str[idx + 8..];
-        if let Some(end) = after_vendor.rfind('/') {
-            return Some(after_vendor[..end].to_string());
-        }
-        return Some(after_vendor.to_string());
-    }
+    vendored_package(&path_str)
+        .or_else(|| cached_module(&path_str))
+        // for workspace files, use the parent directory name or file stem
+        .or_else(|| {
+            file.parent()
+                .and_then(|p| p.file_name())
+                .map(|n| n.to_string_lossy().to_string())
+        })
+}
 
-    // check for go module cache path
-    if let Some(idx) = path_str.find("/go/pkg/mod/") {
-        let after_mod = &path_str[idx + 12..];
-        // format: module@version/path
-        if let Some(at_idx) = after_mod.find('@') {
-            let module = &after_mod[..at_idx];
-            return Some(module.to_string());
-        }
+/// the package directory below the first `/vendor/` in `path`
+/// (`…/vendor/github.com/pkg/errors/errors.go` → `github.com/pkg/errors`).
+pub(crate) fn vendored_package(path: &str) -> Option<String> {
+    let idx = path.find("/vendor/")?;
+    let after_vendor = &path[idx + 8..];
+    if let Some(end) = after_vendor.rfind('/') {
+        return Some(after_vendor[..end].to_string());
     }
+    Some(after_vendor.to_string())
+}
 
-    // for workspace files, use the parent directory name or file stem
-    file.parent()
-        .and_then(|p| p.file_name())
-        .map(|n| n.to_string_lossy().to_string())
+/// the module a file in the go module cache belongs to, without its version
+/// (`…/go/pkg/mod/github.com/pkg/errors@v0.9.1/errors.go` → `github.com/pkg/errors`).
+pub(crate) fn cached_module(path: &str) -> Option<String> {
+    let idx = path.find("/go/pkg/mod/")?;
+    let after_mod = &path[idx + 12..];
+    // format: module@version/path
+    let at_idx = after_mod.find('@')?;
+    Some(after_mod[..at_idx].to_string())
 }
 
 #[cfg(test)]

@@ -4,7 +4,7 @@
 //! ScanResult format. this allows unsafe-budget to apply budget logic
 //! to output from any SARIF-producing static analysis tool.
 
-use crate::analyzer::Analyzer;
+use crate::analyzer::{go_geiger, Analyzer};
 use crate::error::{Error, Result};
 use crate::model::{Occurrence, ParseWarning, ScanOpts, ScanResult, Unit, UnitKind};
 use crate::sarif::{
@@ -114,9 +114,15 @@ fn convert_sarif(sarif: &Sarif, opts: &ScanOpts) -> Result<ScanResult> {
                     .and_then(|r| r.start_column)
                     .unwrap_or(0) as u32;
 
+                let kind = super::classify_unit_kind(Path::new(&located));
                 let unit_name = own_run
                     .then(|| logical_unit_name(location))
                     .flatten()
+                    .or_else(|| {
+                        (kind == UnitKind::Dep)
+                            .then(|| dependency_unit_name(&located))
+                            .flatten()
+                    })
                     .unwrap_or_else(|| extract_unit_name(&file));
 
                 let occurrence = Occurrence {
@@ -126,7 +132,7 @@ fn convert_sarif(sarif: &Sarif, opts: &ScanOpts) -> Result<ScanResult> {
                     col,
                     message: Some(message.clone()),
                 };
-                run_occurrences.push((occurrence, super::classify_unit_kind(Path::new(&located))));
+                run_occurrences.push((occurrence, kind));
             }
         }
 
@@ -389,15 +395,7 @@ fn infer_language(tool_name: &str) -> String {
 /// directory component when there is none, or `"unknown"` for bare filenames.
 fn extract_unit_name(file: &str) -> String {
     let path_str = file.strip_prefix("file://").unwrap_or(file);
-    let path = Path::new(path_str);
-
-    let components: Vec<_> = path
-        .components()
-        .filter_map(|c| match c {
-            std::path::Component::Normal(s) => Some(s.to_string_lossy().to_string()),
-            _ => None,
-        })
-        .collect();
+    let components = normal_components(path_str);
 
     // need at least a directory and a filename.
     if components.len() < 2 {
@@ -406,18 +404,77 @@ fn extract_unit_name(file: &str) -> String {
 
     let dirs = &components[..components.len() - 1];
 
-    let registry_crate = dirs
-        .windows(5)
-        .find(|w| w[0] == ".cargo" && w[1] == "registry" && w[2] == "src")
-        .map(|w| w[4].as_str());
-    if let Some(dir) = registry_crate {
-        return strip_crate_version(dir).to_string();
+    if let Some(name) = registry_crate(dirs) {
+        return name;
     }
 
     match dirs.iter().rposition(|dir| dir == "src") {
         Some(i) if i > 0 => dirs[i - 1].clone(),
         _ => dirs[0].clone(),
     }
+}
+
+/// the dependency a file under a dependency cache or `vendor/` belongs to.
+fn dependency_unit_name(located: &str) -> Option<String> {
+    let components = normal_components(located);
+    let (file_name, dirs) = components.split_last()?;
+    let is_go = Path::new(file_name)
+        .extension()
+        .is_some_and(|ext| ext == "go");
+    registry_crate(dirs)
+        .or_else(|| git_checkout_crate(dirs))
+        .or_else(|| {
+            if is_go {
+                go_geiger::vendored_package(located)
+            } else {
+                vendored_crate(located)
+            }
+        })
+        .or_else(|| go_geiger::cached_module(located))
+}
+
+fn normal_components(path: &str) -> Vec<String> {
+    Path::new(path)
+        .components()
+        .filter_map(|c| match c {
+            std::path::Component::Normal(s) => Some(s.to_string_lossy().to_string()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn registry_crate(dirs: &[String]) -> Option<String> {
+    dirs.windows(5)
+        .find(|w| w[0] == ".cargo" && w[1] == "registry" && w[2] == "src")
+        .map(|w| strip_crate_version(&w[4]).to_string())
+}
+
+fn git_checkout_crate(dirs: &[String]) -> Option<String> {
+    let start = dirs
+        .windows(3)
+        .position(|w| w[0] == ".cargo" && w[1] == "git" && w[2] == "checkouts")?;
+    let [checkout, _rev, below @ ..] = &dirs[start + 3..] else {
+        return None;
+    };
+    match below.iter().rposition(|dir| dir == "src") {
+        Some(i) if i > 0 => Some(below[i - 1].clone()),
+        _ => Some(strip_checkout_hash(checkout).to_string()),
+    }
+}
+
+/// `my_crate-0123456789abcdef` → `my_crate`: cargo suffixes a hash of the repository url.
+fn strip_checkout_hash(dir: &str) -> &str {
+    match dir.rsplit_once('-') {
+        Some((name, hash)) if !hash.is_empty() && hash.chars().all(|c| c.is_ascii_hexdigit()) => {
+            name
+        }
+        _ => dir,
+    }
+}
+
+fn vendored_crate(located: &str) -> Option<String> {
+    let (_, below) = located.split_once("/vendor/")?;
+    below.split_once('/').map(|(dir, _)| dir.to_string())
 }
 
 /// `serde-1.0.200` → `serde`: the version follows the last `-` before the first `.`.
@@ -1610,5 +1667,156 @@ mod tests {
 
         assert_eq!(back.totals.overall_unsafe, 1);
         assert!(back.parse_warnings.is_empty());
+    }
+
+    fn scan_run(run: sarif::Run) -> ScanResult {
+        convert_sarif(&make_multi_run_sarif(vec![run]), &round_trip_opts()).unwrap()
+    }
+
+    fn unit_counts(scan: &ScanResult) -> Vec<(&str, UnitKind, u64)> {
+        scan.units
+            .iter()
+            .map(|unit| (unit.name.as_str(), unit.kind, unit.unsafe_count))
+            .collect()
+    }
+
+    fn dep(name: &str, count: u64) -> (&str, UnitKind, u64) {
+        (name, UnitKind::Dep, count)
+    }
+
+    #[test]
+    fn test_go_module_cache_files_are_named_after_their_module() {
+        let mod_cache = "/home/u/go/pkg/mod";
+        let results = vec![
+            make_sarif_result(
+                &format!("{mod_cache}/github.com/pkg/errors@v0.9.1/errors.go"),
+                1,
+                1,
+                "unsafe",
+            ),
+            make_sarif_result(
+                &format!("{mod_cache}/golang.org/x/sys@v0.20.0/unix/syscall.go"),
+                2,
+                1,
+                "unsafe",
+            ),
+        ];
+        let back = scan_run(make_run("gosec", results));
+        assert_eq!(
+            unit_counts(&back),
+            vec![dep("github.com/pkg/errors", 1), dep("golang.org/x/sys", 1)]
+        );
+    }
+
+    #[test]
+    fn test_vendored_go_packages_and_rust_crates_are_named_after_the_dependency() {
+        let results = vec![
+            make_sarif_result(
+                "/home/u/proj/vendor/github.com/pkg/errors/errors.go",
+                1,
+                1,
+                "unsafe",
+            ),
+            make_sarif_result("/home/u/proj/vendor/serde/src/lib.rs", 2, 1, "unsafe"),
+            make_sarif_result("/home/u/proj/vendor/serde/build.rs", 3, 1, "unsafe"),
+            with_base(
+                make_sarif_result("vendor/golang.org/x/sys/unix/syscall.go", 4, 1, "unsafe"),
+                "%SRCROOT%",
+            ),
+        ];
+        let run = with_bases(
+            make_run("gosec", results),
+            &[("%SRCROOT%", "file:///home/runner/work/proj/proj/")],
+        );
+        assert_eq!(
+            unit_counts(&scan_run(run)),
+            vec![
+                dep("github.com/pkg/errors", 1),
+                dep("golang.org/x/sys/unix", 1),
+                dep("serde", 2),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_git_checkout_crates_are_named_after_the_checkout_or_member() {
+        let checkouts = "/home/u/.cargo/git/checkouts";
+        let results = vec![
+            make_sarif_result(
+                &format!("{checkouts}/my_crate-abc/9f8e7d6/src/lib.rs"),
+                1,
+                1,
+                "unsafe",
+            ),
+            make_sarif_result(
+                &format!("{checkouts}/my_crate-abc/9f8e7d6/build.rs"),
+                2,
+                1,
+                "unsafe",
+            ),
+            make_sarif_result(
+                &format!("{checkouts}/tools-0123456789abcdef/1a2b3c4/crates/foo/src/lib.rs"),
+                3,
+                1,
+                "unsafe",
+            ),
+        ];
+        let back = scan_run(make_run("rustc", results));
+        assert_eq!(unit_counts(&back), vec![dep("foo", 1), dep("my_crate", 2)]);
+    }
+
+    #[test]
+    fn test_base_relative_dependency_files_are_named_from_the_resolved_path() {
+        let results = vec![
+            with_base(
+                make_sarif_result("serde-1.0.200/src/lib.rs", 1, 1, "unsafe"),
+                "INDEX",
+            ),
+            with_base(
+                make_sarif_result("github.com/pkg/errors@v0.9.1/errors.go", 2, 1, "unsafe"),
+                "MODCACHE",
+            ),
+        ];
+        let mut run = with_bases(
+            make_run("gosec", results),
+            &[
+                ("HOME", "file:///home/u/"),
+                (
+                    "INDEX",
+                    ".cargo/registry/src/index.crates.io-1949cf8c6b5b557f/",
+                ),
+                ("MODCACHE", "go/pkg/mod/"),
+            ],
+        );
+        let bases = run.original_uri_base_ids.as_mut().unwrap();
+        for id in ["INDEX", "MODCACHE"] {
+            bases.get_mut(id).unwrap().uri_base_id = Some("HOME".into());
+        }
+        let back = scan_run(run);
+
+        assert_eq!(
+            unit_counts(&back),
+            vec![dep("github.com/pkg/errors", 1), dep("serde", 1)]
+        );
+        assert_eq!(
+            back.details[0].file,
+            Path::new("github.com/pkg/errors@v0.9.1/errors.go")
+        );
+        assert_eq!(back.details[1].file, Path::new("serde-1.0.200/src/lib.rs"));
+    }
+
+    #[test]
+    fn test_unanchored_cache_paths_keep_workspace_naming() {
+        let results = vec![make_sarif_result(
+            ".cargo/git/checkouts/my_crate-abc/9f8e7d6/src/lib.rs",
+            1,
+            1,
+            "unsafe",
+        )];
+        let back = scan_run(make_run("rustc", results));
+        assert_eq!(
+            unit_counts(&back),
+            vec![("9f8e7d6", UnitKind::Workspace, 1)]
+        );
     }
 }
