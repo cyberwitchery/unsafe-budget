@@ -261,7 +261,7 @@ fn resolve_base(run: &sarif::Run, id: &str) -> Option<String> {
         let base = bases.get(id)?;
         let path = base.uri.as_deref().map(uri_to_path).unwrap_or_default();
         if !anchored {
-            anchored = is_absolute(&path);
+            anchored = is_absolute(&path) || base.uri.as_deref().is_some_and(has_scheme);
             resolved = join_base(if anchored { "/" } else { &path }, &resolved);
         }
         match base.uri_base_id.as_deref() {
@@ -272,8 +272,18 @@ fn resolve_base(run: &sarif::Run, id: &str) -> Option<String> {
     None
 }
 
+/// absolute on this host, or a windows drive path read anywhere else.
 fn is_absolute(path: &str) -> bool {
-    path.starts_with('/') || Path::new(path).is_absolute()
+    path.starts_with('/')
+        || matches!(path.as_bytes(), [drive, b':', b'/', ..] if drive.is_ascii_alphabetic())
+        || Path::new(path).is_absolute()
+}
+
+/// whether a raw `uri` names a scheme. checked before decoding, so a guarded
+/// relative base such as `./ab:c/` does not read as one.
+fn has_scheme(uri: &str) -> bool {
+    uri.split_once(':')
+        .is_some_and(|(scheme, _)| is_scheme(scheme))
 }
 
 fn join_base(base: &str, path: &str) -> String {
@@ -1480,6 +1490,46 @@ mod tests {
 
         assert_eq!(back.details[0].file, Path::new("serde-1.0.200/src/lib.rs"));
         assert_eq!(back.units[0].kind, UnitKind::Dep);
+        assert_eq!(back.totals.deps_unsafe, 1);
+    }
+
+    #[test]
+    fn test_windows_or_remote_absolute_base_does_not_classify_files() {
+        for base in [
+            "file:///D:/a/vendor/vendor/",
+            "file:///d%3A/a/vendor/vendor/",
+            "file://server/share/vendor/vendor/",
+            "https://github.com/acme/vendor/blob/abc/",
+        ] {
+            let results = vec![with_base(
+                make_sarif_result("core/src/lib.rs", 3, 1, "unsafe"),
+                "%SRCROOT%",
+            )];
+            let run = with_bases(make_run("CodeQL", results), &[("%SRCROOT%", base)]);
+            let opts = ScanOpts {
+                workspace_only: true,
+                ..Default::default()
+            };
+            let back = convert_sarif(&make_multi_run_sarif(vec![run]), &opts).unwrap();
+            assert_eq!(back.totals.workspace_unsafe, 1, "{base}");
+        }
+    }
+
+    #[test]
+    fn test_root_vendor_dir_under_srcroot_is_a_dependency() {
+        let results = vec![
+            with_base(make_sarif_result("src/lib.rs", 3, 1, "unsafe"), "%SRCROOT%"),
+            with_base(
+                make_sarif_result("vendor/github.com/pkg/errors/errors.go", 9, 1, "unsafe"),
+                "%SRCROOT%",
+            ),
+        ];
+        let run = with_bases(
+            make_run("CodeQL", results),
+            &[("%SRCROOT%", "file:///home/runner/work/proj/proj/")],
+        );
+        let back = convert_sarif(&make_multi_run_sarif(vec![run]), &round_trip_opts()).unwrap();
+        assert_eq!(back.totals.workspace_unsafe, 1);
         assert_eq!(back.totals.deps_unsafe, 1);
     }
 
