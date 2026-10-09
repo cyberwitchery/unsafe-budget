@@ -13,7 +13,7 @@ use crate::sarif::{
 };
 use serde_sarif::sarif::{self, Sarif};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub struct SarifAnalyzer;
 
@@ -69,7 +69,7 @@ fn convert_sarif(sarif: &Sarif, opts: &ScanOpts) -> Result<ScanResult> {
         let own_run = is_own_run(run);
         let recorded = own_run.then(|| recorded_units(run)).flatten();
         let results = run.results.as_deref().unwrap_or(&[]);
-        let mut run_occurrences: Vec<Occurrence> = Vec::new();
+        let mut run_occurrences: Vec<(Occurrence, UnitKind)> = Vec::new();
 
         for result in results {
             let message = result
@@ -96,11 +96,15 @@ fn convert_sarif(sarif: &Sarif, opts: &ScanOpts) -> Result<ScanResult> {
                     None => continue,
                 };
 
-                let file = phys
-                    .artifact_location
-                    .as_ref()
-                    .and_then(|al| al.uri.clone())
+                let artifact = phys.artifact_location.as_ref();
+                let file = artifact
+                    .and_then(|al| al.uri.as_deref())
+                    .map(uri_to_path)
                     .unwrap_or_else(|| "unknown".into());
+                let located = artifact
+                    .and_then(|al| al.uri_base_id.as_deref())
+                    .and_then(|id| resolve_base(run, id))
+                    .map_or_else(|| file.clone(), |base| join_base(&base, &file));
 
                 let line = phys.region.as_ref().and_then(|r| r.start_line).unwrap_or(0) as u32;
 
@@ -115,13 +119,14 @@ fn convert_sarif(sarif: &Sarif, opts: &ScanOpts) -> Result<ScanResult> {
                     .flatten()
                     .unwrap_or_else(|| extract_unit_name(&file));
 
-                run_occurrences.push(Occurrence {
+                let occurrence = Occurrence {
                     unit: unit_name,
                     file: PathBuf::from(&file),
                     line,
                     col,
                     message: Some(message.clone()),
-                });
+                };
+                run_occurrences.push((occurrence, super::classify_unit_kind(Path::new(&located))));
             }
         }
 
@@ -129,7 +134,7 @@ fn convert_sarif(sarif: &Sarif, opts: &ScanOpts) -> Result<ScanResult> {
             Some(units) => accumulate_recorded(&mut counts, units),
             None => accumulate_derived(&mut counts, &run_occurrences),
         }
-        occurrences.append(&mut run_occurrences);
+        occurrences.extend(run_occurrences.into_iter().map(|(occ, _)| occ));
     }
 
     let (units, details) = super::aggregate_units(counts, occurrences, opts);
@@ -149,11 +154,135 @@ fn accumulate_recorded(counts: &mut HashMap<String, (UnitKind, u64)>, units: Vec
     }
 }
 
-fn accumulate_derived(counts: &mut HashMap<String, (UnitKind, u64)>, occurrences: &[Occurrence]) {
-    for occ in occurrences {
-        let kind = super::classify_unit_kind(&occ.file);
-        let entry = counts.entry(occ.unit.clone()).or_insert((kind, 0));
+fn accumulate_derived(
+    counts: &mut HashMap<String, (UnitKind, u64)>,
+    occurrences: &[(Occurrence, UnitKind)],
+) {
+    for (occ, kind) in occurrences {
+        let entry = counts.entry(occ.unit.clone()).or_insert((*kind, 0));
         entry.1 += 1;
+    }
+}
+
+/// the file path an `artifactLocation.uri` names.
+///
+/// relative references and `file:` URIs on the local host are percent-decoded,
+/// with bytes that are not UTF-8 replaced by U+FFFD; any other URI is kept as is.
+fn uri_to_path(uri: &str) -> String {
+    let Some((scheme, rest)) = uri.split_once(':').filter(|(scheme, _)| is_scheme(scheme)) else {
+        return strip_colon_guard(percent_decode(uri));
+    };
+    if !scheme.eq_ignore_ascii_case("file") {
+        return uri.to_string();
+    }
+    let path = match rest.strip_prefix("//") {
+        Some(authority_and_path) => {
+            let split = authority_and_path
+                .find('/')
+                .unwrap_or(authority_and_path.len());
+            let (host, path) = authority_and_path.split_at(split);
+            if !(host.is_empty() || host.eq_ignore_ascii_case("localhost")) {
+                return uri.to_string();
+            }
+            path
+        }
+        None => rest,
+    };
+    let decoded = percent_decode(path);
+    match decoded.as_bytes() {
+        [b'/', drive, b':', b'/', ..] | [b'/', drive, b':'] if drive.is_ascii_alphabetic() => {
+            decoded[1..].to_string()
+        }
+        _ => decoded,
+    }
+}
+
+/// RFC 3986 section 3.1; a single letter is a windows drive instead.
+fn is_scheme(text: &str) -> bool {
+    text.len() > 1
+        && text.starts_with(|c: char| c.is_ascii_alphabetic())
+        && text
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+}
+
+fn percent_decode(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let escaped = match bytes[i..] {
+            [b'%', high, low, ..] => hex_digit(high)
+                .zip(hex_digit(low))
+                .map(|(high, low)| high << 4 | low),
+            _ => None,
+        };
+        match escaped {
+            Some(byte) => {
+                out.push(byte);
+                i += 3;
+            }
+            None => {
+                out.push(bytes[i]);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn hex_digit(byte: u8) -> Option<u8> {
+    char::from(byte).to_digit(16).map(|digit| digit as u8)
+}
+
+/// drop the `./` that keeps a colon in a relative path's first segment from
+/// reading as a scheme.
+fn strip_colon_guard(path: String) -> String {
+    let guarded = path.starts_with("./")
+        && path
+            .split('/')
+            .find(|segment| *segment != ".")
+            .is_some_and(|segment| segment.contains(':'));
+    if guarded {
+        path[2..].to_string()
+    } else {
+        path
+    }
+}
+
+/// the path a `uriBaseId` stands for, following `run.originalUriBaseIds`, with
+/// an absolute base in the chain cut down to `/`.
+fn resolve_base(run: &sarif::Run, id: &str) -> Option<String> {
+    let bases = run.original_uri_base_ids.as_ref()?;
+    let mut resolved = String::new();
+    let mut anchored = false;
+    let mut id = id;
+    for _ in 0..bases.len() {
+        let base = bases.get(id)?;
+        let path = base.uri.as_deref().map(uri_to_path).unwrap_or_default();
+        if !anchored {
+            anchored = is_absolute(&path);
+            resolved = join_base(if anchored { "/" } else { &path }, &resolved);
+        }
+        match base.uri_base_id.as_deref() {
+            Some(parent) => id = parent,
+            None => return Some(resolved).filter(|path| !path.is_empty()),
+        }
+    }
+    None
+}
+
+fn is_absolute(path: &str) -> bool {
+    path.starts_with('/') || Path::new(path).is_absolute()
+}
+
+fn join_base(base: &str, path: &str) -> String {
+    if base.is_empty() || is_absolute(path) {
+        path.to_string()
+    } else if path.is_empty() {
+        base.to_string()
+    } else {
+        format!("{}/{path}", base.trim_end_matches('/'))
     }
 }
 
@@ -241,15 +370,16 @@ fn infer_language(tool_name: &str) -> String {
     }
 }
 
-/// extract a unit name from an artifact URI.
+/// extract a unit name from an artifact's file path.
 ///
-/// looks for a `src` path component and uses the directory immediately
-/// before it as the crate/package name (`crate_name/src/lib.rs` →
-/// `crate_name`). falls back to the first directory component when no
-/// `src` segment is found, or `"unknown"` for bare filenames.
-fn extract_unit_name(uri: &str) -> String {
-    let path_str = uri.strip_prefix("file://").unwrap_or(uri);
-    let path = std::path::Path::new(path_str);
+/// a file in the cargo registry names its crate without the version
+/// (`…/registry/src/<index>/serde-1.0.200/src/lib.rs` → `serde`). otherwise the
+/// directory before the `src` component nearest the file names the crate
+/// (`crate_name/src/lib.rs` → `crate_name`), falling back to the first
+/// directory component when there is none, or `"unknown"` for bare filenames.
+fn extract_unit_name(file: &str) -> String {
+    let path_str = file.strip_prefix("file://").unwrap_or(file);
+    let path = Path::new(path_str);
 
     let components: Vec<_> = path
         .components()
@@ -266,17 +396,27 @@ fn extract_unit_name(uri: &str) -> String {
 
     let dirs = &components[..components.len() - 1];
 
-    // if a "src" directory appears after at least one other component,
-    // the component before it is the crate/package name.
-    for (i, dir) in dirs.iter().enumerate() {
-        if dir == "src" && i > 0 {
-            return dirs[i - 1].clone();
-        }
+    let registry_crate = dirs
+        .windows(5)
+        .find(|w| w[0] == ".cargo" && w[1] == "registry" && w[2] == "src")
+        .map(|w| w[4].as_str());
+    if let Some(dir) = registry_crate {
+        return strip_crate_version(dir).to_string();
     }
 
-    // no "src" found, or "src" is the first component: use the first
-    // directory as the unit name.
-    dirs[0].clone()
+    match dirs.iter().rposition(|dir| dir == "src") {
+        Some(i) if i > 0 => dirs[i - 1].clone(),
+        _ => dirs[0].clone(),
+    }
+}
+
+/// `serde-1.0.200` → `serde`: the version follows the last `-` before the first `.`.
+fn strip_crate_version(dir: &str) -> &str {
+    let before_dot = dir.split('.').next().unwrap_or(dir);
+    match before_dot.rfind('-') {
+        Some(i) if dir[i + 1..].starts_with(|c: char| c.is_ascii_digit()) => &dir[..i],
+        _ => dir,
+    }
 }
 
 #[cfg(test)]
@@ -353,6 +493,77 @@ mod tests {
     #[test]
     fn test_extract_unit_name_no_src() {
         assert_eq!(extract_unit_name("crate_a/lib.rs"), "crate_a");
+    }
+
+    #[test]
+    fn test_extract_unit_name_uses_the_nearest_src() {
+        assert_eq!(
+            extract_unit_name("/home/u/src/proj/crates/x/src/lib.rs"),
+            "x"
+        );
+        assert_eq!(extract_unit_name("/home/u/src/proj/src/a/b.rs"), "proj");
+    }
+
+    #[test]
+    fn test_extract_unit_name_names_registry_crates_without_version() {
+        let registry = "/home/u/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f";
+        let cases = [
+            ("serde-1.0.200/src/lib.rs", "serde"),
+            ("proc-macro2-1.0.86/build.rs", "proc-macro2"),
+            ("foo-2d-0.1.0-alpha.1/src/lib.rs", "foo-2d"),
+            ("windows_x86_64_gnu-0.52.6/src/lib.rs", "windows_x86_64_gnu"),
+        ];
+        for (rest, name) in cases {
+            assert_eq!(extract_unit_name(&format!("{registry}/{rest}")), name);
+        }
+    }
+
+    #[test]
+    fn test_uri_to_path_matches_python_unquote() {
+        let cases = [
+            ("src/lib.rs", "src/lib.rs"),
+            ("src/my%20file.rs", "src/my file.rs"),
+            ("src/%2541.rs", "src/%41.rs"),
+            ("src/na%C3%AFve.rs", "src/naïve.rs"),
+            ("src/%zz.rs", "src/%zz.rs"),
+            ("src/%+1.rs", "src/%+1.rs"),
+            ("src/100%", "src/100%"),
+            ("src/a%FF.rs", "src/a\u{FFFD}.rs"),
+            ("src/%E2%82.rs", "src/\u{FFFD}.rs"),
+        ];
+        for (uri, path) in cases {
+            assert_eq!(uri_to_path(uri), path, "{uri}");
+        }
+    }
+
+    #[test]
+    fn test_uri_to_path_reads_file_uris() {
+        let cases = [
+            ("file:///abs/x%20y.rs", "/abs/x y.rs"),
+            ("file://localhost/abs/x.rs", "/abs/x.rs"),
+            ("FILE://LocalHost/abs/x.rs", "/abs/x.rs"),
+            ("file:/abs/x.rs", "/abs/x.rs"),
+            ("file:///C:/a/b%20c.rs", "C:/a/b c.rs"),
+            (
+                "file://server/share/x%20y.rs",
+                "file://server/share/x%20y.rs",
+            ),
+            (
+                "https://example.com/a%20b.rs",
+                "https://example.com/a%20b.rs",
+            ),
+            ("C:\\a\\b.rs", "C:\\a\\b.rs"),
+        ];
+        for (uri, path) in cases {
+            assert_eq!(uri_to_path(uri), path, "{uri}");
+        }
+    }
+
+    #[test]
+    fn test_uri_to_path_drops_only_the_colon_guard() {
+        assert_eq!(uri_to_path("./a:b/lib.rs"), "a:b/lib.rs");
+        assert_eq!(uri_to_path("././a:b/lib.rs"), "./a:b/lib.rs");
+        assert_eq!(uri_to_path("./src/lib.rs"), "./src/lib.rs");
     }
 
     fn make_sarif(results: Vec<sarif::Result>) -> Sarif {
@@ -1148,6 +1359,195 @@ mod tests {
         assert_eq!(back.units.len(), 1);
         assert_eq!(back.units[0].kind, UnitKind::Dep);
         assert_eq!(back.units[0].unsafe_count, 1);
+    }
+
+    #[test]
+    fn test_round_trip_reproduces_paths_that_need_encoding() {
+        let mut paths = vec![
+            "src/my file.rs",
+            "src/100%.rs",
+            "src/%41.rs",
+            "src/a#b.rs",
+            "src/what?.rs",
+            "src/naïve.rs",
+            "ab:c d/src/lib.rs",
+            "./ab:c d/src/lib.rs",
+            "/abs/x y/src/lib.rs",
+        ];
+        let opts = round_trip_opts();
+        let details: Vec<_> = paths
+            .iter()
+            .map(|path| Occurrence {
+                unit: "app".into(),
+                file: PathBuf::from(path),
+                line: 1,
+                col: 1,
+                message: Some("unsafe".into()),
+            })
+            .collect();
+        let units = vec![Unit {
+            name: "app".into(),
+            kind: UnitKind::Workspace,
+            unsafe_count: details.len() as u64,
+        }];
+        let scan = ScanResult::from_parts("rustc_unsafe_lint", "rust", &opts, units, details);
+        let back = reread(&crate::sarif::scan_to_sarif(&scan), &opts);
+
+        let mut files: Vec<_> = back
+            .details
+            .iter()
+            .map(|occ| occ.file.to_str().unwrap())
+            .collect();
+        files.sort_unstable();
+        paths.sort_unstable();
+        assert_eq!(files, paths);
+    }
+
+    fn with_base(mut result: sarif::Result, base_id: &str) -> sarif::Result {
+        let location = &mut result.locations.as_mut().unwrap()[0];
+        let artifact = location
+            .physical_location
+            .as_mut()
+            .unwrap()
+            .artifact_location
+            .as_mut()
+            .unwrap();
+        artifact.uri_base_id = Some(base_id.into());
+        result
+    }
+
+    fn with_bases(mut run: sarif::Run, bases: &[(&str, &str)]) -> sarif::Run {
+        let bases = bases
+            .iter()
+            .map(|(id, uri)| {
+                let location = sarif::ArtifactLocation::builder()
+                    .uri(uri.to_string())
+                    .build();
+                (id.to_string(), location)
+            })
+            .collect();
+        run.original_uri_base_ids = Some(bases);
+        run
+    }
+
+    #[test]
+    fn test_codeql_style_srcroot_uri_keeps_the_reported_path() {
+        let result = with_base(
+            make_sarif_result("crates/my%20crate/src/lib.rs", 3, 1, "unsafe"),
+            "%SRCROOT%",
+        );
+        let run = with_bases(
+            make_run("CodeQL", vec![result]),
+            &[("%SRCROOT%", "file:///home/runner/work/repo/repo/")],
+        );
+
+        let opts = ScanOpts::default();
+        let back = convert_sarif(&make_multi_run_sarif(vec![run]), &opts).unwrap();
+
+        assert_eq!(
+            back.details[0].file,
+            Path::new("crates/my crate/src/lib.rs")
+        );
+        assert_eq!(back.units[0].name, "my crate");
+        assert_eq!(back.units[0].kind, UnitKind::Workspace);
+    }
+
+    #[test]
+    fn test_uri_base_id_chain_classifies_dependency_files() {
+        let result = with_base(
+            make_sarif_result("serde-1.0.200/src/lib.rs", 3, 1, "unsafe"),
+            "INDEX",
+        );
+        let mut run = with_bases(
+            make_run("gcc", vec![result]),
+            &[
+                ("HOME", "file:///home/u/"),
+                (
+                    "INDEX",
+                    ".cargo/registry/src/index.crates.io-1949cf8c6b5b557f/",
+                ),
+            ],
+        );
+        run.original_uri_base_ids
+            .as_mut()
+            .unwrap()
+            .get_mut("INDEX")
+            .unwrap()
+            .uri_base_id = Some("HOME".into());
+
+        let opts = round_trip_opts();
+        let back = convert_sarif(&make_multi_run_sarif(vec![run]), &opts).unwrap();
+
+        assert_eq!(back.details[0].file, Path::new("serde-1.0.200/src/lib.rs"));
+        assert_eq!(back.units[0].kind, UnitKind::Dep);
+        assert_eq!(back.totals.deps_unsafe, 1);
+    }
+
+    #[test]
+    fn test_dependency_marker_in_absolute_base_does_not_classify_files() {
+        let results = vec![
+            with_base(
+                make_sarif_result("core/src/lib.rs", 3, 1, "unsafe"),
+                "%SRCROOT%",
+            ),
+            with_base(
+                make_sarif_result("cli/src/main.rs", 5, 1, "unsafe"),
+                "%SRCROOT%",
+            ),
+        ];
+        let run = with_bases(
+            make_run("CodeQL", results),
+            &[("%SRCROOT%", "file:///home/runner/work/vendor/vendor/")],
+        );
+
+        let opts = ScanOpts {
+            workspace_only: true,
+            ..Default::default()
+        };
+        let back = convert_sarif(&make_multi_run_sarif(vec![run]), &opts).unwrap();
+
+        assert_eq!(back.units.len(), 2);
+        assert!(back
+            .units
+            .iter()
+            .all(|unit| unit.kind == UnitKind::Workspace));
+        assert_eq!(back.totals.workspace_unsafe, 2);
+    }
+
+    #[test]
+    fn test_undefined_or_cyclic_uri_base_id_is_ignored() {
+        let run = with_bases(make_run("gcc", vec![]), &[("A", "x/")]);
+        let mut cyclic = run.clone();
+        cyclic
+            .original_uri_base_ids
+            .as_mut()
+            .unwrap()
+            .get_mut("A")
+            .unwrap()
+            .uri_base_id = Some("A".into());
+
+        assert_eq!(resolve_base(&run, "A").as_deref(), Some("x/"));
+        assert_eq!(resolve_base(&run, "B"), None);
+        assert_eq!(resolve_base(&cyclic, "A"), None);
+    }
+
+    #[test]
+    fn test_absolute_file_uri_is_decoded() {
+        let sarif_log = make_sarif(vec![make_sarif_result(
+            "file:///home/u/src/my%20proj/src/lib.rs",
+            3,
+            1,
+            "unsafe",
+        )]);
+
+        let opts = ScanOpts::default();
+        let back = convert_sarif(&sarif_log, &opts).unwrap();
+
+        assert_eq!(
+            back.details[0].file,
+            Path::new("/home/u/src/my proj/src/lib.rs")
+        );
+        assert_eq!(back.units[0].name, "my proj");
     }
 
     #[test]

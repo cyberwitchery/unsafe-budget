@@ -4,6 +4,7 @@
 //! for integration with github code scanning, vs code, and other tools.
 
 use std::collections::{BTreeMap, HashMap};
+use std::path::Path;
 
 use crate::model::{CheckResult, ScanResult};
 use serde_sarif::sarif;
@@ -250,13 +251,53 @@ fn make_budget_result(
     }
 }
 
+/// `path` as an RFC 3986 URI reference: a `file:` URI when absolute, a
+/// relative reference otherwise.
+pub(crate) fn path_to_uri(path: &Path) -> String {
+    let text = path.to_string_lossy();
+    if let [drive, b':', b'/' | b'\\', ..] = text.as_bytes() {
+        if drive.is_ascii_alphabetic() {
+            let rest = encode_segments(text[2..].split(['/', '\\']));
+            return format!("file:///{}:{rest}", &text[..1]);
+        }
+    }
+    let encoded = encode_segments(text.split(std::path::is_separator));
+    if text.starts_with(std::path::is_separator) {
+        return format!("file://{encoded}");
+    }
+    // RFC 3986 section 4.2: a colon in the first segment would read as a scheme.
+    let first = encoded.split('/').find(|segment| *segment != ".");
+    if first.is_some_and(|segment| segment.contains(':')) {
+        format!("./{encoded}")
+    } else {
+        encoded
+    }
+}
+
+fn encode_segments<'a>(segments: impl Iterator<Item = &'a str>) -> String {
+    let mut out = String::new();
+    for (i, segment) in segments.enumerate() {
+        if i > 0 {
+            out.push('/');
+        }
+        for &byte in segment.as_bytes() {
+            if byte.is_ascii_alphanumeric() || b"-._~!$&'()*+,;=:@".contains(&byte) {
+                out.push(byte as char);
+            } else {
+                out.push_str(&format!("%{byte:02X}"));
+            }
+        }
+    }
+    out
+}
+
 fn make_location(occ: &crate::model::Occurrence) -> sarif::Location {
     sarif::Location::builder()
         .physical_location(
             sarif::PhysicalLocation::builder()
                 .artifact_location(
                     sarif::ArtifactLocation::builder()
-                        .uri(occ.file.to_string_lossy().to_string())
+                        .uri(path_to_uri(&occ.file))
                         .build(),
                 )
                 .region(
@@ -473,6 +514,35 @@ mod tests {
             results[1].message.text.as_deref(),
             Some("unsafe code usage")
         );
+    }
+
+    #[test]
+    fn test_path_to_uri_matches_python() {
+        // expected: urllib.parse.quote(p, safe="/!$&'()*+,;=:@"), pathlib's as_uri()
+        let cases = [
+            ("src/lib.rs", "src/lib.rs"),
+            ("src/my file.rs", "src/my%20file.rs"),
+            ("src/100%.rs", "src/100%25.rs"),
+            ("src/%41.rs", "src/%2541.rs"),
+            ("src/a#b.rs", "src/a%23b.rs"),
+            ("src/what?.rs", "src/what%3F.rs"),
+            ("src/[x].rs", "src/%5Bx%5D.rs"),
+            ("src/naïve.rs", "src/na%C3%AFve.rs"),
+            ("errors@v0.9.1/x.go", "errors@v0.9.1/x.go"),
+            ("../shared/src/lib.rs", "../shared/src/lib.rs"),
+            ("a:b/lib.rs", "./a:b/lib.rs"),
+            ("./a:b/lib.rs", "././a:b/lib.rs"),
+            ("/abs/x y.rs", "file:///abs/x%20y.rs"),
+            ("/a/naïve#1.rs", "file:///a/na%C3%AFve%231.rs"),
+            ("C:\\a\\b.rs", "file:///C:/a/b.rs"),
+            (
+                "C:\\dir with space\\é.rs",
+                "file:///C:/dir%20with%20space/%C3%A9.rs",
+            ),
+        ];
+        for (path, uri) in cases {
+            assert_eq!(path_to_uri(Path::new(path)), uri, "{path}");
+        }
     }
 
     #[test]
