@@ -152,8 +152,8 @@ fn parse_geiger_output(
 fn extract_go_package(file: &std::path::Path) -> Option<String> {
     let path_str = file.to_string_lossy();
 
-    vendored_package(&path_str)
-        .or_else(|| cached_module(&path_str))
+    cached_module(&path_str)
+        .or_else(|| vendored_package(&path_str))
         // for workspace files, use the parent directory name or file stem
         .or_else(|| {
             file.parent()
@@ -162,10 +162,10 @@ fn extract_go_package(file: &std::path::Path) -> Option<String> {
         })
 }
 
-/// the package directory below the first `/vendor/` in `path`
+/// the package directory below the last `/vendor/` in `path`
 /// (`…/vendor/github.com/pkg/errors/errors.go` → `github.com/pkg/errors`).
 pub(crate) fn vendored_package(path: &str) -> Option<String> {
-    let idx = path.find("/vendor/")?;
+    let idx = path.rfind("/vendor/")?;
     let after_vendor = &path[idx + 8..];
     if let Some(end) = after_vendor.rfind('/') {
         return Some(after_vendor[..end].to_string());
@@ -212,6 +212,23 @@ mod tests {
     #[test]
     fn test_extract_go_package_module_cache() {
         let path = Path::new("/home/user/go/pkg/mod/github.com/pkg/errors@v0.9.1/errors.go");
+        assert_eq!(
+            extract_go_package(path),
+            Some("github.com/pkg/errors".into())
+        );
+    }
+
+    #[test]
+    fn test_extract_go_package_nested_vendor_uses_the_innermost() {
+        let path = Path::new(
+            "/home/user/myproject/vendor/github.com/a/tool/vendor/github.com/b/lib/lib.go",
+        );
+        assert_eq!(extract_go_package(path), Some("github.com/b/lib".into()));
+    }
+
+    #[test]
+    fn test_extract_go_package_module_cache_under_a_vendor_directory() {
+        let path = Path::new("/srv/vendor/go/pkg/mod/github.com/pkg/errors@v0.9.1/errors.go");
         assert_eq!(
             extract_go_package(path),
             Some("github.com/pkg/errors".into())

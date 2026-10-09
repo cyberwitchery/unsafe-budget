@@ -141,9 +141,12 @@ or else the checkout's repository
 (`…/git/checkouts/my_crate-<hash>/<rev>/src/lib.rs` → `my_crate`); a go module
 cache file after its module
 (`…/go/pkg/mod/github.com/pkg/errors@v0.9.1/errors.go` →
-`github.com/pkg/errors`) and a `.go` file under `vendor/` after its package
-path, as the go_geiger analyzer does; any other file under `vendor/` after the
-directory directly below it (`vendor/serde/src/lib.rs` → `serde`). otherwise the
+`github.com/pkg/errors`). these caches decide the name even when a `vendor`
+directory sits inside or above them. a `.go` file under `vendor/` is named
+after its package path below the innermost `vendor/`, as the go_geiger analyzer
+does (`vendor/a/vendor/b/x.go` → `b`); any other file under `vendor/` after the
+directory directly below the first `vendor/` (`vendor/serde/src/lib.rs` →
+`serde`), so a crate's own `vendor` directory does not rename it. otherwise the
 directory before the `src` component nearest the file names the crate
 (`my_crate/src/lib.rs` → `my_crate`), falling back to the first directory
 component (`crate_a/lib.rs` → `crate_a`) and to `unknown` for a bare filename.
