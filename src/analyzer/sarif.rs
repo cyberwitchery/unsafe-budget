@@ -433,11 +433,15 @@ fn dependency_unit_name(located: &str) -> Option<String> {
         })
 }
 
-/// whether the directory below the first `vendor/` starts a go module path, which holds a dot.
+/// whether the directory below the first `vendor/` is a go module host: `github.com`, not `lua5.4`.
 fn in_go_vendor_tree(located: &str) -> bool {
     go_geiger::below_first_vendor(located)
         .and_then(|below| below.split_once('/'))
-        .is_some_and(|(dir, _)| dir.contains('.') && !has_crate_version(dir))
+        .is_some_and(|(dir, _)| {
+            dir.rsplit_once('.')
+                .is_some_and(|(_, label)| label.starts_with(|c: char| c.is_ascii_lowercase()))
+                && !has_crate_version(dir)
+        })
 }
 
 /// `serde-1.0.200`: a `cargo vendor` crate directory with a `-<version>` suffix.
@@ -2005,6 +2009,19 @@ mod tests {
             (
                 "/home/u/proj/vendor/windows_x86_64_gnu-0.48.5/lib/x.a",
                 "windows_x86_64_gnu-0.48.5",
+            ),
+            (
+                "/home/u/proj/vendor/foo-sys/vendor/github.com/a/b/b.c",
+                "foo-sys",
+            ),
+            (
+                "/home/u/proj/vendor/foo-1.0.0-beta.rc/src/lib.rs",
+                "foo-1.0.0-beta.rc",
+            ),
+            ("/home/u/proj/vendor/lua5.4/src/lapi.c", "lua5.4"),
+            (
+                "/home/u/proj/vendor/mbedtls-2.28/library/aes.c",
+                "mbedtls-2.28",
             ),
         ] {
             assert_eq!(dependency_unit_name(path).as_deref(), Some(unit), "{path}");

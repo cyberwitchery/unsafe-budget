@@ -484,6 +484,10 @@ mod tests {
             classify_unit_kind(Path::new("/home/user/project/src/main.rs")),
             UnitKind::Workspace
         );
+        assert_eq!(
+            classify_unit_kind(Path::new("vendor-tools/gen.go")),
+            UnitKind::Workspace
+        );
     }
 
     #[test]

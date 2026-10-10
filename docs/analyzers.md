@@ -146,10 +146,13 @@ cache file after its module, with go's case encoding undone
 `vendor` directory sits inside or above them. a file in a go vendor tree is
 named after its package path below the innermost `vendor/`, as the go_geiger
 analyzer does (`vendor/a/vendor/b/x.go` → `b`): that is a `.go` file, or any
-file whose directory directly below the first `vendor/` holds a dot outside a
-cargo `-<version>` suffix, as the first element of a go module path does
+file whose directory directly below the first `vendor/` reads as a host name,
+as the first element of a go module path does: it holds a dot, its last label
+starts with a lower-case letter, and it is not a cargo `-<version>` directory
 (`vendor/github.com/mattn/go-sqlite3/sqlite3-binding.c` →
-`github.com/mattn/go-sqlite3`). any other file under `vendor/` is named after
+`github.com/mattn/go-sqlite3`, but `vendor/lua5.4/src/lapi.c` → `lua5.4`). a
+dotted name such as `three.js` reads as a host name too, so its files are named
+after their directories. any other file under `vendor/` is named after
 the directory directly below the first `vendor/` (`vendor/serde/src/lib.rs` →
 `serde`), so a crate's own `vendor` directory does not rename it. a relative
 path that starts with `vendor/` is under `vendor/` too. otherwise the
