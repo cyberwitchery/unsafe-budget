@@ -423,6 +423,7 @@ fn dependency_unit_name(located: &str) -> Option<String> {
         .is_some_and(|ext| ext == "go");
     registry_crate(dirs)
         .or_else(|| git_checkout_crate(dirs))
+        .or_else(|| go_geiger::cached_module(located))
         .or_else(|| {
             if is_go {
                 go_geiger::vendored_package(located)
@@ -430,7 +431,6 @@ fn dependency_unit_name(located: &str) -> Option<String> {
                 vendored_crate(located)
             }
         })
-        .or_else(|| go_geiger::cached_module(located))
 }
 
 fn normal_components(path: &str) -> Vec<String> {
@@ -1739,6 +1739,77 @@ mod tests {
     }
 
     #[test]
+    fn test_go_files_are_named_below_the_innermost_vendor_and_other_files_below_the_first() {
+        let results = vec![
+            make_sarif_result(
+                "/home/u/proj/vendor/github.com/a/tool/vendor/github.com/b/lib/lib.go",
+                1,
+                1,
+                "unsafe",
+            ),
+            make_sarif_result(
+                "/home/runner/work/vendor/vendor/vendor/github.com/pkg/errors/errors.go",
+                2,
+                1,
+                "unsafe",
+            ),
+            make_sarif_result(
+                "/home/u/proj/vendor/r-efi/src/vendor/intel/console_control.rs",
+                3,
+                1,
+                "unsafe",
+            ),
+        ];
+        assert_eq!(
+            unit_counts(&scan_run(make_run("gosec", results))),
+            vec![
+                dep("github.com/b/lib", 1),
+                dep("github.com/pkg/errors", 1),
+                dep("r-efi", 1),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_dependency_caches_name_a_file_before_any_vendor_directory() {
+        let registry = "/home/u/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f";
+        let results = vec![
+            make_sarif_result(
+                "/srv/vendor/go/pkg/mod/github.com/pkg/errors@v0.9.1/errors.go",
+                1,
+                1,
+                "unsafe",
+            ),
+            make_sarif_result(
+                "/srv/vendor/go/pkg/mod/github.com/pkg/errors@v0.9.2/errors.go",
+                2,
+                1,
+                "unsafe",
+            ),
+            make_sarif_result(
+                &format!("{registry}/foo-sys-0.1.0/vendor/libfoo/foo.c"),
+                3,
+                1,
+                "unsafe",
+            ),
+            make_sarif_result(
+                "/home/u/.cargo/git/checkouts/bar-0123456789abcdef/1a2b3c4/vendor/libbar/bar.c",
+                4,
+                1,
+                "unsafe",
+            ),
+        ];
+        assert_eq!(
+            unit_counts(&scan_run(make_run("gosec", results))),
+            vec![
+                dep("bar", 1),
+                dep("foo-sys", 1),
+                dep("github.com/pkg/errors", 2),
+            ]
+        );
+    }
+
+    #[test]
     fn test_git_checkout_crates_are_named_after_the_checkout_or_member() {
         let checkouts = "/home/u/.cargo/git/checkouts";
         let results = vec![
@@ -1760,9 +1831,18 @@ mod tests {
                 1,
                 "unsafe",
             ),
+            make_sarif_result(
+                &format!("{checkouts}/tools-0123456789abcdef/1a2b3c4/bar/src/lib.rs"),
+                4,
+                1,
+                "unsafe",
+            ),
         ];
         let back = scan_run(make_run("rustc", results));
-        assert_eq!(unit_counts(&back), vec![dep("foo", 1), dep("my_crate", 2)]);
+        assert_eq!(
+            unit_counts(&back),
+            vec![dep("bar", 1), dep("foo", 1), dep("my_crate", 2)]
+        );
     }
 
     #[test]
