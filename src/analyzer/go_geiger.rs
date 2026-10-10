@@ -149,7 +149,7 @@ fn parse_geiger_output(
 ///
 /// returns `None` when no package name can be determined (e.g. bare
 /// filename with no parent directory).
-fn extract_go_package(file: &std::path::Path) -> Option<String> {
+pub(crate) fn extract_go_package(file: &std::path::Path) -> Option<String> {
     let path_str = file.to_string_lossy();
 
     cached_module(&path_str)
@@ -162,25 +162,54 @@ fn extract_go_package(file: &std::path::Path) -> Option<String> {
         })
 }
 
-/// the package directory below the last `/vendor/` in `path`
+/// the package directory below the innermost `vendor` directory in `path`
 /// (`…/vendor/github.com/pkg/errors/errors.go` → `github.com/pkg/errors`).
 pub(crate) fn vendored_package(path: &str) -> Option<String> {
-    let idx = path.rfind("/vendor/")?;
-    let after_vendor = &path[idx + 8..];
+    let after_vendor = match path.rfind("/vendor/") {
+        Some(idx) => &path[idx + 8..],
+        None => path.strip_prefix("vendor/")?,
+    };
     if let Some(end) = after_vendor.rfind('/') {
         return Some(after_vendor[..end].to_string());
     }
     Some(after_vendor.to_string())
 }
 
+/// the part of `path` below its first `vendor` directory.
+pub(crate) fn below_first_vendor(path: &str) -> Option<&str> {
+    path.strip_prefix("vendor/")
+        .or_else(|| path.split_once("/vendor/").map(|(_, below)| below))
+}
+
 /// the module a file in the go module cache belongs to, without its version
-/// (`…/go/pkg/mod/github.com/pkg/errors@v0.9.1/errors.go` → `github.com/pkg/errors`).
+/// (`…/go/pkg/mod/github.com/!burnt!sushi/toml@v1.3.2/decode.go` → `github.com/BurntSushi/toml`).
 pub(crate) fn cached_module(path: &str) -> Option<String> {
     let idx = path.find("/go/pkg/mod/")?;
     let after_mod = &path[idx + 12..];
     // format: module@version/path
     let at_idx = after_mod.find('@')?;
-    Some(after_mod[..at_idx].to_string())
+    let escaped = &after_mod[..at_idx];
+    Some(unescape_module_path(escaped).unwrap_or_else(|| escaped.to_string()))
+}
+
+/// `unescapeString` from golang.org/x/mod/module: `!` + a lower-case letter is
+/// that letter upper-cased; `None` for an invalid escaped path.
+fn unescape_module_path(escaped: &str) -> Option<String> {
+    let mut path = String::with_capacity(escaped.len());
+    let mut chars = escaped.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '!' => path.push(
+                chars
+                    .next()
+                    .filter(char::is_ascii_lowercase)?
+                    .to_ascii_uppercase(),
+            ),
+            c if c.is_ascii_uppercase() || !c.is_ascii() => return None,
+            c => path.push(c),
+        }
+    }
+    Some(path)
 }
 
 #[cfg(test)]
@@ -251,6 +280,57 @@ mod tests {
     fn test_extract_go_package_root_file_returns_none() {
         let path = Path::new("/main.go");
         assert_eq!(extract_go_package(path), None);
+    }
+
+    #[test]
+    fn test_extract_go_package_relative_vendor_path() {
+        let path = Path::new("vendor/github.com/pkg/errors/errors.go");
+        assert_eq!(
+            extract_go_package(path),
+            Some("github.com/pkg/errors".into())
+        );
+        let nested = Path::new("vendor/github.com/a/tool/vendor/github.com/b/lib/lib.go");
+        assert_eq!(extract_go_package(nested), Some("github.com/b/lib".into()));
+    }
+
+    #[test]
+    fn test_parse_geiger_output_relative_vendor_path_is_a_dependency() {
+        let output = b"vendor/github.com/pkg/errors/errors.go:100:5: unsafe.Pointer\n";
+        let opts = ScanOpts {
+            workspace_only: true,
+            ..Default::default()
+        };
+        let (units, details, _) = parse_geiger_output(output, &opts).unwrap();
+        assert!(units.is_empty());
+        assert!(details.is_empty());
+    }
+
+    #[test]
+    fn test_extract_go_package_module_cache_unescapes_upper_case() {
+        let path = Path::new("/home/u/go/pkg/mod/github.com/!burnt!sushi/toml@v1.3.2/decode.go");
+        assert_eq!(
+            extract_go_package(path),
+            Some("github.com/BurntSushi/toml".into())
+        );
+    }
+
+    #[test]
+    fn test_extract_go_package_module_cache_keeps_an_invalid_escaped_path() {
+        for module in [
+            "github.com/!burnt!sushi/Toml",
+            "github.com/!burnt!!sushi/toml",
+            "github.com/!burnt!1sushi/toml",
+            "github.com/!burnt!ésushi/toml",
+            "github.com/!burnt/brûlé",
+            "github.com/!burnt/toml!",
+        ] {
+            let path = format!("/home/u/go/pkg/mod/{module}@v1.3.2/decode.go");
+            assert_eq!(
+                extract_go_package(Path::new(&path)),
+                Some(module.into()),
+                "{module}"
+            );
+        }
     }
 
     #[test]

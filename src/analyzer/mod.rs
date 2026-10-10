@@ -167,7 +167,7 @@ pub(crate) fn classify_unit_kind(path: &std::path::Path) -> UnitKind {
     ];
 
     let path = path.to_string_lossy();
-    if DEP_MARKERS.iter().any(|marker| path.contains(marker)) {
+    if DEP_MARKERS.iter().any(|marker| path.contains(marker)) || path.starts_with("vendor/") {
         UnitKind::Dep
     } else {
         UnitKind::Workspace

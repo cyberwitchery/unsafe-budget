@@ -53,6 +53,7 @@ analyzer for go projects.
 
 **workspace vs dependency detection**:
 - files under `vendor/` or the Go module cache (`go/pkg/mod/`) are classified as dependencies
+- a dependency is named after its package below the innermost `vendor/`, or after its module in the module cache with go's case encoding undone (`github.com/!burnt!sushi/toml@v1.3.2` → `github.com/BurntSushi/toml`)
 - all other files are treated as workspace code
 
 **usage**:
@@ -139,14 +140,19 @@ version, as the rust analyzers do
 checkout file after the directory before the nearest `src` below the revision,
 or else the checkout's repository
 (`…/git/checkouts/my_crate-<hash>/<rev>/src/lib.rs` → `my_crate`); a go module
-cache file after its module
-(`…/go/pkg/mod/github.com/pkg/errors@v0.9.1/errors.go` →
-`github.com/pkg/errors`). these caches decide the name even when a `vendor`
-directory sits inside or above them. a `.go` file under `vendor/` is named
-after its package path below the innermost `vendor/`, as the go_geiger analyzer
-does (`vendor/a/vendor/b/x.go` → `b`); any other file under `vendor/` after the
-directory directly below the first `vendor/` (`vendor/serde/src/lib.rs` →
-`serde`), so a crate's own `vendor` directory does not rename it. otherwise the
+cache file after its module, with go's case encoding undone
+(`…/go/pkg/mod/github.com/!burnt!sushi/toml@v1.3.2/decode.go` →
+`github.com/BurntSushi/toml`). these caches decide the name even when a
+`vendor` directory sits inside or above them. a file in a go vendor tree is
+named after its package path below the innermost `vendor/`, as the go_geiger
+analyzer does (`vendor/a/vendor/b/x.go` → `b`): that is a `.go` file, or any
+file whose directory directly below the first `vendor/` holds a dot outside a
+cargo `-<version>` suffix, as the first element of a go module path does
+(`vendor/github.com/mattn/go-sqlite3/sqlite3-binding.c` →
+`github.com/mattn/go-sqlite3`). any other file under `vendor/` is named after
+the directory directly below the first `vendor/` (`vendor/serde/src/lib.rs` →
+`serde`), so a crate's own `vendor` directory does not rename it. a relative
+path that starts with `vendor/` is under `vendor/` too. otherwise the
 directory before the `src` component nearest the file names the crate
 (`my_crate/src/lib.rs` → `my_crate`), falling back to the first directory
 component (`crate_a/lib.rs` → `crate_a`) and to `unknown` for a bare filename.
