@@ -425,12 +425,40 @@ fn dependency_unit_name(located: &str) -> Option<String> {
         .or_else(|| git_checkout_crate(dirs))
         .or_else(|| go_geiger::cached_module(located))
         .or_else(|| {
-            if is_go {
+            if is_go || in_go_vendor_tree(located) {
                 go_geiger::vendored_package(located)
             } else {
                 vendored_crate(located)
             }
         })
+}
+
+/// whether the directory below the first `vendor/` is a go module host: `github.com`, not `lua5.4`.
+fn in_go_vendor_tree(located: &str) -> bool {
+    go_geiger::below_first_vendor(located)
+        .and_then(|below| below.split_once('/'))
+        .is_some_and(|(dir, _)| {
+            dir.rsplit_once('.')
+                .is_some_and(|(_, label)| label.starts_with(|c: char| c.is_ascii_lowercase()))
+                && !has_crate_version(dir)
+        })
+}
+
+/// `serde-1.0.200`: a `cargo vendor` crate directory with a `-<version>` suffix.
+fn has_crate_version(dir: &str) -> bool {
+    let before_dot = dir.split('.').next().unwrap_or(dir);
+    let Some(dash) = before_dot.rfind('-') else {
+        return false;
+    };
+    let mut parts = dir[dash + 1..].splitn(3, '.');
+    let number = |part: Option<&str>| {
+        part.is_some_and(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
+    };
+    number(parts.next())
+        && number(parts.next())
+        && parts
+            .next()
+            .is_some_and(|patch| patch.starts_with(|c: char| c.is_ascii_digit()))
 }
 
 fn normal_components(path: &str) -> Vec<String> {
@@ -473,7 +501,7 @@ fn strip_checkout_hash(dir: &str) -> &str {
 }
 
 fn vendored_crate(located: &str) -> Option<String> {
-    let (_, below) = located.split_once("/vendor/")?;
+    let below = go_geiger::below_first_vendor(located)?;
     below.split_once('/').map(|(dir, _)| dir.to_string())
 }
 
@@ -1898,5 +1926,154 @@ mod tests {
             unit_counts(&back),
             vec![("9f8e7d6", UnitKind::Workspace, 1)]
         );
+    }
+
+    #[test]
+    fn test_leading_vendor_dir_is_named_and_classified_like_one_under_srcroot() {
+        let mut results = vec![make_sarif_result("core/src/lib.rs", 1, 1, "unsafe")];
+        for path in [
+            "vendor/github.com/pkg/errors/errors.go",
+            "vendor/r-efi/src/vendor/intel/console_control.rs",
+        ] {
+            results.push(make_sarif_result(path, 2, 1, "unsafe"));
+            results.push(with_base(
+                make_sarif_result(path, 3, 1, "unsafe"),
+                "%SRCROOT%",
+            ));
+        }
+        let run = with_bases(
+            make_run("gosec", results),
+            &[("%SRCROOT%", "file:///home/runner/work/proj/proj/")],
+        );
+        assert_eq!(
+            unit_counts(&scan_run(run)),
+            vec![
+                ("core", UnitKind::Workspace, 1),
+                dep("github.com/pkg/errors", 2),
+                dep("r-efi", 2),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_non_go_files_in_a_go_vendor_tree_are_named_after_their_package() {
+        let results = [
+            "/home/u/proj/vendor/github.com/mattn/go-sqlite3/sqlite3-binding.c",
+            "/home/u/proj/vendor/github.com/foo/bar/bar.c",
+            "/home/u/proj/vendor/github.com/a/tool/vendor/golang.org/x/sys/unix/asm_linux_amd64.s",
+            "/home/u/proj/vendor/github.com/a/tool/vendor/golang.org/x/sys/unix/syscall_linux.go",
+            "/home/u/proj/vendor/serde-1.0.200/src/lib.rs",
+        ]
+        .iter()
+        .map(|path| make_sarif_result(path, 1, 1, "unsafe"))
+        .collect();
+        assert_eq!(
+            unit_counts(&scan_run(make_run("gosec", results))),
+            vec![
+                dep("github.com/foo/bar", 1),
+                dep("github.com/mattn/go-sqlite3", 1),
+                dep("golang.org/x/sys/unix", 2),
+                dep("serde-1.0.200", 1),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_the_first_directory_below_vendor_tells_a_go_tree_from_a_cargo_one() {
+        for (path, unit) in [
+            (
+                "/home/u/proj/vendor/github.com/foo/bar/bar.c",
+                "github.com/foo/bar",
+            ),
+            (
+                "/home/u/proj/vendor/gopkg.in/yaml.v3/yaml.h",
+                "gopkg.in/yaml.v3",
+            ),
+            (
+                "/home/u/proj/vendor/git-01.corp.example.com/x/y/y.s",
+                "git-01.corp.example.com/x/y",
+            ),
+            ("/home/u/proj/vendor/serde/src/de/mod.rs", "serde"),
+            (
+                "/home/u/proj/vendor/foo-sys/vendor/lua5.4/lapi.c",
+                "foo-sys",
+            ),
+            (
+                "/home/u/proj/vendor/serde-1.0.200/src/de/mod.rs",
+                "serde-1.0.200",
+            ),
+            (
+                "/home/u/proj/vendor/foo-0.1.0-alpha.1/src/lib.rs",
+                "foo-0.1.0-alpha.1",
+            ),
+            (
+                "/home/u/proj/vendor/windows_x86_64_gnu-0.48.5/lib/x.a",
+                "windows_x86_64_gnu-0.48.5",
+            ),
+            (
+                "/home/u/proj/vendor/foo-sys/vendor/github.com/a/b/b.c",
+                "foo-sys",
+            ),
+            (
+                "/home/u/proj/vendor/foo-1.0.0-beta.rc/src/lib.rs",
+                "foo-1.0.0-beta.rc",
+            ),
+            ("/home/u/proj/vendor/lua5.4/src/lapi.c", "lua5.4"),
+            (
+                "/home/u/proj/vendor/mbedtls-2.28/library/aes.c",
+                "mbedtls-2.28",
+            ),
+        ] {
+            assert_eq!(dependency_unit_name(path).as_deref(), Some(unit), "{path}");
+        }
+    }
+
+    #[test]
+    fn test_module_cache_and_vendor_tree_name_an_upper_case_module_alike() {
+        let results = vec![
+            make_sarif_result(
+                "/home/u/go/pkg/mod/github.com/!burnt!sushi/toml@v1.3.2/decode.go",
+                1,
+                1,
+                "unsafe",
+            ),
+            make_sarif_result(
+                "/home/u/proj/vendor/github.com/BurntSushi/toml/decode.go",
+                2,
+                1,
+                "unsafe",
+            ),
+            make_sarif_result(
+                "/home/u/go/pkg/mod/github.com/Burnt/toml@v1.3.2/decode.go",
+                3,
+                1,
+                "unsafe",
+            ),
+        ];
+        assert_eq!(
+            unit_counts(&scan_run(make_run("gosec", results))),
+            vec![
+                dep("github.com/Burnt/toml", 1),
+                dep("github.com/BurntSushi/toml", 2),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_go_dependency_files_are_named_as_go_geiger_names_them() {
+        for path in [
+            "/home/u/go/pkg/mod/github.com/!burnt!sushi/toml@v1.3.2/decode.go",
+            "/srv/vendor/go/pkg/mod/github.com/pkg/errors@v0.9.1/errors.go",
+            "/home/u/proj/vendor/github.com/a/tool/vendor/github.com/b/lib/lib.go",
+            "vendor/github.com/pkg/errors/errors.go",
+            "vendor/golang.org/x/sys/unix/syscall_linux.go",
+        ] {
+            let scan = scan_run(make_run(
+                "gosec",
+                vec![make_sarif_result(path, 1, 1, "unsafe")],
+            ));
+            let go_geiger_name = go_geiger::extract_go_package(Path::new(path)).unwrap();
+            assert_eq!(unit_counts(&scan), vec![dep(&go_geiger_name, 1)], "{path}");
+        }
     }
 }
