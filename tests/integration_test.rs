@@ -308,7 +308,7 @@ fn write_geiger_workspace(root: &Path) -> PathBuf {
         ),
         (
             "beta",
-            "[package]\nname = \"beta\"\nversion = \"0.2.0\"\nedition = \"2021\"\n\n[dependencies]\nalpha = { path = \"../alpha\" }\n",
+            "[package]\nname = \"beta\"\nversion = \"0.2.0\"\nedition = \"2021\"\n\n[dependencies]\na2 = { path = \"../alpha\", package = \"alpha\" }\n",
         ),
     ] {
         fs::create_dir_all(ws.join(name).join("src")).unwrap();
@@ -424,6 +424,26 @@ fn test_cargo_geiger_scans_each_member_and_counts_shared_dependencies_once() {
             count
         ))
     );
+
+    for (feature, member) in [
+        ("alpha/extra", &alpha),
+        ("a2/extra", &beta),
+        ("a2?/extra", &beta),
+    ] {
+        fs::remove_file(root.join("geiger.log")).unwrap();
+        run_ok(&mut geiger(&["--features", feature]));
+        let log = fs::read_to_string(root.join("geiger.log")).unwrap();
+        let mut calls: Vec<&str> = log.lines().filter(|c| c.contains("--features")).collect();
+        calls.sort();
+        assert_eq!(
+            calls,
+            [format!(
+                "geiger\t--output-format\tJson\t--features\t{feature}\t--manifest-path\t{}",
+                member.display()
+            )],
+            "{feature}"
+        );
+    }
 
     let output = geiger(&["--features", "nope"]).output().unwrap();
     assert!(!output.status.success());

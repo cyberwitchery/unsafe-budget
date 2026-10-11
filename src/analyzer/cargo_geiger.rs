@@ -658,6 +658,13 @@ mod tests {
         };
         let (units, _) = convert_reports(&reports, &members, &PackageDirs::new(), &include_deps);
         assert_eq!(unit_rows(&units)[1], ("itoa", UnitKind::Workspace, 150));
+
+        let workspace_only = ScanOpts {
+            workspace_only: true,
+            ..Default::default()
+        };
+        let (units, _) = convert_reports(&reports, &members, &PackageDirs::new(), &workspace_only);
+        assert_eq!(unit_rows(&units), [("itoa", UnitKind::Workspace, 4)]);
     }
 
     #[test]
