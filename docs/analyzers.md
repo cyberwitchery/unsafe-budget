@@ -34,7 +34,8 @@ each member gets the `--features` it declares, plus `pkg/feature` entries naming
 - counts unsafe functions, expressions, impls, traits, methods
 - more granular than rustc lint
 - distinguishes workspace vs dependency crates, and counts a dependency shared by several members once
-- warns about packages cargo-geiger reports no metrics for
+- counts a path package's compiled code only, minus the packages nested in its directory (members, `cargo vendor` output); cargo-geiger 0.11 lists registry code as unused, so a registry package counts all of its code
+- warns about packages cargo-geiger reports no metrics for, and about a target directory inside a member, whose generated code (a dependency's too) cargo-geiger counts as that member's
 - requires `cargo install cargo-geiger`; cargo-geiger 0.11 can't read a `version = 4` `Cargo.lock` and panics on git dependencies
 
 **usage**:

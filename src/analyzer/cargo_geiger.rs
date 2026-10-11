@@ -2,10 +2,10 @@ use crate::analyzer::process::{self, Run};
 use crate::analyzer::Analyzer;
 use crate::error::{Error, Result};
 use crate::model::{ParseWarning, ScanOpts, ScanResult, Unit, UnitKind};
-use cargo_metadata::{MetadataCommand, Package};
+use cargo_metadata::{CargoOpt, Metadata, MetadataCommand, Package};
 use serde::Deserialize;
 use std::collections::{BTreeSet, HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
@@ -21,14 +21,20 @@ impl Analyzer for CargoGeigerAnalyzer {
     }
 
     fn run(&self, opts: &ScanOpts) -> Result<ScanResult> {
-        let members = get_workspace_members(opts)?;
+        let metadata = get_metadata(opts)?;
+        let members = get_workspace_members(&metadata, opts)?;
         let mut reports = Vec::with_capacity(members.len());
         for member in &members {
             let mut cmd = build_cargo_geiger_command(opts, member)?;
             let output = run_cargo_geiger(&mut cmd, opts)?;
             reports.push(parse_geiger_output(&output)?);
         }
-        let (units, warnings) = convert_reports(&reports, &members, opts);
+        let (units, mut warnings) =
+            convert_reports(&reports, &members, &package_dirs(&metadata), opts);
+        warnings.extend(target_dir_warnings(
+            metadata.target_directory.as_std_path(),
+            &members,
+        ));
 
         // cargo-geiger doesn't provide line-level details in JSON output
         let mut result =
@@ -45,17 +51,20 @@ struct Member {
     features: Vec<String>,
 }
 
-/// get the workspace member packages, each with the requested features that apply to it.
-fn get_workspace_members(opts: &ScanOpts) -> Result<Vec<Member>> {
+/// `cargo metadata` for the workspace and every dependency any feature enables.
+fn get_metadata(opts: &ScanOpts) -> Result<Metadata> {
     let mut cmd = MetadataCommand::new();
-    cmd.no_deps();
+    cmd.features(CargoOpt::AllFeatures);
 
     if let Some(ref manifest_path) = opts.manifest_path {
         cmd.manifest_path(manifest_path);
     }
 
-    let metadata = cmd.exec()?;
+    Ok(cmd.exec()?)
+}
 
+/// get the workspace member packages, each with the requested features that apply to it.
+fn get_workspace_members(metadata: &Metadata, opts: &ScanOpts) -> Result<Vec<Member>> {
     // cargo reads a `--features` value as a space- or comma-separated list
     let requested: Vec<&str> = opts
         .features
@@ -104,6 +113,45 @@ fn feature_applies(feature: &str, package: &Package) -> bool {
         }
         None => package.features.contains_key(feature),
     }
+}
+
+/// package directories, keyed by name, version and whether the source is a path.
+type PackageDirs = HashMap<(String, String, bool), PathBuf>;
+
+fn package_dirs(metadata: &Metadata) -> PackageDirs {
+    metadata
+        .packages
+        .iter()
+        .filter_map(|p| {
+            let dir = p.manifest_path.parent()?.as_std_path().to_path_buf();
+            Some((
+                (
+                    p.name.to_string(),
+                    p.version.to_string(),
+                    p.source.is_none(),
+                ),
+                dir,
+            ))
+        })
+        .collect()
+}
+
+/// a warning for each member whose directory holds `target_dir`.
+fn target_dir_warnings(target_dir: &Path, members: &[Member]) -> Vec<ParseWarning> {
+    members
+        .iter()
+        .filter_map(|m| {
+            let dir = m.manifest_path.parent()?;
+            target_dir.starts_with(dir).then(|| ParseWarning {
+                message: format!(
+                    "cargo-geiger: {} is credited with the code generated under {}; set CARGO_TARGET_DIR outside {} to leave it out",
+                    m.name,
+                    target_dir.display(),
+                    dir.display()
+                ),
+            })
+        })
+        .collect()
 }
 
 /// build the `cargo geiger` command that scans `member`.
@@ -240,10 +288,51 @@ fn parse_geiger_output(output: &[u8]) -> Result<GeigerReport> {
     })
 }
 
-/// merge the per-member reports, counting each package once.
+fn dir_key(id: &PackageId) -> (String, String, bool) {
+    (
+        id.name.clone(),
+        id.version.clone(),
+        matches!(id.source, Source::Path(_)),
+    )
+}
+
+/// each package's count in `report`, less the `used` count of every package nested directly in its directory.
+fn own_counts(report: &GeigerReport, dirs: &PackageDirs) -> Vec<u64> {
+    let pkg_dirs: Vec<Option<&PathBuf>> = report
+        .packages
+        .iter()
+        .map(|p| dirs.get(&dir_key(&p.package.id)))
+        .collect();
+    let mut counts: Vec<u64> = report
+        .packages
+        .iter()
+        .map(|p| match p.package.id.source {
+            Source::Path(_) => p.unsafety.used.total_unsafe(),
+            // cargo-geiger 0.11 files registry code under `unused`
+            _ => p.unsafety.used.total_unsafe() + p.unsafety.unused.total_unsafe(),
+        })
+        .collect();
+
+    for (pkg, dir) in report.packages.iter().zip(&pkg_dirs) {
+        let Some(dir) = dir else { continue };
+        let container = pkg_dirs
+            .iter()
+            .enumerate()
+            .filter_map(|(i, d)| Some((i, (*d)?)))
+            .filter(|(_, d)| d != dir && dir.starts_with(d))
+            .max_by_key(|(_, d)| d.components().count());
+        if let Some((i, _)) = container {
+            counts[i] = counts[i].saturating_sub(pkg.unsafety.used.total_unsafe());
+        }
+    }
+    counts
+}
+
+/// merge the per-member reports: a member counts from its own report, any other package from the first that lists it.
 fn convert_reports(
     reports: &[GeigerReport],
     members: &[Member],
+    dirs: &PackageDirs,
     opts: &ScanOpts,
 ) -> (Vec<Unit>, Vec<ParseWarning>) {
     let exclude_deps = opts.workspace_only || !opts.include_deps;
@@ -265,23 +354,28 @@ fn convert_reports(
     let mut counts: HashMap<String, (UnitKind, u64)> = HashMap::new();
     let mut scanned: HashSet<&PackageId> = HashSet::new();
 
-    for pkg in reports.iter().flat_map(|r| &r.packages) {
-        let id = &pkg.package.id;
-        if !scanned.insert(id) {
-            continue;
-        }
-        let kind = kind_of(id);
-        if exclude_deps && kind == UnitKind::Dep {
-            continue;
-        }
+    for (report, member) in reports.iter().zip(members) {
+        for (pkg, unsafe_count) in report.packages.iter().zip(own_counts(report, dirs)) {
+            let id = &pkg.package.id;
+            let first = scanned.insert(id);
+            let kind = kind_of(id);
+            let counted = match kind {
+                UnitKind::Workspace => {
+                    (id.name.as_str(), id.version.as_str())
+                        == (member.name.as_str(), member.version.as_str())
+                }
+                UnitKind::Dep => first && !exclude_deps,
+            };
+            if !counted {
+                continue;
+            }
 
-        let unsafe_count = pkg.unsafety.used.total_unsafe() + pkg.unsafety.unused.total_unsafe();
-
-        let entry = counts.entry(id.name.clone()).or_insert((kind, 0));
-        if kind == UnitKind::Workspace {
-            entry.0 = kind;
+            let entry = counts.entry(id.name.clone()).or_insert((kind, 0));
+            if kind == UnitKind::Workspace {
+                entry.0 = kind;
+            }
+            entry.1 += unsafe_count;
         }
-        entry.1 += unsafe_count;
     }
 
     let unscanned: BTreeSet<&PackageId> = reports
@@ -310,6 +404,17 @@ mod tests {
 
     const ALPHA_REPORT: &str = include_str!("../../tests/fixtures/cargo_geiger/alpha.json");
     const BETA_REPORT: &str = include_str!("../../tests/fixtures/cargo_geiger/beta.json");
+    const MULTI_MEMBER_ROOT: &str =
+        include_str!("../../tests/fixtures/cargo_geiger/multi_member_root.json");
+    const MULTI_MEMBER_SIBLING: &str =
+        include_str!("../../tests/fixtures/cargo_geiger/multi_member_sibling.json");
+    const MULTI_MEMBER_ROOT_ON_SIBLING: &str =
+        include_str!("../../tests/fixtures/cargo_geiger/multi_member_root_on_sibling.json");
+    const VENDORED_REPORT: &str = include_str!("../../tests/fixtures/cargo_geiger/vendored.json");
+    const BIN_MEMBER_ALPHA: &str =
+        include_str!("../../tests/fixtures/cargo_geiger/bin_member_alpha.json");
+    const BIN_MEMBER_ZETA: &str =
+        include_str!("../../tests/fixtures/cargo_geiger/bin_member_zeta.json");
 
     fn member(name: &str, version: &str) -> Member {
         Member {
@@ -322,6 +427,36 @@ mod tests {
 
     fn fixture_members() -> Vec<Member> {
         vec![member("alpha", "0.1.0"), member("beta", "0.2.0")]
+    }
+
+    fn multi_member_members() -> Vec<Member> {
+        ["rootpkg", "sibling"]
+            .into_iter()
+            .zip(["", "sibling/"])
+            .map(|(name, dir)| Member {
+                manifest_path: PathBuf::from(format!(
+                    "/work/multi_member_workspace/{dir}Cargo.toml"
+                )),
+                ..member(name, "0.1.0")
+            })
+            .collect()
+    }
+
+    fn multi_member_dirs() -> PackageDirs {
+        PackageDirs::from([
+            (
+                dir_key_of("rootpkg", "0.1.0", true),
+                PathBuf::from("/work/multi_member_workspace"),
+            ),
+            (
+                dir_key_of("sibling", "0.1.0", true),
+                PathBuf::from("/work/multi_member_workspace/sibling"),
+            ),
+        ])
+    }
+
+    fn dir_key_of(name: &str, version: &str, path: bool) -> (String, String, bool) {
+        (name.into(), version.into(), path)
     }
 
     fn report(json: &str) -> GeigerReport {
@@ -440,7 +575,8 @@ mod tests {
             include_deps: true,
             ..Default::default()
         };
-        let (units, warnings) = convert_reports(&reports, &fixture_members(), &opts);
+        let (units, warnings) =
+            convert_reports(&reports, &fixture_members(), &PackageDirs::new(), &opts);
 
         assert_eq!(
             unit_rows(&units),
@@ -467,7 +603,8 @@ mod tests {
                 ..Default::default()
             },
         ] {
-            let (units, _) = convert_reports(&reports, &fixture_members(), &opts);
+            let (units, _) =
+                convert_reports(&reports, &fixture_members(), &PackageDirs::new(), &opts);
             assert_eq!(
                 unit_rows(&units),
                 [
@@ -485,7 +622,12 @@ mod tests {
             include_deps: true,
             ..Default::default()
         };
-        let (units, _) = convert_reports(&reports, &[member("beta", "0.2.0")], &opts);
+        let (units, _) = convert_reports(
+            &reports,
+            &[member("beta", "0.2.0")],
+            &PackageDirs::new(),
+            &opts,
+        );
 
         assert_eq!(units[0].name, "alpha");
         assert_eq!(units[0].kind, UnitKind::Dep);
@@ -494,13 +636,12 @@ mod tests {
     #[test]
     fn test_convert_reports_takes_a_registry_package_named_like_a_member_as_a_dependency() {
         let reports = [report(BETA_REPORT)];
-        let mut members = fixture_members();
-        members.push(member("itoa", "1.0.18"));
+        let members = [member("beta", "0.2.0"), member("itoa", "1.0.18")];
         let opts = ScanOpts {
             workspace_only: true,
             ..Default::default()
         };
-        let (units, _) = convert_reports(&reports, &members, &opts);
+        let (units, _) = convert_reports(&reports, &members, &PackageDirs::new(), &opts);
 
         assert!(units.iter().all(|u| u.name != "itoa"));
     }
@@ -508,20 +649,179 @@ mod tests {
     #[test]
     fn test_convert_reports_makes_a_unit_shared_by_a_dependency_and_a_member_workspace() {
         let mut value: serde_json::Value = serde_json::from_str(BETA_REPORT).unwrap();
-        let packages = value["packages"].as_array_mut().unwrap();
-        let mut renamed_beta = packages[1].clone();
-        renamed_beta["package"]["id"]["name"] = "itoa".into();
-        packages.push(renamed_beta);
+        value["packages"][1]["package"]["id"]["name"] = "itoa".into();
         let reports = [serde_json::from_value(value).unwrap()];
-        let mut members = fixture_members();
-        members.push(member("itoa", "0.2.0"));
+        let members = [member("itoa", "0.2.0")];
+        let include_deps = ScanOpts {
+            include_deps: true,
+            ..Default::default()
+        };
+        let (units, _) = convert_reports(&reports, &members, &PackageDirs::new(), &include_deps);
+        assert_eq!(unit_rows(&units)[1], ("itoa", UnitKind::Workspace, 150));
+    }
+
+    #[test]
+    fn test_convert_reports_counts_only_used_code_of_a_root_package() {
+        let reports = [report(MULTI_MEMBER_ROOT), report(MULTI_MEMBER_SIBLING)];
+        let members = multi_member_members();
+        let (units, _) = convert_reports(
+            &reports,
+            &members,
+            &multi_member_dirs(),
+            &ScanOpts::default(),
+        );
+
+        assert_eq!(
+            unit_rows(&units),
+            [
+                ("rootpkg", UnitKind::Workspace, 0),
+                ("sibling", UnitKind::Workspace, 5),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_convert_reports_subtracts_a_member_nested_in_another() {
+        let reports = [
+            report(MULTI_MEMBER_ROOT_ON_SIBLING),
+            report(MULTI_MEMBER_SIBLING),
+        ];
+        let members = multi_member_members();
+        let (units, _) = convert_reports(
+            &reports,
+            &members,
+            &multi_member_dirs(),
+            &ScanOpts::default(),
+        );
+
+        assert_eq!(
+            unit_rows(&units),
+            [
+                ("rootpkg", UnitKind::Workspace, 0),
+                ("sibling", UnitKind::Workspace, 5),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_convert_reports_subtracts_vendored_dependencies() {
+        let reports = [report(VENDORED_REPORT)];
+        let dirs = PackageDirs::from([
+            (
+                dir_key_of("vend", "0.1.0", true),
+                PathBuf::from("/work/vend"),
+            ),
+            (
+                dir_key_of("itoa", "1.0.18", false),
+                PathBuf::from("/work/vend/vendor/itoa"),
+            ),
+        ]);
         let opts = ScanOpts {
             include_deps: true,
             ..Default::default()
         };
-        let (units, _) = convert_reports(&reports, &members, &opts);
+        let (units, _) = convert_reports(&reports, &[member("vend", "0.1.0")], &dirs, &opts);
 
-        assert_eq!(unit_rows(&units)[2], ("itoa", UnitKind::Workspace, 150));
+        assert_eq!(
+            unit_rows(&units),
+            [
+                ("itoa", UnitKind::Dep, 146),
+                ("vend", UnitKind::Workspace, 0),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_own_counts_subtracts_a_nested_package_from_its_nearest_container_only() {
+        let mut value: serde_json::Value =
+            serde_json::from_str(MULTI_MEMBER_ROOT_ON_SIBLING).unwrap();
+        let packages = value["packages"].as_array_mut().unwrap();
+        let mut nested = packages[1].clone();
+        nested["package"]["id"]["name"] = "nested".into();
+        packages.push(nested);
+        for (package, used) in packages.iter_mut().zip([12, 10, 5]) {
+            let counts = package["unsafety"]["used"].as_object_mut().unwrap();
+            for count in counts.values_mut() {
+                count["unsafe_"] = 0.into();
+            }
+            counts["functions"]["unsafe_"] = used.into();
+        }
+        let report: GeigerReport = serde_json::from_value(value).unwrap();
+        let mut dirs = multi_member_dirs();
+        dirs.insert(
+            dir_key_of("nested", "0.1.0", true),
+            PathBuf::from("/work/multi_member_workspace/sibling/nested"),
+        );
+
+        assert_eq!(own_counts(&report, &dirs), [2, 5, 5]);
+    }
+
+    #[test]
+    fn test_convert_reports_takes_a_member_from_its_own_report() {
+        let reports = [report(BIN_MEMBER_ALPHA), report(BIN_MEMBER_ZETA)];
+        let members = [member("alpha", "0.1.0"), member("zeta", "0.1.0")];
+        let (units, _) = convert_reports(
+            &reports,
+            &members,
+            &PackageDirs::new(),
+            &ScanOpts::default(),
+        );
+
+        assert_eq!(
+            unit_rows(&units),
+            [
+                ("alpha", UnitKind::Workspace, 0),
+                ("zeta", UnitKind::Workspace, 4),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_package_dirs_include_an_optional_path_dependency_outside_the_workspace() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        for (dir, manifest) in [
+            (
+                root.clone(),
+                "[package]\nname = \"vend\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\ngamma = { path = \"vendor/gamma\", optional = true }\n",
+            ),
+            (
+                root.join("vendor/gamma"),
+                "[package]\nname = \"gamma\"\nversion = \"0.3.0\"\nedition = \"2021\"\n",
+            ),
+        ] {
+            std::fs::create_dir_all(dir.join("src")).unwrap();
+            std::fs::write(dir.join("Cargo.toml"), manifest).unwrap();
+            std::fs::write(dir.join("src/lib.rs"), "").unwrap();
+        }
+        let opts = ScanOpts {
+            manifest_path: Some(root.join("Cargo.toml")),
+            ..Default::default()
+        };
+        let metadata = get_metadata(&opts).unwrap();
+
+        assert_eq!(get_workspace_members(&metadata, &opts).unwrap().len(), 1);
+        assert_eq!(
+            package_dirs(&metadata).get(&dir_key_of("gamma", "0.3.0", true)),
+            Some(&root.join("vendor/gamma"))
+        );
+    }
+
+    #[test]
+    fn test_target_dir_warnings_name_the_member_holding_the_target_directory() {
+        let members = multi_member_members();
+        let warnings =
+            target_dir_warnings(Path::new("/work/multi_member_workspace/target"), &members);
+
+        assert_eq!(warnings.len(), 1);
+        assert!(
+            warnings[0]
+                .message
+                .starts_with("cargo-geiger: rootpkg is credited"),
+            "{}",
+            warnings[0].message
+        );
+        assert!(target_dir_warnings(Path::new("/elsewhere/target"), &members).is_empty());
     }
 
     #[test]
@@ -531,7 +831,8 @@ mod tests {
             include_deps: true,
             ..Default::default()
         };
-        let (units, warnings) = convert_reports(&reports, &fixture_members(), &opts);
+        let (units, warnings) =
+            convert_reports(&reports, &fixture_members(), &PackageDirs::new(), &opts);
 
         assert!(units.iter().all(|u| u.name != "itoa"));
         assert_eq!(
@@ -546,7 +847,12 @@ mod tests {
             workspace_only: true,
             ..Default::default()
         };
-        let (_, warnings) = convert_reports(&reports, &fixture_members(), &workspace_only);
+        let (_, warnings) = convert_reports(
+            &reports,
+            &fixture_members(),
+            &PackageDirs::new(),
+            &workspace_only,
+        );
         assert!(warnings.is_empty());
     }
 
@@ -557,7 +863,8 @@ mod tests {
             include_deps: true,
             ..Default::default()
         };
-        let (units, warnings) = convert_reports(&reports, &fixture_members(), &opts);
+        let (units, warnings) =
+            convert_reports(&reports, &fixture_members(), &PackageDirs::new(), &opts);
 
         assert!(units
             .iter()
