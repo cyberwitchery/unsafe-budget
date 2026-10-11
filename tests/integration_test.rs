@@ -402,6 +402,18 @@ fn test_cargo_geiger_scans_each_member_and_counts_shared_dependencies_once() {
         ]
     );
 
+    fs::remove_file(root.join("geiger.log")).unwrap();
+    run_ok(&mut geiger(&["--features", "extra more"]));
+    let log = fs::read_to_string(root.join("geiger.log")).unwrap();
+    assert!(
+        log.lines().any(|call| call
+            == format!(
+                "geiger\t--output-format\tJson\t--features\textra more\t--manifest-path\t{}",
+                alpha.display()
+            )),
+        "{log}"
+    );
+
     let stdout = run_ok(&mut geiger(&["--workspace-only"]));
     let result: serde_json::Value = serde_json::from_slice(&stdout).unwrap();
     assert_eq!(

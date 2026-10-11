@@ -56,6 +56,13 @@ fn get_workspace_members(opts: &ScanOpts) -> Result<Vec<Member>> {
 
     let metadata = cmd.exec()?;
 
+    // cargo reads a `--features` value as a space- or comma-separated list
+    let requested: Vec<&str> = opts
+        .features
+        .iter()
+        .flat_map(|f| f.split_whitespace())
+        .collect();
+
     let members: Vec<Member> = metadata
         .workspace_packages()
         .into_iter()
@@ -63,19 +70,17 @@ fn get_workspace_members(opts: &ScanOpts) -> Result<Vec<Member>> {
             name: p.name.to_string(),
             version: p.version.to_string(),
             manifest_path: p.manifest_path.clone().into(),
-            features: opts
-                .features
+            features: requested
                 .iter()
                 .filter(|f| feature_applies(f, p))
-                .cloned()
+                .map(|f| f.to_string())
                 .collect(),
         })
         .collect();
 
-    if let Some(feature) = opts
-        .features
+    if let Some(feature) = requested
         .iter()
-        .find(|f| !members.iter().any(|m| m.features.contains(f)))
+        .find(|f| !members.iter().any(|m| m.features.iter().any(|x| x == *f)))
     {
         return Err(Error::Analyzer {
             analyzer: "cargo_geiger".into(),
