@@ -26,12 +26,16 @@ unsafe-budget scan --analyzer rustc_unsafe_lint
 
 alternative rust analyzer using cargo-geiger.
 
-**backend**: `cargo geiger --output-format json`
+**backend**: `cargo geiger --output-format Json --manifest-path <member>/Cargo.toml`, once per workspace member
+
+each member gets the `--features` it declares, plus `pkg/feature` entries naming it or one of its dependencies; a feature no member has is an error. cargo-geiger takes one target, so `--targets` accepts at most one.
 
 **features**:
 - counts unsafe functions, expressions, impls, traits, methods
 - more granular than rustc lint
-- requires `cargo install cargo-geiger`
+- distinguishes workspace vs dependency crates, and counts a dependency shared by several members once
+- warns about packages cargo-geiger reports no metrics for
+- requires `cargo install cargo-geiger`; cargo-geiger 0.11 can't read a `version = 4` `Cargo.lock` and panics on git dependencies
 
 **usage**:
 ```bash

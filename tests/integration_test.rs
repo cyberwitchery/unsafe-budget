@@ -298,6 +298,130 @@ fn test_workspace_only_and_no_deps_exclude_dependency_units() {
     }
 }
 
+#[cfg(unix)]
+fn write_geiger_workspace(root: &Path) -> PathBuf {
+    let ws = root.join("ws");
+    for (name, manifest) in [
+        (
+            "alpha",
+            "[package]\nname = \"alpha\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[features]\nextra = []\nmore = []\n",
+        ),
+        (
+            "beta",
+            "[package]\nname = \"beta\"\nversion = \"0.2.0\"\nedition = \"2021\"\n\n[dependencies]\nalpha = { path = \"../alpha\" }\n",
+        ),
+    ] {
+        fs::create_dir_all(ws.join(name).join("src")).unwrap();
+        fs::write(ws.join(name).join("Cargo.toml"), manifest).unwrap();
+        fs::write(ws.join(name).join("src/lib.rs"), "").unwrap();
+    }
+    fs::write(
+        ws.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"alpha\", \"beta\"]\nresolver = \"2\"\n",
+    )
+    .unwrap();
+    ws.join("Cargo.toml")
+}
+
+/// a `cargo-geiger` that logs its tab-joined argv and prints the captured report for the member it scans.
+#[cfg(unix)]
+fn write_cargo_geiger_stub(root: &Path) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+
+    let bin = root.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let reports = project_root().join("tests/fixtures/cargo_geiger");
+    let stub = bin.join("cargo-geiger");
+    fs::write(
+        &stub,
+        format!(
+            r#"#!/bin/sh
+(IFS=$(printf '\t'); printf '%s\n' "$*") >> "{log}"
+case "$*" in
+*/alpha/Cargo.toml) cat "{reports}/alpha.json" ;;
+*/beta/Cargo.toml) cat "{reports}/beta.json" ;;
+*) exit 1 ;;
+esac
+"#,
+            log = root.join("geiger.log").display(),
+            reports = reports.display(),
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&stub, fs::Permissions::from_mode(0o755)).unwrap();
+    bin
+}
+
+#[cfg(unix)]
+#[test]
+fn test_cargo_geiger_scans_each_member_and_counts_shared_dependencies_once() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().canonicalize().unwrap();
+    let manifest = write_geiger_workspace(&root);
+    let mut path = vec![write_cargo_geiger_stub(&root)];
+    path.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
+    let path = std::env::join_paths(path).unwrap();
+    let geiger = |args: &[&str]| {
+        let mut cmd = unsafe_budget(
+            &root,
+            &manifest,
+            &["scan", "--analyzer", "cargo_geiger", "--format", "json"],
+        );
+        cmd.args(args).env("PATH", &path);
+        cmd
+    };
+
+    let stdout = run_ok(&mut geiger(&["--include-deps", "--features", "extra,more"]));
+    let result: serde_json::Value = serde_json::from_slice(&stdout).unwrap();
+    assert_eq!(
+        unit_counts(&result),
+        [
+            ("alpha", "workspace", 8),
+            ("beta", "workspace", 4),
+            ("itoa", "dep", 146),
+        ]
+        .map(|(name, kind, count)| (name.to_string(), kind.to_string(), count))
+    );
+
+    let log = fs::read_to_string(root.join("geiger.log")).unwrap();
+    let mut calls: Vec<&str> = log.lines().collect();
+    calls.sort();
+    let alpha = root.join("ws/alpha/Cargo.toml");
+    let beta = root.join("ws/beta/Cargo.toml");
+    assert_eq!(
+        calls,
+        [
+            format!(
+                "geiger\t--output-format\tJson\t--features\textra more\t--manifest-path\t{}",
+                alpha.display()
+            ),
+            format!(
+                "geiger\t--output-format\tJson\t--manifest-path\t{}",
+                beta.display()
+            ),
+        ]
+    );
+
+    let stdout = run_ok(&mut geiger(&["--workspace-only"]));
+    let result: serde_json::Value = serde_json::from_slice(&stdout).unwrap();
+    assert_eq!(
+        unit_counts(&result),
+        [("alpha", "workspace", 8), ("beta", "workspace", 4)].map(|(name, kind, count)| (
+            name.to_string(),
+            kind.to_string(),
+            count
+        ))
+    );
+
+    let output = geiger(&["--features", "nope"]).output().unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("no workspace member has the feature `nope`"),
+        "{stderr}"
+    );
+}
+
 #[test]
 fn test_budget_logic() {
     use unsafe_budget::budget;

@@ -49,6 +49,9 @@ example with extra flags:
     args: --analyzer cargo_geiger --workspace-only
 ```
 
+the `cargo_geiger` analyzer runs `cargo geiger`, so install cargo-geiger in an
+earlier step.
+
 ### installing via cargo
 
 ```yaml
