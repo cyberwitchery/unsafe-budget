@@ -298,6 +298,250 @@ fn test_workspace_only_and_no_deps_exclude_dependency_units() {
     }
 }
 
+#[cfg(unix)]
+fn write_geiger_workspace(root: &Path) -> PathBuf {
+    let ws = root.join("ws");
+    for (name, manifest) in [
+        (
+            "alpha",
+            "[package]\nname = \"alpha\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[features]\nextra = []\nmore = []\n",
+        ),
+        (
+            "beta",
+            "[package]\nname = \"beta\"\nversion = \"0.2.0\"\nedition = \"2021\"\n\n[dependencies]\na2 = { path = \"../alpha\", package = \"alpha\" }\n",
+        ),
+    ] {
+        fs::create_dir_all(ws.join(name).join("src")).unwrap();
+        fs::write(ws.join(name).join("Cargo.toml"), manifest).unwrap();
+        fs::write(ws.join(name).join("src/lib.rs"), "").unwrap();
+    }
+    fs::write(
+        ws.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"alpha\", \"beta\"]\nresolver = \"2\"\n",
+    )
+    .unwrap();
+    ws.join("Cargo.toml")
+}
+
+/// a `PATH` whose `cargo-geiger` logs its tab-joined argv and prints the report given for the member directory it scans.
+#[cfg(unix)]
+fn write_cargo_geiger_stub(root: &Path, reports: &[(&str, PathBuf)]) -> std::ffi::OsString {
+    use std::os::unix::fs::PermissionsExt;
+
+    let bin = root.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let cases: String = reports
+        .iter()
+        .map(|(dir, report)| format!("*/{dir}/Cargo.toml) cat \"{}\" ;;\n", report.display()))
+        .collect();
+    let stub = bin.join("cargo-geiger");
+    fs::write(
+        &stub,
+        format!(
+            r#"#!/bin/sh
+(IFS=$(printf '\t'); printf '%s\n' "$*") >> "{log}"
+case "$*" in
+{cases}*) exit 1 ;;
+esac
+"#,
+            log = root.join("geiger.log").display(),
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&stub, fs::Permissions::from_mode(0o755)).unwrap();
+    let mut path = vec![bin];
+    path.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
+    std::env::join_paths(path).unwrap()
+}
+
+#[cfg(unix)]
+#[test]
+fn test_cargo_geiger_scans_each_member_and_counts_shared_dependencies_once() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().canonicalize().unwrap();
+    let manifest = write_geiger_workspace(&root);
+    let reports = project_root().join("tests/fixtures/cargo_geiger");
+    let path = write_cargo_geiger_stub(
+        &root,
+        &[
+            ("alpha", reports.join("alpha.json")),
+            ("beta", reports.join("beta.json")),
+        ],
+    );
+    let geiger = |args: &[&str]| {
+        let mut cmd = unsafe_budget(
+            &root,
+            &manifest,
+            &["scan", "--analyzer", "cargo_geiger", "--format", "json"],
+        );
+        cmd.args(args).env("PATH", &path);
+        cmd
+    };
+
+    let stdout = run_ok(&mut geiger(&["--include-deps", "--features", "extra,more"]));
+    let result: serde_json::Value = serde_json::from_slice(&stdout).unwrap();
+    assert_eq!(
+        unit_counts(&result),
+        [
+            ("alpha", "workspace", 8),
+            ("beta", "workspace", 4),
+            ("itoa", "dep", 146),
+        ]
+        .map(|(name, kind, count)| (name.to_string(), kind.to_string(), count))
+    );
+
+    let log = fs::read_to_string(root.join("geiger.log")).unwrap();
+    let mut calls: Vec<&str> = log.lines().collect();
+    calls.sort();
+    let alpha = root.join("ws/alpha/Cargo.toml");
+    let beta = root.join("ws/beta/Cargo.toml");
+    assert_eq!(
+        calls,
+        [
+            format!(
+                "geiger\t--output-format\tJson\t--build-dependencies\t--features\textra more\t--manifest-path\t{}",
+                alpha.display()
+            ),
+            format!(
+                "geiger\t--output-format\tJson\t--build-dependencies\t--manifest-path\t{}",
+                beta.display()
+            ),
+        ]
+    );
+
+    fs::remove_file(root.join("geiger.log")).unwrap();
+    run_ok(&mut geiger(&["--features", "extra more"]));
+    let log = fs::read_to_string(root.join("geiger.log")).unwrap();
+    assert!(
+        log.lines().any(|call| call
+            == format!(
+                "geiger\t--output-format\tJson\t--build-dependencies\t--features\textra more\t--manifest-path\t{}",
+                alpha.display()
+            )),
+        "{log}"
+    );
+
+    let stdout = run_ok(&mut geiger(&["--workspace-only"]));
+    let result: serde_json::Value = serde_json::from_slice(&stdout).unwrap();
+    assert_eq!(
+        unit_counts(&result),
+        [("alpha", "workspace", 8), ("beta", "workspace", 4)].map(|(name, kind, count)| (
+            name.to_string(),
+            kind.to_string(),
+            count
+        ))
+    );
+
+    for (feature, member) in [
+        ("alpha/extra", &alpha),
+        ("a2/extra", &beta),
+        ("a2?/extra", &beta),
+    ] {
+        fs::remove_file(root.join("geiger.log")).unwrap();
+        run_ok(&mut geiger(&["--features", feature]));
+        let log = fs::read_to_string(root.join("geiger.log")).unwrap();
+        let mut calls: Vec<&str> = log.lines().filter(|c| c.contains("--features")).collect();
+        calls.sort();
+        assert_eq!(
+            calls,
+            [format!(
+                "geiger\t--output-format\tJson\t--build-dependencies\t--features\t{feature}\t--manifest-path\t{}",
+                member.display()
+            )],
+            "{feature}"
+        );
+    }
+
+    let output = geiger(&["--features", "nope"]).output().unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("no workspace member has the feature `nope`"),
+        "{stderr}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_cargo_geiger_subtracts_a_nested_member_and_warns_about_generated_unsafe_code() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().canonicalize().unwrap();
+    let ws = root.join("ws");
+    for (dir, manifest) in [
+        (
+            ws.clone(),
+            "[package]\nname = \"rootpkg\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nsibling = { path = \"sibling\" }\n\n[workspace]\nmembers = [\"sibling\"]\n",
+        ),
+        (
+            ws.join("sibling"),
+            "[package]\nname = \"sibling\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        ),
+    ] {
+        fs::create_dir_all(dir.join("src")).unwrap();
+        fs::write(dir.join("Cargo.toml"), manifest).unwrap();
+        fs::write(dir.join("src/lib.rs"), "").unwrap();
+    }
+    let reports = project_root().join("tests/fixtures/cargo_geiger");
+    let mut report: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(reports.join("multi_member_root_on_sibling.json")).unwrap(),
+    )
+    .unwrap();
+    // rootpkg gains 2 unsafe expressions of its own, sibling 3 in code that isn't compiled
+    report["packages"][0]["unsafety"]["used"]["exprs"]["unsafe_"] = 7.into();
+    for package in report["packages"].as_array_mut().unwrap() {
+        package["unsafety"]["unused"]["exprs"]["unsafe_"] = 3.into();
+    }
+    let root_report = root.join("rootpkg.json");
+    fs::write(&root_report, report.to_string()).unwrap();
+    let out = ws.join("target/debug/build/gen-0123/out");
+    fs::create_dir_all(&out).unwrap();
+    fs::write(out.join("gen.rs"), "pub unsafe fn f() {}\n").unwrap();
+    let path = write_cargo_geiger_stub(
+        &root,
+        &[
+            ("sibling", reports.join("multi_member_sibling.json")),
+            ("ws", root_report),
+        ],
+    );
+
+    let mut cmd = unsafe_budget(
+        &root,
+        &ws.join("Cargo.toml"),
+        &[
+            "scan",
+            "--analyzer",
+            "cargo_geiger",
+            "--format",
+            "json",
+            "--workspace-only",
+        ],
+    );
+    cmd.env("PATH", &path)
+        .env("CARGO_TARGET_DIR", ws.join("target"));
+    let result: serde_json::Value = serde_json::from_slice(&run_ok(&mut cmd)).unwrap();
+
+    assert_eq!(
+        unit_counts(&result),
+        [("rootpkg", "workspace", 2), ("sibling", "workspace", 5)].map(|(name, kind, count)| (
+            name.to_string(),
+            kind.to_string(),
+            count
+        ))
+    );
+    let warnings = result["parse_warnings"].as_array().unwrap();
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(
+        warnings[0]["message"]
+            .as_str()
+            .unwrap()
+            .starts_with(&format!(
+                "cargo-geiger: rootpkg may be credited with the unsafe code a build script generated in {};",
+                out.join("gen.rs").display()
+            )),
+        "{warnings:?}"
+    );
+}
+
 #[test]
 fn test_budget_logic() {
     use unsafe_budget::budget;
