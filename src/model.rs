@@ -194,9 +194,9 @@ pub struct Occurrence {
     pub unit: String,
     /// file path relative to the project root.
     pub file: PathBuf,
-    /// line number (1-indexed).
+    /// line number (1-indexed), or 0 when unknown.
     pub line: u32,
-    /// column number (1-indexed).
+    /// column number (1-indexed), or 0 when unknown.
     pub col: u32,
     /// optional message describing the unsafe usage.
     #[serde(skip_serializing_if = "Option::is_none")]

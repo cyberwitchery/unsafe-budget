@@ -69,6 +69,20 @@ pub struct Unit {
 }
 ```
 
+### Occurrence
+
+one unsafe site, listed in `details`:
+
+```rust
+pub struct Occurrence {
+    pub unit: String,
+    pub file: PathBuf,
+    pub line: u32,  // 1-indexed, 0 when unknown
+    pub col: u32,   // 1-indexed, 0 when unknown
+    pub message: Option<String>,
+}
+```
+
 ## analyzer trait
 
 all analyzers implement:

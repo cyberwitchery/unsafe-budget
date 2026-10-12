@@ -1057,6 +1057,35 @@ mod tests {
     }
 
     #[test]
+    fn test_roundtrip_keeps_an_unknown_line_or_column() {
+        let opts = ScanOpts::default();
+        let occ = |file: &str, line, col| Occurrence {
+            unit: "my_crate".into(),
+            file: PathBuf::from(file),
+            line,
+            col,
+            message: Some("unsafe".into()),
+        };
+        let details = vec![
+            occ("src/a.rs", 0, 0),
+            occ("src/b.rs", 7, 0),
+            occ("src/b.rs", 9, 3),
+        ];
+        let units = vec![Unit {
+            name: "my_crate".into(),
+            kind: UnitKind::Workspace,
+            unsafe_count: 3,
+        }];
+        let scan = ScanResult::from_parts("sarif", "rust", &opts, units, details.clone());
+
+        let json = serde_json::to_string(&crate::sarif::scan_to_sarif(&scan)).unwrap();
+        let back = convert_sarif(&serde_json::from_str(&json).unwrap(), &opts).unwrap();
+
+        assert_eq!(back.details, details);
+        assert_eq!(back.units, scan.units);
+    }
+
+    #[test]
     fn test_third_party_sarif_ingest_is_unchanged() {
         let path =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sample.sarif");
