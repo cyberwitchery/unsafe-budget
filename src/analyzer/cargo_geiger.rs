@@ -123,7 +123,8 @@ fn package_dirs(metadata: &Metadata) -> PackageDirs {
         .packages
         .iter()
         .filter_map(|p| {
-            let dir = p.manifest_path.parent()?.as_std_path().to_path_buf();
+            let dir = p.manifest_path.parent()?.as_std_path();
+            let dir = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
             Some((
                 (
                     p.name.to_string(),
@@ -136,28 +137,77 @@ fn package_dirs(metadata: &Metadata) -> PackageDirs {
         .collect()
 }
 
-/// a warning for each member whose directory holds `target_dir`.
+/// a warning for each member whose directory holds `target_dir`, if a build script generated unsafe code there.
 fn target_dir_warnings(target_dir: &Path, members: &[Member]) -> Vec<ParseWarning> {
-    members
+    let holders: Vec<(&Member, &Path)> = members
         .iter()
-        .filter_map(|m| {
-            let dir = m.manifest_path.parent()?;
-            target_dir.starts_with(dir).then(|| ParseWarning {
-                message: format!(
-                    "cargo-geiger: {} is credited with the code generated under {}; set CARGO_TARGET_DIR outside {} to leave it out",
-                    m.name,
-                    target_dir.display(),
-                    dir.display()
-                ),
-            })
+        .filter_map(|m| Some((m, m.manifest_path.parent()?)))
+        .filter(|(_, dir)| target_dir.starts_with(dir))
+        .collect();
+    if holders.is_empty() || !generated_unsafe_code(target_dir) {
+        return Vec::new();
+    }
+    holders
+        .into_iter()
+        .map(|(m, dir)| ParseWarning {
+            message: format!(
+                "cargo-geiger: {} is credited with the unsafe code generated under {}; set CARGO_TARGET_DIR outside {} to leave it out",
+                m.name,
+                target_dir.display(),
+                dir.display()
+            ),
         })
         .collect()
+}
+
+/// whether a build script wrote a `.rs` file containing `unsafe` to its `OUT_DIR` under `target_dir`.
+fn generated_unsafe_code(target_dir: &Path) -> bool {
+    // <target>/<profile>/build/<pkg>/out and <target>/<triple>/<profile>/build/<pkg>/out
+    let profiles = subdirs(target_dir).into_iter().flat_map(|d| {
+        let mut dirs = subdirs(&d);
+        dirs.push(d);
+        dirs
+    });
+    profiles
+        .flat_map(|p| subdirs(&p.join("build")))
+        .any(|b| holds_unsafe_rs(&b.join("out")))
+}
+
+fn subdirs(dir: &Path) -> Vec<PathBuf> {
+    std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+        .map(|e| e.path())
+        .collect()
+}
+
+fn holds_unsafe_rs(dir: &Path) -> bool {
+    std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .any(|e| {
+            let path = e.path();
+            match e.file_type() {
+                Ok(t) if t.is_dir() => holds_unsafe_rs(&path),
+                Ok(t) if t.is_file() => {
+                    path.extension().is_some_and(|x| x == "rs")
+                        && std::fs::read_to_string(&path).is_ok_and(|s| s.contains("unsafe"))
+                }
+                _ => false,
+            }
+        })
 }
 
 /// build the `cargo geiger` command that scans `member`.
 fn build_cargo_geiger_command(opts: &ScanOpts, member: &Member) -> Result<Command> {
     let mut cmd = Command::new("cargo");
-    cmd.arg("geiger").arg("--output-format").arg("Json");
+    cmd.arg("geiger")
+        .arg("--output-format")
+        .arg("Json")
+        .arg("--build-dependencies");
 
     if opts.all_features {
         cmd.arg("--all-features");
@@ -415,6 +465,10 @@ mod tests {
         include_str!("../../tests/fixtures/cargo_geiger/bin_member_alpha.json");
     const BIN_MEMBER_ZETA: &str =
         include_str!("../../tests/fixtures/cargo_geiger/bin_member_zeta.json");
+    const BUILD_DEPENDENCY_ROOT: &str =
+        include_str!("../../tests/fixtures/cargo_geiger/build_dependency_root.json");
+    const BUILD_DEPENDENCY_CODEGEN: &str =
+        include_str!("../../tests/fixtures/cargo_geiger/build_dependency_codegen.json");
 
     fn member(name: &str, version: &str) -> Member {
         Member {
@@ -739,6 +793,38 @@ mod tests {
     }
 
     #[test]
+    fn test_convert_reports_subtracts_a_nested_build_dependency() {
+        let reports = [
+            report(BUILD_DEPENDENCY_ROOT),
+            report(BUILD_DEPENDENCY_CODEGEN),
+        ];
+        let members = [member("r", "0.1.0"), member("codegen", "0.1.0")];
+        let dirs = PackageDirs::from([
+            (
+                dir_key_of("r", "0.1.0", true),
+                PathBuf::from("/work/builddep"),
+            ),
+            (
+                dir_key_of("codegen", "0.1.0", true),
+                PathBuf::from("/work/builddep/codegen"),
+            ),
+        ]);
+        let opts = ScanOpts {
+            workspace_only: true,
+            ..Default::default()
+        };
+        let (units, _) = convert_reports(&reports, &members, &dirs, &opts);
+
+        assert_eq!(
+            unit_rows(&units),
+            [
+                ("codegen", UnitKind::Workspace, 6),
+                ("r", UnitKind::Workspace, 2),
+            ]
+        );
+    }
+
+    #[test]
     fn test_own_counts_subtracts_a_nested_package_from_its_nearest_container_only() {
         let mut value: serde_json::Value =
             serde_json::from_str(MULTI_MEMBER_ROOT_ON_SIBLING).unwrap();
@@ -814,21 +900,79 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
-    fn test_target_dir_warnings_name_the_member_holding_the_target_directory() {
-        let members = multi_member_members();
-        let warnings =
-            target_dir_warnings(Path::new("/work/multi_member_workspace/target"), &members);
+    fn test_package_dirs_resolve_a_symlinked_path_dependency() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        for (dir, manifest) in [
+            (
+                root.join("r"),
+                "[package]\nname = \"r\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nq = { path = \"link\" }\n",
+            ),
+            (
+                root.join("qreal"),
+                "[package]\nname = \"q\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+            ),
+        ] {
+            std::fs::create_dir_all(dir.join("src")).unwrap();
+            std::fs::write(dir.join("Cargo.toml"), manifest).unwrap();
+            std::fs::write(dir.join("src/lib.rs"), "").unwrap();
+        }
+        std::os::unix::fs::symlink("../qreal", root.join("r/link")).unwrap();
+        let opts = ScanOpts {
+            manifest_path: Some(root.join("r/Cargo.toml")),
+            ..Default::default()
+        };
 
-        assert_eq!(warnings.len(), 1);
-        assert!(
-            warnings[0]
-                .message
-                .starts_with("cargo-geiger: rootpkg is credited"),
-            "{}",
-            warnings[0].message
+        assert_eq!(
+            package_dirs(&get_metadata(&opts).unwrap()).get(&dir_key_of("q", "0.1.0", true)),
+            Some(&root.join("qreal"))
         );
-        assert!(target_dir_warnings(Path::new("/elsewhere/target"), &members).is_empty());
+    }
+
+    #[test]
+    fn test_target_dir_warnings_need_generated_unsafe_code() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("ws");
+        let members = [
+            Member {
+                manifest_path: ws.join("Cargo.toml"),
+                ..member("rootpkg", "0.1.0")
+            },
+            Member {
+                manifest_path: ws.join("sibling/Cargo.toml"),
+                ..member("sibling", "0.1.0")
+            },
+        ];
+        for (target, out) in [
+            ("target", "debug/build/gen-0123/out"),
+            (
+                "tgt",
+                "x86_64-unknown-linux-gnu/release/build/gen-4567/out/nested",
+            ),
+        ] {
+            let target = ws.join(target);
+            let out = target.join(out);
+            std::fs::create_dir_all(&out).unwrap();
+            std::fs::create_dir_all(target.join("debug/deps")).unwrap();
+            std::fs::write(out.join("private.rs"), "pub use crate::de::*;\n").unwrap();
+            std::fs::write(out.join("gen.txt"), "unsafe {}\n").unwrap();
+            std::fs::write(target.join("debug/deps/lib.rs"), "unsafe fn f() {}\n").unwrap();
+            assert!(target_dir_warnings(&target, &members).is_empty());
+
+            std::fs::write(out.join("gen.rs"), "pub unsafe fn f() {}\n").unwrap();
+            let warnings = target_dir_warnings(&target, &members);
+            assert_eq!(warnings.len(), 1, "{}", target.display());
+            assert!(
+                warnings[0]
+                    .message
+                    .starts_with("cargo-geiger: rootpkg is credited"),
+                "{}",
+                warnings[0].message
+            );
+            assert!(target_dir_warnings(&target, &members[1..]).is_empty());
+        }
     }
 
     #[test]
@@ -890,6 +1034,7 @@ mod tests {
                 "geiger",
                 "--output-format",
                 "Json",
+                "--build-dependencies",
                 "--manifest-path",
                 "/ws/m/Cargo.toml"
             ]
@@ -919,6 +1064,7 @@ mod tests {
                 "geiger",
                 "--output-format",
                 "Json",
+                "--build-dependencies",
                 "--all-features",
                 "--no-default-features",
                 "--features",
