@@ -144,24 +144,27 @@ fn target_dir_warnings(target_dir: &Path, members: &[Member]) -> Vec<ParseWarnin
         .filter_map(|m| Some((m, m.manifest_path.parent()?)))
         .filter(|(_, dir)| target_dir.starts_with(dir))
         .collect();
-    if holders.is_empty() || !generated_unsafe_code(target_dir) {
+    if holders.is_empty() {
         return Vec::new();
     }
+    let Some(file) = generated_unsafe_code(target_dir) else {
+        return Vec::new();
+    };
     holders
         .into_iter()
         .map(|(m, dir)| ParseWarning {
             message: format!(
-                "cargo-geiger: {} is credited with the unsafe code generated under {}; set CARGO_TARGET_DIR outside {} to leave it out",
+                "cargo-geiger: {} may be credited with the unsafe code a build script generated in {}; set CARGO_TARGET_DIR outside {} to leave it out",
                 m.name,
-                target_dir.display(),
+                file.display(),
                 dir.display()
             ),
         })
         .collect()
 }
 
-/// whether a build script wrote a `.rs` file containing `unsafe` to its `OUT_DIR` under `target_dir`.
-fn generated_unsafe_code(target_dir: &Path) -> bool {
+/// a `.rs` file a build script wrote to its `OUT_DIR` under `target_dir` whose unsafe code cargo-geiger may count.
+fn generated_unsafe_code(target_dir: &Path) -> Option<PathBuf> {
     // <target>/<profile>/build/<pkg>/out and <target>/<triple>/<profile>/build/<pkg>/out
     let profiles = subdirs(target_dir).into_iter().flat_map(|d| {
         let mut dirs = subdirs(&d);
@@ -170,7 +173,7 @@ fn generated_unsafe_code(target_dir: &Path) -> bool {
     });
     profiles
         .flat_map(|p| subdirs(&p.join("build")))
-        .any(|b| holds_unsafe_rs(&b.join("out")))
+        .find_map(|b| unsafe_rs_in(&b.join("out")))
 }
 
 fn subdirs(dir: &Path) -> Vec<PathBuf> {
@@ -183,22 +186,59 @@ fn subdirs(dir: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
-fn holds_unsafe_rs(dir: &Path) -> bool {
+fn unsafe_rs_in(dir: &Path) -> Option<PathBuf> {
     std::fs::read_dir(dir)
         .into_iter()
         .flatten()
         .flatten()
-        .any(|e| {
+        .find_map(|e| {
             let path = e.path();
             match e.file_type() {
-                Ok(t) if t.is_dir() => holds_unsafe_rs(&path),
-                Ok(t) if t.is_file() => {
-                    path.extension().is_some_and(|x| x == "rs")
-                        && std::fs::read_to_string(&path).is_ok_and(|s| s.contains("unsafe"))
+                Ok(t) if t.is_dir() => unsafe_rs_in(&path),
+                Ok(t)
+                    if t.is_file()
+                        && path.extension().is_some_and(|x| x == "rs")
+                        && std::fs::read_to_string(&path).is_ok_and(|s| may_count_unsafe(&s)) =>
+                {
+                    Some(path)
                 }
-                _ => false,
+                _ => None,
             }
         })
+}
+
+/// whether `src` uses `unsafe` other than for an `extern` block or a fn pointer type.
+fn may_count_unsafe(src: &str) -> bool {
+    fn ident(c: char) -> bool {
+        c.is_alphanumeric() || c == '_'
+    }
+    fn keyword<'a>(s: &'a str, kw: &str) -> Option<&'a str> {
+        s.strip_prefix(kw).filter(|r| !r.starts_with(ident))
+    }
+    src.match_indices("unsafe").any(|(i, kw)| {
+        if src[..i].ends_with(ident) {
+            return false;
+        }
+        let Some(rest) = keyword(&src[i..], kw) else {
+            return false;
+        };
+        let rest = rest.trim_start();
+        let (rest, is_extern) = match keyword(rest, "extern") {
+            Some(abi) => {
+                let abi = abi.trim_start();
+                let rest = abi
+                    .strip_prefix('"')
+                    .and_then(|s| s.split_once('"'))
+                    .map_or(abi, |(_, r)| r);
+                (rest.trim_start(), true)
+            }
+            None => (rest, false),
+        };
+        match keyword(rest, "fn") {
+            Some(sig) => !sig.trim_start().starts_with('('),
+            None => !(is_extern && rest.starts_with('{')),
+        }
+    })
 }
 
 /// build the `cargo geiger` command that scans `member`.
@@ -945,33 +985,77 @@ mod tests {
                 ..member("sibling", "0.1.0")
             },
         ];
-        for (target, out) in [
-            ("target", "debug/build/gen-0123/out"),
-            (
-                "tgt",
-                "x86_64-unknown-linux-gnu/release/build/gen-4567/out/nested",
-            ),
+        let no_build = ws.join("no-build");
+        std::fs::create_dir_all(no_build.join("debug/deps")).unwrap();
+        assert!(target_dir_warnings(&no_build, &members).is_empty());
+
+        for (target, profile) in [
+            ("target", "debug"),
+            ("tgt", "x86_64-unknown-linux-gnu/release"),
         ] {
             let target = ws.join(target);
-            let out = target.join(out);
-            std::fs::create_dir_all(&out).unwrap();
+            let build = target.join(profile).join("build");
+            std::fs::create_dir_all(build.join("gen-89ab")).unwrap();
+            std::fs::write(build.join("gen-89ab/build-script-build"), "").unwrap();
             std::fs::create_dir_all(target.join("debug/deps")).unwrap();
-            std::fs::write(out.join("private.rs"), "pub use crate::de::*;\n").unwrap();
-            std::fs::write(out.join("gen.txt"), "unsafe {}\n").unwrap();
             std::fs::write(target.join("debug/deps/lib.rs"), "unsafe fn f() {}\n").unwrap();
+            let outs = [
+                build.join("gen-0123/out"),
+                build.join("gen-4567/out/nested"),
+            ];
+            for out in &outs {
+                std::fs::create_dir_all(out).unwrap();
+                std::fs::write(out.join("private.rs"), "pub use crate::de::*;\n").unwrap();
+                std::fs::write(out.join("gen.txt"), "unsafe {}\n").unwrap();
+                std::fs::write(
+                    out.join("bindings.rs"),
+                    "pub type Cb = Option<unsafe extern \"C\" fn(i32) -> i32>;\nunsafe extern \"C\" { pub fn abs(x: i32) -> i32; }\n",
+                )
+                .unwrap();
+            }
             assert!(target_dir_warnings(&target, &members).is_empty());
 
-            std::fs::write(out.join("gen.rs"), "pub unsafe fn f() {}\n").unwrap();
-            let warnings = target_dir_warnings(&target, &members);
-            assert_eq!(warnings.len(), 1, "{}", target.display());
-            assert!(
-                warnings[0]
-                    .message
-                    .starts_with("cargo-geiger: rootpkg is credited"),
-                "{}",
-                warnings[0].message
-            );
-            assert!(target_dir_warnings(&target, &members[1..]).is_empty());
+            for out in &outs {
+                let generated = out.join("gen.rs");
+                std::fs::write(&generated, "pub unsafe fn f() {}\n").unwrap();
+                let warnings = target_dir_warnings(&target, &members);
+                assert_eq!(warnings.len(), 1, "{}", generated.display());
+                assert!(
+                    warnings[0].message.starts_with(&format!(
+                        "cargo-geiger: rootpkg may be credited with the unsafe code a build script generated in {};",
+                        generated.display()
+                    )),
+                    "{}",
+                    warnings[0].message
+                );
+                assert!(target_dir_warnings(&target, &members[1..]).is_empty());
+                std::fs::remove_file(&generated).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn test_may_count_unsafe_skips_extern_blocks_and_fn_pointer_types() {
+        for src in [
+            "fn f(p: *const u8) -> u8 { unsafe { *p } }",
+            "pub unsafe fn f() {}",
+            "unsafe impl Send for S {}",
+            "pub unsafe trait T {}",
+            "pub unsafe extern \"C\" fn cb(x: i32) -> i32 { x }",
+            "unsafe extern fn cb() {}",
+            "type F = unsafe fn();\nunsafe impl Sync for S {}",
+        ] {
+            assert!(may_count_unsafe(src), "{src}");
+        }
+        for src in [
+            "pub type Cb = Option<unsafe extern \"C\" fn(arg: i32) -> i32>;",
+            "pub type Cb = Option<unsafe extern \"C-unwind\" fn (i32)>;",
+            "unsafe extern \"C\" {\n    pub fn abs(x: i32) -> i32;\n}",
+            "unsafe extern {}",
+            "type F = unsafe fn();",
+            "#![allow(unsafe_code)]\nfn is_unsafe() {}",
+        ] {
+            assert!(!may_count_unsafe(src), "{src}");
         }
     }
 

@@ -35,8 +35,8 @@ each member gets the `--features` it declares, plus `pkg/feature` entries naming
 - more granular than rustc lint
 - distinguishes workspace vs dependency crates (build-dependencies included), and counts a dependency shared by several members once
 - counts a path package's compiled code only, minus the packages nested in its directory (members, `cargo vendor` output); cargo-geiger 0.11 lists registry code as unused, so a registry package counts all of its code
-- warns about packages cargo-geiger reports no metrics for, and about a target directory inside a member when a build script generated unsafe code there, which cargo-geiger counts as that member's
-- requires `cargo install cargo-geiger`; cargo-geiger 0.11 can't read a `version = 4` `Cargo.lock`, an `edition = "2024"` package or `resolver = "3"`, and panics on git dependencies and on `serde` or `serde_core` 1.0.229
+- warns about packages cargo-geiger reports no metrics for, and about a target directory inside a member when a build script generated unsafe code there other than `extern` blocks and fn pointer types, which cargo-geiger may count as that member's
+- requires `cargo install cargo-geiger`; cargo-geiger 0.11 can't read a `version = 4` `Cargo.lock`, an `edition = "2024"` package or `resolver = "3"`, and panics on git dependencies, build-dependencies included, and on `serde` or `serde_core` 1.0.229
 
 **usage**:
 ```bash

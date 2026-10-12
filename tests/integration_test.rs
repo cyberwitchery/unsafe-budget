@@ -534,7 +534,10 @@ fn test_cargo_geiger_subtracts_a_nested_member_and_warns_about_generated_unsafe_
         warnings[0]["message"]
             .as_str()
             .unwrap()
-            .starts_with("cargo-geiger: rootpkg is credited"),
+            .starts_with(&format!(
+                "cargo-geiger: rootpkg may be credited with the unsafe code a build script generated in {};",
+                out.join("gen.rs").display()
+            )),
         "{warnings:?}"
     );
 }
