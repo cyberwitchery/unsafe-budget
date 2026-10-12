@@ -353,7 +353,11 @@ fn print_details_text(out: &mut impl Write, details: &[Occurrence]) -> io::Resul
 
         writeln!(out, "  {}:", unit)?;
         for occ in occs {
-            let loc = format!("{}:{}:{}", occ.file.display(), occ.line, occ.col);
+            let loc = match (occ.line, occ.col) {
+                (0, _) => occ.file.display().to_string(),
+                (line, 0) => format!("{}:{line}", occ.file.display()),
+                (line, col) => format!("{}:{line}:{col}", occ.file.display()),
+            };
             if let Some(msg) = &occ.message {
                 writeln!(out, "    {} — {}", loc, msg)?;
             } else {
@@ -810,6 +814,33 @@ mod tests {
         assert!(output.contains("Details:"));
         assert!(output.contains("  only_crate:"));
         assert!(output.contains("    src/main.rs:1:1 — unsafe fn"));
+    }
+
+    #[test]
+    fn test_print_details_text_leaves_out_an_unknown_line_or_column() {
+        let occ = |line, col, message: &str| Occurrence {
+            unit: "my_crate".into(),
+            file: "src/lib.rs".into(),
+            line,
+            col,
+            message: Some(message.into()),
+        };
+        let details = vec![
+            occ(7, 3, "known"),
+            occ(7, 0, "line only"),
+            occ(0, 0, "no position"),
+        ];
+
+        let mut buf = Vec::new();
+        print_details_text(&mut buf, &details).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+
+        assert!(
+            output.ends_with(
+                "  my_crate:\n    src/lib.rs — no position\n    src/lib.rs:7 — line only\n    src/lib.rs:7:3 — known\n"
+            ),
+            "{output}"
+        );
     }
 
     #[test]

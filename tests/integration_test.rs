@@ -543,6 +543,57 @@ fn test_cargo_geiger_subtracts_a_nested_member_and_warns_about_generated_unsafe_
 }
 
 #[test]
+fn test_sarif_output_leaves_out_an_unknown_line_or_column() {
+    let tmp = tempfile::tempdir().unwrap();
+    let input = tmp.path().join("in.sarif");
+    fs::write(
+        &input,
+        r#"{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"other"}},"results":[
+{"ruleId":"x","message":{"text":"no region"},"locations":[{"physicalLocation":{"artifactLocation":{"uri":"src/a.rs"}}}]},
+{"ruleId":"x","message":{"text":"line only"},"locations":[{"physicalLocation":{"artifactLocation":{"uri":"src/b.rs"},"region":{"startLine":7}}}]}
+]}]}"#,
+    )
+    .unwrap();
+
+    let stdout = run_ok(&mut unsafe_budget(
+        tmp.path(),
+        &input,
+        &["scan", "--analyzer", "sarif", "--format", "sarif"],
+    ));
+    let sarif: serde_json::Value = serde_json::from_slice(&stdout).expect("invalid sarif output");
+    let regions: Vec<_> = sarif["runs"][0]["results"]
+        .as_array()
+        .expect("results should be array")
+        .iter()
+        .map(|result| {
+            let pl = &result["locations"][0]["physicalLocation"];
+            (
+                pl["artifactLocation"]["uri"].as_str().unwrap(),
+                pl.get("region"),
+            )
+        })
+        .collect();
+    assert_eq!(
+        regions,
+        vec![
+            ("src/a.rs", None),
+            ("src/b.rs", Some(&serde_json::json!({"startLine": 7}))),
+        ]
+    );
+
+    let stdout = run_ok(&mut unsafe_budget(
+        tmp.path(),
+        &input,
+        &["scan", "--analyzer", "sarif", "--details"],
+    ));
+    let text = String::from_utf8(stdout).unwrap();
+    assert!(
+        text.ends_with("  src:\n    src/a.rs — no region\n    src/b.rs:7 — line only\n"),
+        "{text}"
+    );
+}
+
+#[test]
 fn test_budget_logic() {
     use unsafe_budget::budget;
     use unsafe_budget::config::{Baseline, BaselineUnit, Config, Mode};

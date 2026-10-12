@@ -292,27 +292,31 @@ fn encode_segments<'a>(segments: impl Iterator<Item = &'a str>) -> String {
 }
 
 fn make_location(occ: &crate::model::Occurrence) -> sarif::Location {
-    sarif::Location::builder()
-        .physical_location(
-            sarif::PhysicalLocation::builder()
-                .artifact_location(
-                    sarif::ArtifactLocation::builder()
-                        .uri(path_to_uri(&occ.file))
-                        .build(),
-                )
-                .region(
-                    sarif::Region::builder()
-                        .start_line(occ.line as i64)
-                        .start_column(occ.col as i64)
-                        .build(),
-                )
+    let mut physical = sarif::PhysicalLocation::builder()
+        .artifact_location(
+            sarif::ArtifactLocation::builder()
+                .uri(path_to_uri(&occ.file))
                 .build(),
         )
+        .build();
+    physical.region = make_region(occ);
+    sarif::Location::builder()
+        .physical_location(physical)
         .logical_locations(vec![sarif::LogicalLocation::builder()
             .fully_qualified_name(occ.unit.clone())
             .kind(UNIT_LOGICAL_KIND)
             .build()])
         .build()
+}
+
+/// the region of an occurrence, leaving out an unknown (0) line or column.
+fn make_region(occ: &crate::model::Occurrence) -> Option<sarif::Region> {
+    let known = |n: u32| (n > 0).then_some(i64::from(n));
+    let mut region = sarif::Region::builder()
+        .start_line(known(occ.line)?)
+        .build();
+    region.start_column = known(occ.col);
+    Some(region)
 }
 
 /// pre-build a map from unit name to sorted locations.
@@ -813,6 +817,60 @@ mod tests {
         let logical = &run["results"][0]["locations"][0]["logicalLocations"][0];
         assert_eq!(logical["fullyQualifiedName"], "my_crate");
         assert_eq!(logical["kind"], "module");
+    }
+
+    #[test]
+    fn test_unknown_line_or_column_is_left_out_of_the_region() {
+        let occ = |file: &str, line, col| Occurrence {
+            unit: "my_crate".into(),
+            file: PathBuf::from(file),
+            line,
+            col,
+            message: None,
+        };
+        let check = CheckResult {
+            scan: make_scan_result(vec![
+                occ("src/a.rs", 0, 0),
+                occ("src/b.rs", 7, 0),
+                occ("src/c.rs", 0, 4),
+                occ("src/d.rs", 10, 5),
+            ]),
+            violations: vec![Violation {
+                unit: "my_crate".into(),
+                kind: UnitKind::Workspace,
+                baseline: 0,
+                actual: 4,
+                delta: 4,
+            }],
+            warnings: vec![],
+            passed: false,
+        };
+        let expected = [
+            ("src/a.rs", None),
+            ("src/b.rs", Some(serde_json::json!({"startLine": 7}))),
+            ("src/c.rs", None),
+            (
+                "src/d.rs",
+                Some(serde_json::json!({"startLine": 10, "startColumn": 5})),
+            ),
+        ];
+
+        for (sarif_out, location_count) in
+            [(scan_to_sarif(&check.scan), 4), (check_to_sarif(&check), 8)]
+        {
+            let json = serde_json::to_value(sarif_out).unwrap();
+            let mut seen = 0;
+            for result in json["runs"][0]["results"].as_array().unwrap() {
+                for location in result["locations"].as_array().unwrap() {
+                    let pl = &location["physicalLocation"];
+                    let uri = pl["artifactLocation"]["uri"].as_str().unwrap();
+                    let (_, region) = expected.iter().find(|(file, _)| *file == uri).unwrap();
+                    assert_eq!(pl.get("region"), region.as_ref(), "{uri}");
+                    seen += 1;
+                }
+            }
+            assert_eq!(seen, location_count);
+        }
     }
 
     #[test]

@@ -113,7 +113,8 @@ static analysis tool.
 - ingests SARIF output from any tool (clippy, go-geiger, semgrep, codeql, etc.)
 - infers language from the SARIF tool driver name
 - groups results into units based on file paths
-- provides line-level occurrence details from SARIF locations
+- provides line-level occurrence details from SARIF locations; a location
+  without a `region` or `startColumn` has line or column `0` (unknown)
 - no external tools required beyond the one that produced the SARIF file
 
 **usage**:
@@ -234,6 +235,11 @@ its own values, units whose `kind` is `dep` are filtered out under
 units. `tool_version`, `language`, `units`, and `details` are kept as reported.
 `scope`, `analyzer_id`, and `totals` must still be present for the JSON to
 parse.
+
+each `details` entry has a `unit`, a `file`, a 1-indexed `line` and `col`, and
+an optional `message`. a `line` or `col` of `0` means the position is unknown:
+text output then prints `file` or `file:line`, and SARIF output leaves out the
+`region` or its `startColumn`.
 
 ### plugin info
 
