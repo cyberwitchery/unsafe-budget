@@ -1,6 +1,6 @@
 # changelog
 
-## Unreleased
+## [0.5.2] - 2026-10-14
 
 - fix: the `go_geiger` analyzer reads the tables go-geiger actually prints. previously it looked for `file:line:col` lines, which go-geiger only prints under `--show-code` (and that flag panics under current go), so every go scan read 0 unsafe and `check` could never fail. it now counts each package once, by import path, from the tables' LOCAL PACKAGE column, and counts `unsafe.Pointer` uses (go-geiger's default), not `unsafe.Sizeof`, `Offsetof` or `Alignof` as the docs claimed. a package in a module `go list -m` prints, or below one, is workspace code, so `go` must be on `PATH`. go-geiger's default `--max-depth` of 10 left out deeper dependencies; the analyzer now lifts it. go_geiger units carry no line-level details, and a go-geiger that exits non-zero now fails the scan. baselines written by earlier versions record 0: run `unsafe-budget update` after upgrading.
 - fix: the go_geiger analyzer no longer fails with `No such file or directory` when `--manifest-path` is a bare `go.mod`.
