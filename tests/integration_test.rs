@@ -542,6 +542,99 @@ fn test_cargo_geiger_subtracts_a_nested_member_and_warns_about_generated_unsafe_
     );
 }
 
+/// a `PATH` whose `go` prints `modules` and whose `go-geiger` prints `table`, each logging its directory and argv.
+#[cfg(unix)]
+fn write_go_geiger_stub(root: &Path, modules: &[&str], table: &Path) -> std::ffi::OsString {
+    use std::os::unix::fs::PermissionsExt;
+
+    let bin = root.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    for (name, output) in [
+        ("go", format!("printf '%s\\n' {}", modules.join(" "))),
+        ("go-geiger", format!("cat \"{}\"", table.display())),
+    ] {
+        let stub = bin.join(name);
+        let log = root.join("go.log");
+        fs::write(
+            &stub,
+            format!(
+                "#!/bin/sh\necho \"$(pwd -P) {name} $*\" >> \"{}\"\n{output}\n",
+                log.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&stub, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let mut path = vec![bin];
+    path.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
+    std::env::join_paths(path).unwrap()
+}
+
+#[cfg(unix)]
+#[test]
+fn test_go_geiger_counts_each_package_of_its_tables_once() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().canonicalize().unwrap();
+    let project = root.join("mp");
+    fs::create_dir_all(&project).unwrap();
+    fs::write(project.join("go.mod"), "module example.com/mp\n\ngo 1.21\n").unwrap();
+    let path = write_go_geiger_stub(
+        &root,
+        &["example.com/lint", "example.com/mp"],
+        &project_root().join("tests/fixtures/go_geiger/mp.out"),
+    );
+
+    let stdout = run_ok(
+        unsafe_budget(
+            &project,
+            Path::new("go.mod"),
+            &[
+                "scan",
+                "--analyzer",
+                "go_geiger",
+                "--format",
+                "json",
+                "--include-deps",
+            ],
+        )
+        .env("PATH", &path),
+    );
+    let result: serde_json::Value = serde_json::from_slice(&stdout).unwrap();
+    assert_eq!(
+        unit_counts(&result),
+        [
+            ("example.com/dep", "dep", 4),
+            ("example.com/mp", "workspace", 1),
+            ("example.com/mp/clean", "workspace", 0),
+            ("example.com/mp/inner", "workspace", 2),
+        ]
+        .map(|(name, kind, count)| (name.to_string(), kind.to_string(), count))
+    );
+    assert_eq!(result["totals"]["overall_unsafe"], 7);
+    assert_eq!(result.get("parse_warnings"), None);
+
+    let stdout = run_ok(
+        unsafe_budget(
+            &root,
+            &project.join("go.mod"),
+            &["scan", "--analyzer", "go_geiger", "--workspace-only"],
+        )
+        .env("PATH", &path),
+    );
+    let text = String::from_utf8(stdout).unwrap();
+    assert!(text.contains("Overall: 3 unsafe"), "{text}");
+    assert!(!text.contains("example.com/dep"), "{text}");
+
+    let calls = format!(
+        "{0} go list -m\n{0} go-geiger --max-depth 1000000 ./...\n",
+        project.display()
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("go.log")).unwrap(),
+        calls.repeat(2)
+    );
+}
+
 #[test]
 fn test_sarif_output_leaves_out_an_unknown_line_or_column() {
     let tmp = tempfile::tempdir().unwrap();

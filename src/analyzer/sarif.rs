@@ -2090,19 +2090,33 @@ mod tests {
 
     #[test]
     fn test_go_dependency_files_are_named_as_go_geiger_names_them() {
-        for path in [
-            "/home/u/go/pkg/mod/github.com/!burnt!sushi/toml@v1.3.2/decode.go",
-            "/srv/vendor/go/pkg/mod/github.com/pkg/errors@v0.9.1/errors.go",
-            "/home/u/proj/vendor/github.com/a/tool/vendor/github.com/b/lib/lib.go",
-            "vendor/github.com/pkg/errors/errors.go",
-            "vendor/golang.org/x/sys/unix/syscall_linux.go",
+        for (path, go_geiger_name) in [
+            (
+                "/home/u/go/pkg/mod/github.com/!burnt!sushi/toml@v1.3.2/decode.go",
+                "github.com/BurntSushi/toml",
+            ),
+            (
+                "/srv/vendor/go/pkg/mod/github.com/pkg/errors@v0.9.1/errors.go",
+                "github.com/pkg/errors",
+            ),
+            (
+                "/home/u/proj/vendor/github.com/a/tool/vendor/github.com/b/lib/lib.go",
+                "github.com/b/lib",
+            ),
+            (
+                "vendor/github.com/pkg/errors/errors.go",
+                "github.com/pkg/errors",
+            ),
+            (
+                "vendor/golang.org/x/sys/unix/syscall_linux.go",
+                "golang.org/x/sys/unix",
+            ),
         ] {
             let scan = scan_run(make_run(
                 "gosec",
                 vec![make_sarif_result(path, 1, 1, "unsafe")],
             ));
-            let go_geiger_name = go_geiger::extract_go_package(Path::new(path)).unwrap();
-            assert_eq!(unit_counts(&scan), vec![dep(&go_geiger_name, 1)], "{path}");
+            assert_eq!(unit_counts(&scan), vec![dep(go_geiger_name, 1)], "{path}");
         }
     }
 }

@@ -1,0 +1,30 @@
+  WITH DEPENDENCIES   LOCAL PACKAGE   PACKAGE PATH          
+--------------------+---------------+-----------------------
+          [32m0[0m                 [32m0[0m         [32mexample.com/mp/clean[0m  
+
+Package example.com/mp/clean including imports effectively makes up 1 packages
+  1 of those do not contain any unsafe usages
+
+  WITH DEPENDENCIES   LOCAL PACKAGE   PACKAGE PATH          
+--------------------+---------------+-----------------------
+          [31m2[0m                 [31m2[0m         [31mexample.com/mp/inner[0m  
+
+Package example.com/mp/inner including imports effectively makes up 1 packages
+  1 of those contain unsafe usages
+
+  WITH DEPENDENCIES   LOCAL PACKAGE   PACKAGE PATH            
+--------------------+---------------+-------------------------
+          [31m7[0m                 [31m1[0m         [31mexample.com/mp[0m          
+          [31m4[0m                 [31m4[0m         [31m├─example.com/dep[0m       
+          [32m0[0m                 [32m0[0m         [32m├─example.com/mp/clean[0m  
+          [31m2[0m                 [31m2[0m         [31m└─example.com/mp/inner[0m  
+
+Package example.com/mp including imports effectively makes up 4 packages
+  3 of those contain unsafe usages
+  1 of those do not contain any unsafe usages
+
+Couting occurances of unsafe.Pointer
+
+Packages in green have no unsafe usages
+Packages in red contain unsafe usages
+Packages in white import packages with unsafe usages

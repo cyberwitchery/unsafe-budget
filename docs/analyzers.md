@@ -48,18 +48,18 @@ unsafe-budget scan --analyzer cargo_geiger
 
 analyzer for go projects.
 
-**backend**: `go-geiger ./...`
+**backend**: `go list -m`, then `go-geiger --max-depth 1000000 ./...`
 
 **features**:
-- counts `unsafe.Pointer`, `unsafe.Sizeof`, `unsafe.Offsetof`, `unsafe.Alignof`, and other unsafe operations
-- distinguishes workspace vs vendor/module cache dependencies
-- provides line-level occurrence details
-- requires go-geiger installation
+- counts `unsafe.Pointer` uses, go-geiger's default match filter; `unsafe.Sizeof`, `unsafe.Offsetof` and `unsafe.Alignof` are not counted
+- reads go-geiger's per-package tables: one unit per package, counted once however many tables list it
+- per-package counts only, no line-level occurrence details
+- requires go-geiger and `go` on `PATH`
 
 **workspace vs dependency detection**:
-- files under `vendor/` or the Go module cache (`go/pkg/mod/`) are classified as dependencies
-- a dependency is named after its package below the innermost `vendor/`, or after its module in the module cache with go's case encoding undone (`github.com/!burnt!sushi/toml@v1.3.2` → `github.com/BurntSushi/toml`)
-- all other files are treated as workspace code
+- a package in a module `go list -m` prints (the main module, or each module of a `go.work` workspace) or below one is workspace code
+- every other package is a dependency
+- units are named by import path (`golang.org/x/sys/unix`)
 
 **usage**:
 ```bash
@@ -76,10 +76,7 @@ unsafe-budget scan
 # explicit analyzer selection
 unsafe-budget scan --analyzer go_geiger
 
-# with details
-unsafe-budget scan --analyzer go_geiger --details
-
-# skip dependencies (vendor/ and module cache)
+# skip dependencies
 unsafe-budget scan --analyzer go_geiger --workspace-only
 ```
 
@@ -92,14 +89,15 @@ Language: go
 
 Totals:
   Workspace: 3 unsafe
-  Dependencies: 12 unsafe
-  Overall: 15 unsafe
+  Dependencies: 570 unsafe
+  Overall: 573 unsafe
 
 Per-unit breakdown:
   UNIT                           KIND           UNSAFE
   ----------------------------------------------------
-  github.com/pkg/errors          dep                12
-  mypackage                      workspace           3
+  golang.org/x/sys/unix          dep               570
+  example.com/app/inner          workspace           2
+  example.com/app                workspace           1
 ```
 
 ### sarif
