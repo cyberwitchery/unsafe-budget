@@ -102,7 +102,7 @@ fn print_scan_text(out: &mut impl Write, result: &ScanResult) -> io::Result<()> 
 
     if result.units.is_empty() {
         writeln!(out, "No units found.")?;
-        return Ok(());
+        return print_parse_warnings_text(out, &result.parse_warnings);
     }
 
     // sort by count desc for display
@@ -184,7 +184,7 @@ fn print_check_text(
 
     if result.scan.units.is_empty() {
         writeln!(out, "No units found.")?;
-        return Ok(());
+        return print_parse_warnings_text(out, &result.scan.parse_warnings);
     }
 
     // sort: violations first, then warnings, then others by count desc
@@ -506,6 +506,35 @@ mod tests {
         let output = String::from_utf8(buf).unwrap();
 
         assert!(output.contains("No units found"));
+    }
+
+    #[test]
+    fn test_print_scan_and_check_text_without_units_print_parse_warnings() {
+        let mut scan = make_scan_result();
+        scan.units.clear();
+        scan.parse_warnings = vec![ParseWarning {
+            message: "go-geiger: skipping unexpected output line: x".into(),
+        }];
+        let mut scan_buf = Vec::new();
+        print_scan_text(&mut scan_buf, &scan).unwrap();
+        let check = CheckResult {
+            scan,
+            violations: vec![],
+            warnings: vec![],
+            passed: true,
+        };
+        let mut check_buf = Vec::new();
+        print_check_text(&mut check_buf, &check, None).unwrap();
+
+        for buf in [scan_buf, check_buf] {
+            let output = String::from_utf8(buf).unwrap();
+            assert!(output.contains("No units found"), "{output}");
+            assert!(output.contains("Parse warnings (1):"), "{output}");
+            assert!(
+                output.contains("go-geiger: skipping unexpected output line: x"),
+                "{output}"
+            );
+        }
     }
 
     #[test]

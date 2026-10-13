@@ -1,12 +1,29 @@
 use crate::analyzer::process::{self, Run};
 use crate::analyzer::Analyzer;
 use crate::error::{Error, Result};
-use crate::model::{Occurrence, ParseWarning, ScanOpts, ScanResult, Unit, UnitKind};
+use crate::model::{ParseWarning, ScanOpts, ScanResult, Unit, UnitKind};
 use std::collections::HashMap;
-use std::io::BufRead;
-use std::path::PathBuf;
+use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
+
+/// deeper than any import chain, so go-geiger lists every package.
+const MAX_DEPTH: &str = "1000000";
+
+/// the characters go-geiger draws its import tree with.
+const TREE: &[char] = &[' ', '│', '├', '└', '─'];
+
+const LEGEND: [&str; 3] = [
+    "Packages in green have no unsafe usages",
+    "Packages in red contain unsafe usages",
+    "Packages in white import packages with unsafe usages",
+];
+
+const PACKAGE_TALLIES: [&str; 3] = [
+    "of those contain unsafe usages",
+    "of those further import packages that contain unsafe usages",
+    "of those do not contain any unsafe usages",
+];
 
 pub struct GoGeigerAnalyzer;
 
@@ -20,40 +37,58 @@ impl Analyzer for GoGeigerAnalyzer {
     }
 
     fn run(&self, opts: &ScanOpts) -> Result<ScanResult> {
-        let output = run_go_geiger(opts)?;
-        let (units, details, warnings) = parse_geiger_output(&output, opts)?;
+        let dir = scan_dir(opts);
+        let main_modules = main_modules(dir, opts)?;
+        let output = run_go_geiger(dir, opts)?;
+        let (units, warnings) = parse_geiger_output(&output, &main_modules, opts);
 
-        let mut result = ScanResult::from_parts(self.id(), self.language(), opts, units, details);
+        let mut result =
+            ScanResult::from_parts(self.id(), self.language(), opts, units, Vec::new());
         result.parse_warnings = warnings;
         Ok(result)
     }
 }
 
-fn run_go_geiger(opts: &ScanOpts) -> Result<Vec<u8>> {
+/// the directory holding the manifest, or `None` for the current directory.
+fn scan_dir(opts: &ScanOpts) -> Option<&Path> {
+    opts.manifest_path
+        .as_deref()
+        .and_then(Path::parent)
+        .filter(|dir| !dir.as_os_str().is_empty())
+}
+
+/// the main module's path, or every module's of a go.work workspace.
+fn main_modules(dir: Option<&Path>, opts: &ScanOpts) -> Result<Vec<String>> {
+    let mut cmd = Command::new("go");
+    cmd.args(["list", "-m"]);
+    let stdout = run_tool(&mut cmd, dir, "go list -m", opts)?;
+    Ok(String::from_utf8_lossy(&stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|module| !module.is_empty())
+        .map(String::from)
+        .collect())
+}
+
+fn run_go_geiger(dir: Option<&Path>, opts: &ScanOpts) -> Result<Vec<u8>> {
     let mut cmd = Command::new("go-geiger");
+    cmd.args(["--max-depth", MAX_DEPTH, "./..."]);
+    run_tool(&mut cmd, dir, "go-geiger", opts)
+}
 
-    // go-geiger takes package patterns as arguments
-    // default to ./... for current module
-    let dir = opts
-        .manifest_path
-        .as_ref()
-        .and_then(|p| p.parent())
-        .map(|p| p.to_path_buf());
-
-    if let Some(ref d) = dir {
-        cmd.current_dir(d);
+fn run_tool(cmd: &mut Command, dir: Option<&Path>, name: &str, opts: &ScanOpts) -> Result<Vec<u8>> {
+    if let Some(dir) = dir {
+        cmd.current_dir(dir);
     }
 
-    cmd.arg("./...");
-
     let timeout_secs = opts.analyzer_timeout_secs;
-    let output = match process::run_process(&mut cmd, timeout_secs.map(Duration::from_secs))? {
+    let output = match process::run_process(cmd, timeout_secs.map(Duration::from_secs))? {
         Run::Completed(output) => output,
         Run::TimedOut => {
             return Err(Error::Analyzer {
                 analyzer: "go_geiger".into(),
                 message: format!(
-                    "go-geiger timed out after {}s",
+                    "{name} timed out after {}s",
                     timeout_secs.unwrap_or_default()
                 ),
             })
@@ -62,104 +97,111 @@ fn run_go_geiger(opts: &ScanOpts) -> Result<Vec<u8>> {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        // go-geiger may exit non-zero if it finds unsafe, check if we got output
-        if output.stdout.is_empty() {
-            return Err(Error::Analyzer {
-                analyzer: "go_geiger".into(),
-                message: format!("go-geiger failed: {}", stderr),
-            });
-        }
+        return Err(Error::Analyzer {
+            analyzer: "go_geiger".into(),
+            message: format!("{name} failed: {stderr}"),
+        });
     }
 
     Ok(output.stdout)
 }
 
-// go-geiger output format (line-based):
-// /path/to/file.go:123:45: unsafe.Pointer
-// /path/to/file.go:456:12: unsafe.Sizeof
+/// one unit per package in go-geiger's tables, counted from its LOCAL PACKAGE column.
 fn parse_geiger_output(
     output: &[u8],
+    main_modules: &[String],
     opts: &ScanOpts,
-) -> Result<(Vec<Unit>, Vec<Occurrence>, Vec<ParseWarning>)> {
-    let mut counts: HashMap<String, (UnitKind, u64)> = HashMap::new();
-    let mut details = Vec::new();
+) -> (Vec<Unit>, Vec<ParseWarning>) {
+    let mut counts = HashMap::new();
     let mut warnings = Vec::new();
 
-    for line in output.lines() {
-        let line = line?;
-        if line.is_empty() {
+    for line in String::from_utf8_lossy(output).lines() {
+        let line = strip_sgr(line);
+        let line = line.trim();
+        if line.is_empty() || is_table_frame(line) || is_summary(line) {
             continue;
         }
 
-        // parse line: "file:line:col: message"
-        let parts: Vec<&str> = line.splitn(4, ':').collect();
-        if parts.len() < 3 {
+        if let Some((package, local)) = table_row(line) {
+            counts
+                .entry(package.to_string())
+                .or_insert((package_kind(package, main_modules), local));
+        } else if line
+            .trim_start_matches(TREE)
+            .starts_with("Maximum depth reached.")
+        {
             warnings.push(ParseWarning {
-                message: format!("go-geiger: skipping malformed output line: {line}"),
+                message: "go-geiger: hit its maximum depth; deeper packages may be missing".into(),
             });
-            continue;
+        } else {
+            warnings.push(ParseWarning {
+                message: format!("go-geiger: skipping unexpected output line: {line}"),
+            });
         }
-
-        let file = PathBuf::from(parts[0]);
-        let Ok(line_num) = parts[1].parse::<u32>() else {
-            warnings.push(ParseWarning {
-                message: format!("go-geiger: skipping line with unparseable line number: {line}"),
-            });
-            continue;
-        };
-        let Ok(col) = parts[2].trim().parse::<u32>() else {
-            warnings.push(ParseWarning {
-                message: format!("go-geiger: skipping line with unparseable column number: {line}"),
-            });
-            continue;
-        };
-        let message = parts.get(3).map(|s| s.trim().to_string());
-
-        // determine package name from file path
-        // try to extract module/package name from path
-        let pkg_name = extract_go_package(&file).unwrap_or_else(|| {
-            warnings.push(ParseWarning {
-                message: format!(
-                    "go-geiger: could not determine package for {}, attributing to \"unknown\"",
-                    file.display()
-                ),
-            });
-            "unknown".into()
-        });
-
-        let kind = super::classify_unit_kind(&file);
-        let entry = counts.entry(pkg_name.clone()).or_insert((kind, 0));
-        entry.1 += 1;
-
-        details.push(Occurrence {
-            unit: pkg_name,
-            file,
-            line: line_num,
-            col,
-            message,
-        });
     }
 
-    let (units, details) = super::aggregate_units(counts, details, opts);
-    Ok((units, details, warnings))
+    let (units, _) = super::aggregate_units(counts, Vec::new(), opts);
+    (units, warnings)
 }
 
-/// extract Go package name from file path.
-/// tries to find the package based on common Go project layouts.
-///
-/// returns `None` when no package name can be determined (e.g. bare
-/// filename with no parent directory).
-pub(crate) fn extract_go_package(file: &std::path::Path) -> Option<String> {
-    let path_str = file.to_string_lossy();
+/// `line` without SGR escape sequences.
+fn strip_sgr(line: &str) -> String {
+    let mut plain = String::with_capacity(line.len());
+    let mut rest = line;
+    while let Some(start) = rest.find("\x1b[") {
+        plain.push_str(&rest[..start]);
+        let sequence = &rest[start + 2..];
+        let parameters = sequence.trim_start_matches(|c: char| c.is_ascii_digit() || c == ';');
+        rest = match parameters.strip_prefix('m') {
+            Some(after) => after,
+            None => {
+                plain.push_str("\x1b[");
+                sequence
+            }
+        };
+    }
+    plain.push_str(rest);
+    plain
+}
 
-    cached_module(&path_str)
-        .or_else(|| vendored_package(&path_str))
-        // for workspace files, use the parent directory name or file stem
-        .or_else(|| {
-            file.parent()
-                .and_then(|p| p.file_name())
-                .map(|n| n.to_string_lossy().to_string())
+/// the header of a table and the rule below it.
+fn is_table_frame(line: &str) -> bool {
+    line.starts_with("WITH DEPENDENCIES") || line.chars().all(|c| c == '-' || c == '+')
+}
+
+/// the summary below each table and the legend after the last.
+fn is_summary(line: &str) -> bool {
+    LEGEND.contains(&line)
+        || line.starts_with("Couting occurances of ")
+        || line.contains(" including imports effectively makes up ")
+        || line.split_once(' ').is_some_and(|(packages, tally)| {
+            packages.parse::<u64>().is_ok() && PACKAGE_TALLIES.contains(&tally)
         })
+}
+
+/// the package path and LOCAL PACKAGE count of a table row; a repeated package ends in `...`.
+fn table_row(line: &str) -> Option<(&str, u64)> {
+    let (with_dependencies, rest) = line.split_once(' ')?;
+    with_dependencies.parse::<u64>().ok()?;
+    let (local, rest) = rest.trim_start().split_once(' ')?;
+    let local = local.parse().ok()?;
+    let package = rest.trim_start_matches(TREE);
+    let package = package.strip_suffix("...").unwrap_or(package);
+    (!package.is_empty() && !package.contains(char::is_whitespace)).then_some((package, local))
+}
+
+/// a package in a main module, or below one, is workspace code.
+fn package_kind(package: &str, main_modules: &[String]) -> UnitKind {
+    let in_main_module = main_modules.iter().any(|module| {
+        package
+            .strip_prefix(module.as_str())
+            .is_some_and(|below| below.is_empty() || below.starts_with('/'))
+    });
+    if in_main_module {
+        UnitKind::Workspace
+    } else {
+        UnitKind::Dep
+    }
 }
 
 /// the package directory below the innermost `vendor` directory in `path`
@@ -215,107 +257,213 @@ fn unescape_module_path(escaped: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
+    use std::path::PathBuf;
 
-    #[test]
-    fn test_extract_go_package_workspace_file() {
-        let path = Path::new("/home/user/myproject/pkg/utils/helper.go");
-        assert_eq!(extract_go_package(path), Some("utils".into()));
+    const MULTI_PACKAGE: &[u8] = include_bytes!("../../tests/fixtures/go_geiger/mp.out");
+    const X_SYS_UNIX: &[u8] = include_bytes!("../../tests/fixtures/go_geiger/rw.out");
+    const DEPTH_CUT: &[u8] = include_bytes!("../../tests/fixtures/go_geiger/deep_root.out");
+
+    fn parse(output: &[u8], main_module: &str, opts: &ScanOpts) -> (Vec<Unit>, Vec<ParseWarning>) {
+        parse_geiger_output(output, &[main_module.to_string()], opts)
+    }
+
+    fn with_deps() -> ScanOpts {
+        ScanOpts {
+            include_deps: true,
+            ..Default::default()
+        }
+    }
+
+    fn unit_rows(units: &[Unit]) -> Vec<(&str, UnitKind, u64)> {
+        units
+            .iter()
+            .map(|u| (u.name.as_str(), u.kind, u.unsafe_count))
+            .collect()
     }
 
     #[test]
-    fn test_extract_go_package_vendor_path() {
-        let path = Path::new("/home/user/myproject/vendor/github.com/pkg/errors/errors.go");
+    fn test_parse_geiger_output_counts_each_package_of_a_real_scan_once() {
+        let (units, warnings) = parse(MULTI_PACKAGE, "example.com/mp", &with_deps());
         assert_eq!(
-            extract_go_package(path),
-            Some("github.com/pkg/errors".into())
+            unit_rows(&units),
+            [
+                ("example.com/dep", UnitKind::Dep, 4),
+                ("example.com/mp", UnitKind::Workspace, 1),
+                ("example.com/mp/clean", UnitKind::Workspace, 0),
+                ("example.com/mp/inner", UnitKind::Workspace, 2),
+            ]
         );
+        assert_eq!(warnings, []);
     }
 
     #[test]
-    fn test_extract_go_package_vendor_no_subpath() {
-        let path = Path::new("/home/user/myproject/vendor/errors/errors.go");
-        assert_eq!(extract_go_package(path), Some("errors".into()));
-    }
-
-    #[test]
-    fn test_extract_go_package_module_cache() {
-        let path = Path::new("/home/user/go/pkg/mod/github.com/pkg/errors@v0.9.1/errors.go");
+    fn test_parse_geiger_output_reads_a_real_dependency() {
+        let (units, warnings) = parse(X_SYS_UNIX, "example.com/rw", &with_deps());
         assert_eq!(
-            extract_go_package(path),
-            Some("github.com/pkg/errors".into())
+            unit_rows(&units),
+            [
+                ("example.com/rw", UnitKind::Workspace, 0),
+                ("golang.org/x/sys/unix", UnitKind::Dep, 570),
+            ]
         );
+        assert_eq!(warnings, []);
     }
 
     #[test]
-    fn test_extract_go_package_nested_vendor_uses_the_innermost() {
-        let path = Path::new(
-            "/home/user/myproject/vendor/github.com/a/tool/vendor/github.com/b/lib/lib.go",
-        );
-        assert_eq!(extract_go_package(path), Some("github.com/b/lib".into()));
-    }
-
-    #[test]
-    fn test_extract_go_package_module_cache_under_a_vendor_directory() {
-        let path = Path::new("/srv/vendor/go/pkg/mod/github.com/pkg/errors@v0.9.1/errors.go");
+    fn test_parse_geiger_output_counts_a_repeated_package_once_and_warns_at_a_depth_cut() {
+        let (units, warnings) = parse(DEPTH_CUT, "example.com/deep", &ScanOpts::default());
+        assert_eq!(units.len(), 14);
+        assert!(units
+            .iter()
+            .all(|u| u.kind == UnitKind::Workspace && !u.name.ends_with('.')));
+        let unsafe_units: Vec<_> = unit_rows(&units)
+            .into_iter()
+            .filter(|(_, _, count)| *count > 0)
+            .collect();
         assert_eq!(
-            extract_go_package(path),
-            Some("github.com/pkg/errors".into())
+            unsafe_units,
+            [("example.com/deep/shared", UnitKind::Workspace, 2)]
+        );
+        assert_eq!(warnings.len(), 1);
+        assert!(
+            warnings[0].message.contains("maximum depth"),
+            "{warnings:?}"
         );
     }
 
     #[test]
-    fn test_extract_go_package_fallback() {
-        let path = Path::new("/some/random/path/main.go");
-        assert_eq!(extract_go_package(path), Some("path".into()));
-    }
-
-    #[test]
-    fn test_extract_go_package_bare_filename_returns_none() {
-        let path = Path::new("main.go");
-        assert_eq!(extract_go_package(path), None);
-    }
-
-    #[test]
-    fn test_extract_go_package_root_file_returns_none() {
-        let path = Path::new("/main.go");
-        assert_eq!(extract_go_package(path), None);
-    }
-
-    #[test]
-    fn test_extract_go_package_relative_vendor_path() {
-        let path = Path::new("vendor/github.com/pkg/errors/errors.go");
-        assert_eq!(
-            extract_go_package(path),
-            Some("github.com/pkg/errors".into())
-        );
-        let nested = Path::new("vendor/github.com/a/tool/vendor/github.com/b/lib/lib.go");
-        assert_eq!(extract_go_package(nested), Some("github.com/b/lib".into()));
-    }
-
-    #[test]
-    fn test_parse_geiger_output_relative_vendor_path_is_a_dependency() {
-        let output = b"vendor/github.com/pkg/errors/errors.go:100:5: unsafe.Pointer\n";
-        let opts = ScanOpts {
+    fn test_parse_geiger_output_leaves_out_dependencies_when_workspace_only_or_without_deps() {
+        let workspace_only = ScanOpts {
             workspace_only: true,
+            include_deps: true,
             ..Default::default()
         };
-        let (units, details, _) = parse_geiger_output(output, &opts).unwrap();
-        assert!(units.is_empty());
-        assert!(details.is_empty());
+        for opts in [workspace_only, ScanOpts::default()] {
+            let (units, _) = parse(MULTI_PACKAGE, "example.com/mp", &opts);
+            let names: Vec<_> = units.iter().map(|u| u.name.as_str()).collect();
+            assert_eq!(
+                names,
+                [
+                    "example.com/mp",
+                    "example.com/mp/clean",
+                    "example.com/mp/inner"
+                ]
+            );
+        }
     }
 
     #[test]
-    fn test_extract_go_package_module_cache_unescapes_upper_case() {
-        let path = Path::new("/home/u/go/pkg/mod/github.com/!burnt!sushi/toml@v1.3.2/decode.go");
+    fn test_parse_geiger_output_warns_about_unexpected_lines() {
+        let output = "unknown flag: --bogus\n\
+                      7 1 0 0 0 1 0 example.com/mp\n\
+                      found 3 example.com/x\n\
+                      3 4 ├─\n\
+                      some of those contain unsafe usages\n\
+                      Packages in blue are new\n";
+        let (units, warnings) = parse(output.as_bytes(), "example.com/mp", &with_deps());
+        assert!(units.is_empty(), "{units:?}");
+        let messages: Vec<_> = warnings.into_iter().map(|w| w.message).collect();
+        let expected: Vec<_> = output
+            .lines()
+            .map(|line| format!("go-geiger: skipping unexpected output line: {line}"))
+            .collect();
+        assert_eq!(messages, expected);
+    }
+
+    #[test]
+    fn test_strip_sgr_keeps_other_escape_sequences() {
+        assert_eq!(strip_sgr("\x1b[31m2\x1b[0m \x1b[1;32mok\x1b[m"), "2 ok");
+        assert_eq!(strip_sgr("a\x1b[2Kb\x1b["), "a\x1b[2Kb\x1b[");
+    }
+
+    #[test]
+    fn test_package_kind_is_workspace_in_or_below_a_main_module() {
+        let main_modules = ["example.com/mp".to_string(), "example.com/dep".to_string()];
+        for (package, kind) in [
+            ("example.com/mp", UnitKind::Workspace),
+            ("example.com/mp/inner", UnitKind::Workspace),
+            ("example.com/dep", UnitKind::Workspace),
+            ("example.com/mpx", UnitKind::Dep),
+            ("golang.org/x/sys/unix", UnitKind::Dep),
+        ] {
+            assert_eq!(package_kind(package, &main_modules), kind, "{package}");
+        }
+    }
+
+    #[test]
+    fn test_scan_dir_of_a_bare_manifest_is_the_current_directory() {
+        let scan_dir_of = |manifest: Option<&str>| {
+            let opts = ScanOpts {
+                manifest_path: manifest.map(PathBuf::from),
+                ..Default::default()
+            };
+            scan_dir(&opts).map(Path::to_path_buf)
+        };
+        assert_eq!(scan_dir_of(Some("go.mod")), None);
         assert_eq!(
-            extract_go_package(path),
-            Some("github.com/BurntSushi/toml".into())
+            scan_dir_of(Some("proj/go.mod")),
+            Some(PathBuf::from("proj"))
         );
+        assert_eq!(scan_dir_of(None), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_run_tool_fails_on_a_non_zero_exit_that_printed_output() {
+        let _guard = crate::analyzer::test_spawn_guard();
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "echo 'unknown flag: --bogus'; exit 1"]);
+        let err = run_tool(&mut cmd, None, "go-geiger", &ScanOpts::default()).unwrap_err();
+        assert!(err.to_string().contains("go-geiger failed"), "{err}");
     }
 
     #[test]
-    fn test_extract_go_package_module_cache_keeps_an_invalid_escaped_path() {
+    fn test_vendored_package_is_below_the_innermost_vendor_directory() {
+        for (path, package) in [
+            (
+                "/home/user/myproject/vendor/github.com/pkg/errors/errors.go",
+                "github.com/pkg/errors",
+            ),
+            ("/home/user/myproject/vendor/errors/errors.go", "errors"),
+            (
+                "/home/user/myproject/vendor/github.com/a/tool/vendor/github.com/b/lib/lib.go",
+                "github.com/b/lib",
+            ),
+            (
+                "vendor/github.com/pkg/errors/errors.go",
+                "github.com/pkg/errors",
+            ),
+            (
+                "vendor/github.com/a/tool/vendor/github.com/b/lib/lib.go",
+                "github.com/b/lib",
+            ),
+        ] {
+            assert_eq!(vendored_package(path), Some(package.into()), "{path}");
+        }
+    }
+
+    #[test]
+    fn test_cached_module() {
+        for (path, module) in [
+            (
+                "/home/user/go/pkg/mod/github.com/pkg/errors@v0.9.1/errors.go",
+                "github.com/pkg/errors",
+            ),
+            (
+                "/srv/vendor/go/pkg/mod/github.com/pkg/errors@v0.9.1/errors.go",
+                "github.com/pkg/errors",
+            ),
+            (
+                "/home/u/go/pkg/mod/github.com/!burnt!sushi/toml@v1.3.2/decode.go",
+                "github.com/BurntSushi/toml",
+            ),
+        ] {
+            assert_eq!(cached_module(path), Some(module.into()), "{path}");
+        }
+    }
+
+    #[test]
+    fn test_cached_module_keeps_an_invalid_escaped_path() {
         for module in [
             "github.com/!burnt!sushi/Toml",
             "github.com/!burnt!!sushi/toml",
@@ -325,179 +473,7 @@ mod tests {
             "github.com/!burnt/toml!",
         ] {
             let path = format!("/home/u/go/pkg/mod/{module}@v1.3.2/decode.go");
-            assert_eq!(
-                extract_go_package(Path::new(&path)),
-                Some(module.into()),
-                "{module}"
-            );
+            assert_eq!(cached_module(&path), Some(module.into()), "{module}");
         }
-    }
-
-    #[test]
-    fn test_parse_geiger_output_basic() {
-        let output = b"/home/user/project/main.go:10:5: unsafe.Pointer\n\
-                       /home/user/project/main.go:20:10: unsafe.Sizeof\n";
-
-        let opts = ScanOpts::default();
-        let (units, details, _) = parse_geiger_output(output, &opts).unwrap();
-
-        assert_eq!(units.len(), 1);
-        assert_eq!(units[0].name, "project");
-        assert_eq!(units[0].unsafe_count, 2);
-        assert_eq!(units[0].kind, UnitKind::Workspace);
-        assert_eq!(details.len(), 2);
-    }
-
-    #[test]
-    fn test_parse_geiger_output_vendor_deps() {
-        let output =
-            b"/home/user/project/vendor/github.com/pkg/errors/errors.go:100:5: unsafe.Pointer\n";
-
-        let opts = ScanOpts {
-            include_deps: true,
-            ..Default::default()
-        };
-        let (units, details, _) = parse_geiger_output(output, &opts).unwrap();
-
-        assert_eq!(units.len(), 1);
-        assert_eq!(units[0].name, "github.com/pkg/errors");
-        assert_eq!(units[0].kind, UnitKind::Dep);
-        assert_eq!(details.len(), 1);
-    }
-
-    #[test]
-    fn test_parse_geiger_output_module_cache_deps() {
-        // go module cache paths are classified as dependencies
-        let output =
-            b"/home/user/go/pkg/mod/github.com/pkg/errors@v0.9.1/errors.go:100:5: unsafe.Pointer\n";
-
-        let opts = ScanOpts {
-            include_deps: true,
-            ..Default::default()
-        };
-        let (units, details, _) = parse_geiger_output(output, &opts).unwrap();
-
-        assert_eq!(units.len(), 1);
-        assert_eq!(units[0].name, "github.com/pkg/errors");
-        assert_eq!(units[0].kind, UnitKind::Dep);
-        assert_eq!(details.len(), 1);
-    }
-
-    #[test]
-    fn test_parse_geiger_output_filters_deps_when_workspace_only() {
-        let output = b"/home/user/project/main.go:10:5: unsafe.Pointer\n\
-                       /home/user/project/vendor/errors/errors.go:100:5: unsafe.Pointer\n";
-
-        let opts = ScanOpts {
-            workspace_only: true,
-            ..Default::default()
-        };
-        let (units, details, _) = parse_geiger_output(output, &opts).unwrap();
-
-        assert_eq!(units.len(), 1);
-        assert_eq!(units[0].name, "project");
-        assert_eq!(details.len(), 1);
-    }
-
-    #[test]
-    fn test_parse_geiger_output_filters_deps_when_include_deps_false() {
-        let output = b"/home/user/project/main.go:10:5: unsafe.Pointer\n\
-                       /home/user/project/vendor/errors/errors.go:100:5: unsafe.Pointer\n";
-
-        let opts = ScanOpts {
-            include_deps: false,
-            ..Default::default()
-        };
-        let (units, details, _) = parse_geiger_output(output, &opts).unwrap();
-
-        assert_eq!(units.len(), 1);
-        assert_eq!(units[0].name, "project");
-        assert_eq!(details.len(), 1);
-    }
-
-    #[test]
-    fn test_parse_geiger_output_empty() {
-        let output = b"";
-        let opts = ScanOpts::default();
-        let (units, details, _) = parse_geiger_output(output, &opts).unwrap();
-
-        assert!(units.is_empty());
-        assert!(details.is_empty());
-    }
-
-    #[test]
-    fn test_parse_geiger_output_empty_lines() {
-        let output = b"\n\n/home/user/project/main.go:10:5: unsafe.Pointer\n\n";
-        let opts = ScanOpts::default();
-        let (units, details, _) = parse_geiger_output(output, &opts).unwrap();
-
-        assert_eq!(units.len(), 1);
-        assert_eq!(details.len(), 1);
-    }
-
-    #[test]
-    fn test_parse_geiger_output_malformed_lines_warn() {
-        let output = b"invalid line\n\
-                       /home/user/project/main.go:10:5: unsafe.Pointer\n\
-                       also invalid\n";
-
-        let opts = ScanOpts::default();
-        let (units, details, warnings) = parse_geiger_output(output, &opts).unwrap();
-
-        assert_eq!(units.len(), 1);
-        assert_eq!(details.len(), 1);
-        assert_eq!(warnings.len(), 2);
-        assert!(warnings[0].message.contains("malformed output line"));
-        assert!(warnings[0].message.contains("invalid line"));
-        assert!(warnings[1].message.contains("malformed output line"));
-        assert!(warnings[1].message.contains("also invalid"));
-    }
-
-    #[test]
-    fn test_parse_geiger_output_malformed_line_col_skipped() {
-        let output = b"/home/user/project/main.go:abc:5: unsafe.Pointer\n\
-                       /home/user/project/main.go:10:xyz: unsafe.Sizeof\n\
-                       /home/user/project/main.go:20:3: unsafe.Pointer\n";
-
-        let opts = ScanOpts::default();
-        let (units, details, warnings) = parse_geiger_output(output, &opts).unwrap();
-
-        assert_eq!(details.len(), 1);
-        assert_eq!(details[0].line, 20);
-        assert_eq!(details[0].col, 3);
-        assert_eq!(units.len(), 1);
-        assert_eq!(units[0].unsafe_count, 1);
-
-        assert_eq!(warnings.len(), 2);
-        assert!(warnings[0].message.contains("unparseable line number"));
-        assert!(warnings[1].message.contains("unparseable column number"));
-    }
-
-    #[test]
-    fn test_parse_geiger_output_unknown_package_warns() {
-        let output = b"/main.go:1:1: unsafe.Pointer\n";
-
-        let opts = ScanOpts::default();
-        let (units, details, warnings) = parse_geiger_output(output, &opts).unwrap();
-
-        assert_eq!(units.len(), 1);
-        assert_eq!(units[0].name, "unknown");
-        assert_eq!(details.len(), 1);
-        assert_eq!(details[0].unit, "unknown");
-        assert_eq!(warnings.len(), 1);
-        assert!(warnings[0].message.contains("could not determine package"));
-        assert!(warnings[0].message.contains("/main.go"));
-    }
-
-    #[test]
-    fn test_parse_geiger_output_sorted() {
-        let output = b"/home/user/project/zebra/z.go:1:1: unsafe.Pointer\n\
-                       /home/user/project/alpha/a.go:1:1: unsafe.Pointer\n";
-
-        let opts = ScanOpts::default();
-        let (units, _, _) = parse_geiger_output(output, &opts).unwrap();
-
-        assert_eq!(units[0].name, "alpha");
-        assert_eq!(units[1].name, "zebra");
     }
 }

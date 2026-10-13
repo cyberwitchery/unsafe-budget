@@ -1,0 +1,28 @@
+  WITH DEPENDENCIES   LOCAL PACKAGE   PACKAGE PATH                                                                  
+--------------------+---------------+-------------------------------------------------------------------------------
+          [0m3[0m                 [0m0[0m         [0mexample.com/deep[0m                                                              
+          [0m2[0m                 [0m0[0m         [0m├─example.com/deep/b[0m                                                          
+          [0m2[0m                 [0m0[0m         [0m│ ├─example.com/deep/a[0m                                                        
+          [31m2[0m                 [31m2[0m         [31m│ │ └─example.com/deep/shared[0m                                                 
+          [0m2[0m                 [0m2[0m         [0m│ └─example.com/deep/shared...[0m                                                
+          [0m1[0m                 [0m0[0m         [0m└─example.com/deep/p1[0m                                                         
+          [0m1[0m                 [0m0[0m         [0m  └─example.com/deep/p2[0m                                                       
+          [0m1[0m                 [0m0[0m         [0m    └─example.com/deep/p3[0m                                                     
+          [0m1[0m                 [0m0[0m         [0m      └─example.com/deep/p4[0m                                                   
+          [0m1[0m                 [0m0[0m         [0m        └─example.com/deep/p5[0m                                                 
+          [0m1[0m                 [0m0[0m         [0m          └─example.com/deep/p6[0m                                               
+          [0m1[0m                 [0m0[0m         [0m            └─example.com/deep/p7[0m                                             
+          [0m1[0m                 [0m0[0m         [0m              └─example.com/deep/p8[0m                                           
+          [0m1[0m                 [0m0[0m         [0m                └─example.com/deep/p9[0m                                         
+          [0m1[0m                 [0m0[0m         [0m                  └─example.com/deep/p10[0m                                      
+                                                          └─Maximum depth reached. Use --max-depth= to increase it  
+
+Package example.com/deep including imports effectively makes up 14 packages
+  1 of those contain unsafe usages
+  12 of those further import packages that contain unsafe usages
+
+Couting occurances of unsafe.Pointer
+
+Packages in green have no unsafe usages
+Packages in red contain unsafe usages
+Packages in white import packages with unsafe usages

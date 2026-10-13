@@ -177,5 +177,5 @@ cd my-go-project
 unsafe-budget scan
 
 # explicit
-unsafe-budget scan --analyzer go_geiger --details
+unsafe-budget scan --analyzer go_geiger
 ```

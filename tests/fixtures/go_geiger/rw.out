@@ -1,0 +1,14 @@
+  WITH DEPENDENCIES   LOCAL PACKAGE   PACKAGE PATH             
+--------------------+---------------+--------------------------
+         [0m570[0m                [0m0[0m         [0mexample.com/rw[0m           
+         [31m570[0m               [31m570[0m        [31m└─golang.org/x/sys/unix[0m  
+
+Package example.com/rw including imports effectively makes up 2 packages
+  1 of those contain unsafe usages
+  1 of those further import packages that contain unsafe usages
+
+Couting occurances of unsafe.Pointer
+
+Packages in green have no unsafe usages
+Packages in red contain unsafe usages
+Packages in white import packages with unsafe usages
