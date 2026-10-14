@@ -68,12 +68,10 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # Dogfood our own action: downloads the release binary, no compile.
-      # v0.5.1 predates attested releases; drop verify: false once one ships.
       - uses: ./
         with:
           mode: check
-          version: v0.5.1
-          verify: false
+          version: v0.5.2
 
   sbom:
     uses: cyberwitchery/.github/.github/workflows/sbom.yml@64ffd6a08c3e9626a681c8be1c8ad056765f3b85 # main

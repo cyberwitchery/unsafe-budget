@@ -15,10 +15,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: cyberwitchery/unsafe-budget@d10776ba7fe8043f31b19ec40bcff26b4da6b94e # v0.5.1
+      - uses: cyberwitchery/unsafe-budget@92b73becc9c76134433ac0347d828fa87fdb3fa3 # v0.5.2
         with:
           mode: check
-          version: v0.5.1
+          version: v0.5.2
 ```
 
 the action downloads a pre-built release binary for the current runner and
@@ -42,10 +42,10 @@ inputs:
 example with extra flags:
 
 ```yaml
-- uses: cyberwitchery/unsafe-budget@d10776ba7fe8043f31b19ec40bcff26b4da6b94e # v0.5.1
+- uses: cyberwitchery/unsafe-budget@92b73becc9c76134433ac0347d828fa87fdb3fa3 # v0.5.2
   with:
     mode: check
-    version: v0.5.1
+    version: v0.5.2
     args: --analyzer cargo_geiger --workspace-only
 ```
 
