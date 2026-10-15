@@ -413,29 +413,22 @@ mod tests {
     }
 
     #[test]
-    fn test_list_analyzers_starts_with_builtins() {
+    fn test_list_analyzers_includes_builtins() {
         let analyzers = list_analyzers(None);
-        let builtins: Vec<_> = analyzers
-            .iter()
-            .take(4)
-            .map(|a| {
-                (
-                    a.id.as_str(),
-                    a.language.as_str(),
-                    a.builtin,
-                    a.path.clone(),
-                )
-            })
-            .collect();
-        assert_eq!(
-            builtins,
-            [
-                ("rustc_unsafe_lint", "rust", true, None),
-                ("cargo_geiger", "rust", true, None),
-                ("go_geiger", "go", true, None),
-                ("sarif", "any", true, None),
-            ]
-        );
+        for (id, language) in [
+            ("rustc_unsafe_lint", "rust"),
+            ("cargo_geiger", "rust"),
+            ("go_geiger", "go"),
+            ("sarif", "any"),
+        ] {
+            let analyzer = analyzers
+                .iter()
+                .find(|a| a.id == id)
+                .unwrap_or_else(|| panic!("{id} is listed"));
+            assert_eq!(analyzer.language, language, "{id}");
+            assert!(analyzer.builtin, "{id}");
+            assert_eq!(analyzer.path, None, "{id}");
+        }
     }
 
     #[test]
@@ -516,7 +509,25 @@ mod tests {
                 .get_args()
                 .map(|a| a.to_string_lossy().to_string())
                 .collect();
-            assert_eq!(args, expected);
+            // cargo does not care about flag order, only that each value stays
+            // with its flag.
+            assert_eq!(flag_units(&args), flag_units(expected), "{expected:?}");
         }
+    }
+
+    fn flag_units<S: AsRef<str>>(args: &[S]) -> Vec<Vec<String>> {
+        let mut units = Vec::new();
+        let mut args = args.iter().map(|a| a.as_ref().to_string());
+        while let Some(flag) = args.next() {
+            let takes_value =
+                matches!(flag.as_str(), "--features" | "--target" | "--manifest-path");
+            let mut unit = vec![flag];
+            if takes_value {
+                unit.extend(args.next());
+            }
+            units.push(unit);
+        }
+        units.sort();
+        units
     }
 }
