@@ -648,6 +648,17 @@ mod tests {
     }
 
     #[test]
+    fn sanitize_overrides_analyzer_id_with_host_id() {
+        let opts = ScanOpts::default();
+        let out = sanitize_plugin_result(
+            "plug",
+            &opts,
+            plugin_scan_result(host_scope(), vec![], Totals::default(), vec![]),
+        );
+        assert_eq!(out.analyzer_id, "plug");
+    }
+
+    #[test]
     fn sanitize_preserves_plugin_tool_version_and_language() {
         let opts = ScanOpts::default();
         let out = sanitize_plugin_result(
