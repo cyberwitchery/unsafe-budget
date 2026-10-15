@@ -48,7 +48,7 @@ unsafe-budget scan --analyzer cargo_geiger
 
 analyzer for go projects.
 
-**backend**: `go list -m`, then `go-geiger --max-depth 1000000 ./...`
+**backend**: `go list -e -deps ./...`, then `go-geiger --max-depth 1000000 ./...`
 
 **features**:
 - counts `unsafe.Pointer` uses, go-geiger's default match filter; `unsafe.Sizeof`, `unsafe.Offsetof` and `unsafe.Alignof` are not counted
@@ -57,8 +57,8 @@ analyzer for go projects.
 - requires go-geiger and `go` on `PATH`
 
 **workspace vs dependency detection**:
-- a package in a module `go list -m` prints (the main module, or each module of a `go.work` workspace) or below one is workspace code
-- every other package is a dependency
+- a package `go list` places in a main module (the main module, or each module of a `go.work` workspace) is workspace code
+- every other package is a dependency, even one in a module whose path sits below the main module's (a nested module, or `example.com/app/v2`)
 - units are named by import path (`golang.org/x/sys/unix`)
 
 **usage**:
