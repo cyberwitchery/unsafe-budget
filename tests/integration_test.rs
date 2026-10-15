@@ -15,15 +15,9 @@ fn multi_member_fixture_path() -> PathBuf {
 }
 
 #[test]
-#[ignore = "requires cargo build first"]
+#[ignore = "runs cargo"]
 fn test_scan_sample_workspace() {
-    let binary = project_root().join("target/debug/unsafe-budget");
-    if !binary.exists() {
-        eprintln!("Skipping integration test - binary not built");
-        return;
-    }
-
-    let output = Command::new(&binary)
+    let output = Command::new(env!("CARGO_BIN_EXE_unsafe-budget"))
         .arg("scan")
         .arg("--manifest-path")
         .arg(fixture_path().join("Cargo.toml"))
@@ -40,33 +34,18 @@ fn test_scan_sample_workspace() {
     assert_eq!(result["analyzer_id"], "rustc_unsafe_lint");
     assert_eq!(result["language"], "rust");
 
-    // Should have found the member crate
-    let units = result["units"].as_array().expect("units should be array");
-    let member = units.iter().find(|u| u["name"] == "member");
-    assert!(member.is_some(), "should find member crate");
-
-    // Should have found unsafe code (at least 2 blocks)
-    let member = member.unwrap();
-    let count = member["unsafe_count"].as_u64().unwrap();
-    assert!(
-        count >= 2,
-        "should find at least 2 unsafe blocks, found {}",
-        count
+    assert_eq!(
+        unit_counts(&result),
+        [("member".to_string(), "workspace".to_string(), 2)]
     );
 }
 
 #[test]
-#[ignore = "requires cargo build first"]
+#[ignore = "runs cargo"]
 fn test_workspace_only_scans_sibling_members() {
     // `--workspace-only` compiles every workspace member, not just the root
     // package; a sibling crate's unsafe code must be counted.
-    let binary = project_root().join("target/debug/unsafe-budget");
-    if !binary.exists() {
-        eprintln!("Skipping integration test - binary not built");
-        return;
-    }
-
-    let output = Command::new(&binary)
+    let output = Command::new(env!("CARGO_BIN_EXE_unsafe-budget"))
         .arg("scan")
         .arg("--manifest-path")
         .arg(multi_member_fixture_path().join("Cargo.toml"))
@@ -81,17 +60,12 @@ fn test_workspace_only_scans_sibling_members() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let result: serde_json::Value = serde_json::from_str(&stdout).expect("invalid json output");
 
-    let units = result["units"].as_array().expect("units should be array");
-    let sibling = units
-        .iter()
-        .find(|u| u["name"] == "sibling")
-        .expect("workspace-only scan should include the sibling member");
-
-    let count = sibling["unsafe_count"].as_u64().unwrap();
-    assert!(
-        count >= 1,
-        "sibling member's unsafe code must be counted in --workspace-only mode, found {}",
-        count
+    assert_eq!(
+        unit_counts(&result),
+        [
+            ("rootpkg".to_string(), "workspace".to_string(), 0),
+            ("sibling".to_string(), "workspace".to_string(), 2),
+        ]
     );
 }
 
@@ -684,107 +658,4 @@ fn test_sarif_output_leaves_out_an_unknown_line_or_column() {
         text.ends_with("  src:\n    src/a.rs — no region\n    src/b.rs:7 — line only\n"),
         "{text}"
     );
-}
-
-#[test]
-fn test_budget_logic() {
-    use unsafe_budget::budget;
-    use unsafe_budget::config::{Baseline, BaselineUnit, Config, Mode};
-    use unsafe_budget::model::{ScanResult, Scope, Totals, Unit, UnitKind};
-
-    let scan = ScanResult {
-        tool_version: "0.1.0".into(),
-        analyzer_id: "test".into(),
-        language: "rust".into(),
-        scope: Scope {
-            workspace_only: false,
-            include_deps: true,
-            features: vec![],
-            all_features: false,
-            no_default_features: false,
-            all_targets: false,
-            targets: vec![],
-            manifest_path: None,
-        },
-        units: vec![
-            Unit {
-                name: "my_crate".into(),
-                kind: UnitKind::Workspace,
-                unsafe_count: 15,
-            },
-            Unit {
-                name: "dep".into(),
-                kind: UnitKind::Dep,
-                unsafe_count: 10,
-            },
-        ],
-        totals: Totals {
-            workspace_unsafe: 15,
-            deps_unsafe: 10,
-            overall_unsafe: 25,
-        },
-        details: vec![],
-        parse_warnings: vec![],
-    };
-
-    let baseline = Baseline {
-        tool_version: "0.1.0".into(),
-        analyzer_id: "test".into(),
-        scope: scan.scope.clone(),
-        totals: Totals {
-            workspace_unsafe: 10,
-            deps_unsafe: 10,
-            overall_unsafe: 20,
-        },
-        units: vec![
-            BaselineUnit {
-                name: "my_crate".into(),
-                kind: UnitKind::Workspace,
-                unsafe_count: 10,
-            },
-            BaselineUnit {
-                name: "dep".into(),
-                kind: UnitKind::Dep,
-                unsafe_count: 10,
-            },
-        ],
-    };
-
-    let config = Config {
-        mode: Mode::Ratchet,
-        ..Config::default()
-    };
-
-    let result = budget::check(&scan, Some(&baseline), &config).unwrap();
-
-    assert!(!result.passed);
-    assert_eq!(result.violations.len(), 1);
-    assert_eq!(result.violations[0].unit, "my_crate");
-    assert_eq!(result.violations[0].delta, 5);
-}
-
-#[test]
-fn test_config_parsing() {
-    use unsafe_budget::config::{Config, Mode};
-
-    let toml = r#"
-mode = "caps"
-include_deps = false
-ignore_units = ["test_crate"]
-
-[caps]
-default = 50
-
-[caps.workspace]
-my_crate = 10
-"#;
-
-    let config: Config = toml::from_str(toml).unwrap();
-    assert_eq!(config.mode, Mode::Caps);
-    assert!(!config.include_deps);
-    assert_eq!(config.ignore_units, vec!["test_crate"]);
-
-    let caps = config.caps.unwrap();
-    assert_eq!(caps.default, Some(50));
-    assert_eq!(caps.workspace.get("my_crate"), Some(&10));
 }

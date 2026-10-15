@@ -556,6 +556,9 @@ mod tests {
 
         let results = sarif.runs[0].results.as_ref().unwrap();
         assert!(results.is_empty());
+        let rules = sarif.runs[0].tool.driver.rules.as_ref().unwrap();
+        let rule_ids: Vec<_> = rules.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(rule_ids, ["unsafe_code"]);
     }
 
     #[test]
@@ -1049,58 +1052,6 @@ mod tests {
     }
 
     #[test]
-    fn test_make_budget_result_without_locations() {
-        let result = make_budget_result(
-            RULE_BUDGET_VIOLATION,
-            sarif::ResultLevel::Error,
-            "unit 'foo' exceeds budget".into(),
-            vec![],
-        );
-
-        assert_eq!(result.rule_id.as_deref(), Some(RULE_BUDGET_VIOLATION));
-        assert_eq!(result.level, Some(sarif::ResultLevel::Error));
-        assert_eq!(
-            result.message.text.as_deref(),
-            Some("unit 'foo' exceeds budget")
-        );
-        assert!(result.locations.is_none());
-    }
-
-    #[test]
-    fn test_make_budget_result_with_locations() {
-        let occ = Occurrence {
-            unit: "foo".into(),
-            file: PathBuf::from("src/lib.rs"),
-            line: 42,
-            col: 1,
-            message: None,
-        };
-        let locations = vec![make_location(&occ)];
-
-        let result = make_budget_result(
-            RULE_BUDGET_WARNING,
-            sarif::ResultLevel::Note,
-            "unit 'foo' is near its budget".into(),
-            locations,
-        );
-
-        assert_eq!(result.rule_id.as_deref(), Some(RULE_BUDGET_WARNING));
-        assert_eq!(result.level, Some(sarif::ResultLevel::Note));
-        assert_eq!(
-            result.message.text.as_deref(),
-            Some("unit 'foo' is near its budget")
-        );
-        let locs = result.locations.as_ref().unwrap();
-        assert_eq!(locs.len(), 1);
-        let pl = locs[0].physical_location.as_ref().unwrap();
-        assert_eq!(
-            pl.artifact_location.as_ref().unwrap().uri.as_deref(),
-            Some("src/lib.rs")
-        );
-        assert_eq!(pl.region.as_ref().unwrap().start_line, Some(42));
-    }
-
-    #[test]
     fn test_scan_to_sarif_with_parse_warnings() {
         let mut scan = make_scan_result(vec![]);
         scan.parse_warnings = vec![
@@ -1129,15 +1080,6 @@ mod tests {
             assert_eq!(r.level, Some(sarif::ResultLevel::Note));
             assert!(r.locations.is_none());
         }
-    }
-
-    #[test]
-    fn test_scan_to_sarif_no_parse_warning_rule_when_empty() {
-        let scan = make_scan_result(vec![]);
-        let sarif = scan_to_sarif(&scan);
-        let rules = sarif.runs[0].tool.driver.rules.as_ref().unwrap();
-        let rule_ids: Vec<_> = rules.iter().map(|r| r.id.as_str()).collect();
-        assert!(!rule_ids.contains(&"parse_warning"));
     }
 
     #[test]

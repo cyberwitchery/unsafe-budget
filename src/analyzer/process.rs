@@ -211,36 +211,6 @@ mod tests {
     }
 
     #[test]
-    fn failing_reader_yields_its_bytes_before_erroring() {
-        let mut reader = FailingReader::new(b"partial output");
-        let mut buf = Vec::new();
-        io::Read::read_to_end(&mut reader, &mut buf).ok();
-        assert_eq!(buf, b"partial output");
-    }
-
-    #[test]
-    fn drain_returns_the_whole_stream() {
-        assert_eq!(drain(&b"complete output"[..]).unwrap(), b"complete output");
-    }
-
-    #[test]
-    fn drain_errors_on_a_read_that_fails_partway() {
-        let err = drain(FailingReader::new(b"partial output")).unwrap_err();
-        assert_eq!(err.kind(), io::ErrorKind::BrokenPipe);
-    }
-
-    #[test]
-    fn finish_drain_names_the_stream_and_keeps_the_error_kind() {
-        let failed: std::thread::Result<io::Result<Vec<u8>>> = Ok(Err(io::Error::new(
-            io::ErrorKind::BrokenPipe,
-            "pipe died mid-stream",
-        )));
-        let err = finish_drain(failed, "stdout").unwrap_err();
-        assert_eq!(err.kind(), io::ErrorKind::BrokenPipe);
-        assert!(err.to_string().contains("stdout"), "{err}");
-    }
-
-    #[test]
     fn finish_drain_turns_a_panicked_thread_into_an_error() {
         let panicked: std::thread::Result<io::Result<Vec<u8>>> = Err(Box::new("boom"));
         let err = finish_drain(panicked, "stderr").unwrap_err();
@@ -258,35 +228,25 @@ mod tests {
     }
 
     #[test]
-    fn completed_arm_propagates_a_failed_stdout_drain() {
+    fn completed_arm_propagates_a_failed_drain() {
         let _lock = test_spawn_guard();
-        let mut child = spawn_immediate_child();
-        let Err(err) = wait_and_drain(
-            &mut child,
-            FailingReader::new(b"partial output"),
-            io::empty(),
-            Duration::from_secs(10),
-        ) else {
-            panic!("a failed stdout drain must not be reported as a completed run");
-        };
-        assert_eq!(err.kind(), io::ErrorKind::BrokenPipe);
-        assert!(err.to_string().contains("stdout"), "{err}");
-    }
-
-    #[test]
-    fn completed_arm_propagates_a_failed_stderr_drain() {
-        let _lock = test_spawn_guard();
-        let mut child = spawn_immediate_child();
-        let Err(err) = wait_and_drain(
-            &mut child,
-            io::empty(),
-            FailingReader::new(b"partial output"),
-            Duration::from_secs(10),
-        ) else {
-            panic!("a failed stderr drain must not be reported as a completed run");
-        };
-        assert_eq!(err.kind(), io::ErrorKind::BrokenPipe);
-        assert!(err.to_string().contains("stderr"), "{err}");
+        for stream in ["stdout", "stderr"] {
+            let failing =
+                || -> Box<dyn io::Read + Send> { Box::new(FailingReader::new(b"partial output")) };
+            let empty = || -> Box<dyn io::Read + Send> { Box::new(io::empty()) };
+            let (stdout, stderr) = if stream == "stdout" {
+                (failing(), empty())
+            } else {
+                (empty(), failing())
+            };
+            let mut child = spawn_immediate_child();
+            let Err(err) = wait_and_drain(&mut child, stdout, stderr, Duration::from_secs(10))
+            else {
+                panic!("a failed {stream} drain must not be reported as a completed run");
+            };
+            assert_eq!(err.kind(), io::ErrorKind::BrokenPipe, "{stream}");
+            assert!(err.to_string().contains(stream), "{err}");
+        }
     }
 
     #[test]

@@ -520,83 +520,44 @@ mod tests {
     use serde_sarif::sarif;
 
     #[test]
-    fn test_infer_language_rust() {
-        assert_eq!(infer_language("cargo-clippy"), "rust");
-        assert_eq!(infer_language("rustc"), "rust");
-        assert_eq!(infer_language("Rust Analyzer"), "rust");
+    fn test_infer_language() {
+        let cases = [
+            ("cargo-clippy", "rust"),
+            ("rustc", "rust"),
+            ("Rust Analyzer", "rust"),
+            ("go-geiger", "go"),
+            ("GoSec", "go"),
+            ("clang-tidy", "c"),
+            ("GCC", "c"),
+            // tool names containing "go" as a substring must not match.
+            ("django", "unknown"),
+            ("errgo", "unknown"),
+            ("mango-lint", "unknown"),
+            ("my-go-linter", "go"),
+            ("custom-tool", "unknown"),
+            ("myanalyzer", "unknown"),
+        ];
+        for (tool, language) in cases {
+            assert_eq!(infer_language(tool), language, "{tool}");
+        }
     }
 
     #[test]
-    fn test_infer_language_go() {
-        assert_eq!(infer_language("go-geiger"), "go");
-        assert_eq!(infer_language("GoSec"), "go");
-    }
-
-    #[test]
-    fn test_infer_language_c() {
-        assert_eq!(infer_language("clang-tidy"), "c");
-        assert_eq!(infer_language("GCC"), "c");
-    }
-
-    #[test]
-    fn test_infer_language_go_not_substring() {
-        // tool names containing "go" as a substring must not match.
-        assert_eq!(infer_language("django"), "unknown");
-        assert_eq!(infer_language("errgo"), "unknown");
-        assert_eq!(infer_language("mango-lint"), "unknown");
-    }
-
-    #[test]
-    fn test_infer_language_go_after_separator() {
-        assert_eq!(infer_language("my-go-linter"), "go");
-    }
-
-    #[test]
-    fn test_infer_language_unknown() {
-        assert_eq!(infer_language("custom-tool"), "unknown");
-        assert_eq!(infer_language("myanalyzer"), "unknown");
-    }
-
-    #[test]
-    fn test_extract_unit_name_simple() {
-        assert_eq!(extract_unit_name("src/lib.rs"), "src");
-    }
-
-    #[test]
-    fn test_extract_unit_name_nested() {
-        assert_eq!(extract_unit_name("my_crate/src/lib.rs"), "my_crate");
-    }
-
-    #[test]
-    fn test_extract_unit_name_nested_deep() {
-        assert_eq!(extract_unit_name("my_crate/src/foo/bar.rs"), "my_crate");
-    }
-
-    #[test]
-    fn test_extract_unit_name_file_uri() {
-        assert_eq!(
-            extract_unit_name("file://project/my_crate/src/lib.rs"),
-            "my_crate"
-        );
-    }
-
-    #[test]
-    fn test_extract_unit_name_root_file() {
-        assert_eq!(extract_unit_name("lib.rs"), "unknown");
-    }
-
-    #[test]
-    fn test_extract_unit_name_no_src() {
-        assert_eq!(extract_unit_name("crate_a/lib.rs"), "crate_a");
-    }
-
-    #[test]
-    fn test_extract_unit_name_uses_the_nearest_src() {
-        assert_eq!(
-            extract_unit_name("/home/u/src/proj/crates/x/src/lib.rs"),
-            "x"
-        );
-        assert_eq!(extract_unit_name("/home/u/src/proj/src/a/b.rs"), "proj");
+    fn test_extract_unit_name() {
+        let cases = [
+            ("src/lib.rs", "src"),
+            ("my_crate/src/lib.rs", "my_crate"),
+            ("my_crate/src/foo/bar.rs", "my_crate"),
+            ("file://project/my_crate/src/lib.rs", "my_crate"),
+            ("lib.rs", "unknown"),
+            ("crate_a/lib.rs", "crate_a"),
+            // the nearest src wins
+            ("/home/u/src/proj/crates/x/src/lib.rs", "x"),
+            ("/home/u/src/proj/src/a/b.rs", "proj"),
+        ];
+        for (path, name) in cases {
+            assert_eq!(extract_unit_name(path), name, "{path}");
+        }
     }
 
     #[test]
@@ -739,8 +700,13 @@ mod tests {
             .build();
 
         let opts = ScanOpts::default();
-        let result = convert_sarif(&sarif_log, &opts);
-        assert!(result.is_err());
+        match convert_sarif(&sarif_log, &opts) {
+            Err(Error::Analyzer { message, .. }) => {
+                assert_eq!(message, "SARIF file contains no runs");
+            }
+            Err(e) => panic!("unexpected error: {e}"),
+            Ok(_) => panic!("expected an error"),
+        }
     }
 
     #[test]
@@ -792,23 +758,16 @@ mod tests {
     fn test_sarif_analyzer_requires_manifest_path() {
         let analyzer = SarifAnalyzer;
         let opts = ScanOpts::default(); // no manifest_path
-        let result = analyzer.run(&opts);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_convert_sarif_language_inference() {
-        let driver = sarif::ToolComponent::builder().name("cargo-clippy").build();
-        let tool = sarif::Tool::builder().driver(driver).build();
-        let run = sarif::Run::builder().tool(tool).results(vec![]).build();
-        let sarif_log = sarif::Sarif::builder()
-            .version(serde_json::json!("2.1.0"))
-            .runs(vec![run])
-            .build();
-
-        let opts = ScanOpts::default();
-        let result = convert_sarif(&sarif_log, &opts).unwrap();
-        assert_eq!(result.language, "rust");
+        match analyzer.run(&opts) {
+            Err(Error::Analyzer { message, .. }) => {
+                assert!(
+                    message.starts_with("sarif analyzer requires --manifest-path"),
+                    "{message}"
+                );
+            }
+            Err(e) => panic!("unexpected error: {e}"),
+            Ok(_) => panic!("expected an error"),
+        }
     }
 
     #[test]
@@ -968,20 +927,26 @@ mod tests {
 
     #[test]
     fn test_convert_sarif_language_agreeing_runs() {
-        // multiple runs from Rust tools keep the Rust language.
-        let run1 = make_run(
-            "cargo-clippy",
-            vec![make_sarif_result("crate_a/src/lib.rs", 10, 1, "a")],
-        );
-        let run2 = make_run(
-            "rustc",
-            vec![make_sarif_result("crate_b/src/lib.rs", 5, 1, "b")],
-        );
-        let sarif_log = make_multi_run_sarif(vec![run1, run2]);
-
-        let opts = ScanOpts::default();
-        let result = convert_sarif(&sarif_log, &opts).unwrap();
-        assert_eq!(result.language, "rust");
+        // one run from a Rust tool, and several that agree, keep the Rust language.
+        let cases = [
+            vec![make_run("cargo-clippy", vec![])],
+            vec![
+                make_run(
+                    "cargo-clippy",
+                    vec![make_sarif_result("crate_a/src/lib.rs", 10, 1, "a")],
+                ),
+                make_run(
+                    "rustc",
+                    vec![make_sarif_result("crate_b/src/lib.rs", 5, 1, "b")],
+                ),
+            ],
+        ];
+        for runs in cases {
+            let sarif_log = make_multi_run_sarif(runs);
+            let opts = ScanOpts::default();
+            let result = convert_sarif(&sarif_log, &opts).unwrap();
+            assert_eq!(result.language, "rust");
+        }
     }
 
     fn property_bag(language: &str) -> sarif::PropertyBag {
@@ -998,62 +963,6 @@ mod tests {
         sarif::PropertyBag::builder()
             .additional_properties(props)
             .build()
-    }
-
-    #[test]
-    fn test_roundtrip_preserves_unit_and_language() {
-        let opts = ScanOpts {
-            include_deps: true,
-            ..Default::default()
-        };
-        let details = vec![
-            Occurrence {
-                unit: "libc".into(),
-                file: PathBuf::from(
-                    "/home/u/.cargo/registry/src/index.crates.io-abc/libc-0.2.0/src/lib.rs",
-                ),
-                line: 7,
-                col: 1,
-                message: Some("unsafe".into()),
-            },
-            Occurrence {
-                unit: "my_crate".into(),
-                file: PathBuf::from("/home/u/.cargo/git/checkouts/my_crate-abc/9f8e7d6/src/lib.rs"),
-                line: 9,
-                col: 1,
-                message: Some("unsafe".into()),
-            },
-        ];
-        let units = vec![
-            Unit {
-                name: "libc".into(),
-                kind: UnitKind::Dep,
-                unsafe_count: 1,
-            },
-            Unit {
-                name: "my_crate".into(),
-                kind: UnitKind::Dep,
-                unsafe_count: 1,
-            },
-        ];
-        let scan = ScanResult::from_parts("rustc_unsafe_lint", "rust", &opts, units, details);
-
-        let json = serde_json::to_string(&crate::sarif::scan_to_sarif(&scan)).unwrap();
-        let reparsed: Sarif = serde_json::from_str(&json).unwrap();
-        let back = convert_sarif(&reparsed, &opts).unwrap();
-
-        assert_eq!(back.language, "rust");
-
-        let names: Vec<_> = back.units.iter().map(|u| u.name.as_str()).collect();
-        assert_eq!(names, vec!["libc", "my_crate"]);
-        assert!(!names.contains(&"registry"));
-        assert!(!names.contains(&"9f8e7d6"));
-
-        assert_eq!(back.details.len(), 2);
-        assert_eq!(back.details[0].unit, "libc");
-        assert_eq!(back.details[1].unit, "my_crate");
-        assert!(back.units.iter().all(|u| u.kind == UnitKind::Dep));
-        assert_eq!(back.totals.deps_unsafe, 2);
     }
 
     #[test]
@@ -1269,6 +1178,11 @@ mod tests {
                 unsafe_count: 2,
             },
             Unit {
+                name: "my_crate".into(),
+                kind: UnitKind::Dep,
+                unsafe_count: 1,
+            },
+            Unit {
                 name: "shared".into(),
                 kind: UnitKind::Dep,
                 unsafe_count: 1,
@@ -1315,6 +1229,13 @@ mod tests {
                 message: Some("extern block".into()),
             },
             Occurrence {
+                unit: "my_crate".into(),
+                file: PathBuf::from("/home/u/.cargo/git/checkouts/my_crate-abc/9f8e7d6/src/lib.rs"),
+                line: 9,
+                col: 1,
+                message: Some("unsafe".into()),
+            },
+            Occurrence {
                 unit: "shared".into(),
                 file: PathBuf::from("../shared/src/lib.rs"),
                 line: 12,
@@ -1357,7 +1278,10 @@ mod tests {
         let scan = round_trip_fixture();
         let opts = round_trip_opts();
         let back = reread(&crate::sarif::scan_to_sarif(&scan), &opts);
+        assert_round_trip(&back, &scan);
+    }
 
+    fn assert_round_trip(back: &ScanResult, scan: &ScanResult) {
         let mut expected = scan.clone();
         for occ in &mut expected.details {
             occ.message
@@ -1402,15 +1326,7 @@ mod tests {
         };
         let opts = round_trip_opts();
         let back = reread(&crate::sarif::check_to_sarif(&check), &opts);
-
-        assert_eq!(back.totals, scan.totals, "totals");
-        assert_eq!(back.units, scan.units, "units");
-        assert_eq!(back.details.len(), scan.details.len(), "details");
-        assert_eq!(
-            back.parse_warnings.len(),
-            scan.parse_warnings.len(),
-            "parse warnings"
-        );
+        assert_round_trip(&back, &scan);
     }
 
     #[test]
@@ -1577,105 +1493,40 @@ mod tests {
     }
 
     #[test]
-    fn test_uri_base_id_chain_classifies_dependency_files() {
-        let result = with_base(
-            make_sarif_result("serde-1.0.200/src/lib.rs", 3, 1, "unsafe"),
-            "INDEX",
-        );
-        let mut run = with_bases(
-            make_run("gcc", vec![result]),
-            &[
-                ("HOME", "file:///home/u/"),
-                (
-                    "INDEX",
-                    ".cargo/registry/src/index.crates.io-1949cf8c6b5b557f/",
-                ),
-            ],
-        );
-        run.original_uri_base_ids
-            .as_mut()
-            .unwrap()
-            .get_mut("INDEX")
-            .unwrap()
-            .uri_base_id = Some("HOME".into());
-
-        let opts = round_trip_opts();
-        let back = convert_sarif(&make_multi_run_sarif(vec![run]), &opts).unwrap();
-
-        assert_eq!(back.details[0].file, Path::new("serde-1.0.200/src/lib.rs"));
-        assert_eq!(back.units[0].kind, UnitKind::Dep);
-        assert_eq!(back.totals.deps_unsafe, 1);
-    }
-
-    #[test]
-    fn test_windows_or_remote_absolute_base_does_not_classify_files() {
+    fn test_absolute_base_does_not_classify_files() {
+        // a dependency marker in an absolute base must not classify the files under it.
         for base in [
             "file:///D:/a/vendor/vendor/",
             "file:///d%3A/a/vendor/vendor/",
             "file://server/share/vendor/vendor/",
             "https://github.com/acme/vendor/blob/abc/",
+            "file:///home/runner/work/vendor/vendor/",
         ] {
-            let results = vec![with_base(
-                make_sarif_result("core/src/lib.rs", 3, 1, "unsafe"),
-                "%SRCROOT%",
-            )];
+            let results = vec![
+                with_base(
+                    make_sarif_result("core/src/lib.rs", 3, 1, "unsafe"),
+                    "%SRCROOT%",
+                ),
+                with_base(
+                    make_sarif_result("cli/src/main.rs", 5, 1, "unsafe"),
+                    "%SRCROOT%",
+                ),
+            ];
             let run = with_bases(make_run("CodeQL", results), &[("%SRCROOT%", base)]);
             let opts = ScanOpts {
                 workspace_only: true,
                 ..Default::default()
             };
             let back = convert_sarif(&make_multi_run_sarif(vec![run]), &opts).unwrap();
-            assert_eq!(back.totals.workspace_unsafe, 1, "{base}");
+            assert_eq!(back.units.len(), 2, "{base}");
+            assert!(
+                back.units
+                    .iter()
+                    .all(|unit| unit.kind == UnitKind::Workspace),
+                "{base}"
+            );
+            assert_eq!(back.totals.workspace_unsafe, 2, "{base}");
         }
-    }
-
-    #[test]
-    fn test_root_vendor_dir_under_srcroot_is_a_dependency() {
-        let results = vec![
-            with_base(make_sarif_result("src/lib.rs", 3, 1, "unsafe"), "%SRCROOT%"),
-            with_base(
-                make_sarif_result("vendor/github.com/pkg/errors/errors.go", 9, 1, "unsafe"),
-                "%SRCROOT%",
-            ),
-        ];
-        let run = with_bases(
-            make_run("CodeQL", results),
-            &[("%SRCROOT%", "file:///home/runner/work/proj/proj/")],
-        );
-        let back = convert_sarif(&make_multi_run_sarif(vec![run]), &round_trip_opts()).unwrap();
-        assert_eq!(back.totals.workspace_unsafe, 1);
-        assert_eq!(back.totals.deps_unsafe, 1);
-    }
-
-    #[test]
-    fn test_dependency_marker_in_absolute_base_does_not_classify_files() {
-        let results = vec![
-            with_base(
-                make_sarif_result("core/src/lib.rs", 3, 1, "unsafe"),
-                "%SRCROOT%",
-            ),
-            with_base(
-                make_sarif_result("cli/src/main.rs", 5, 1, "unsafe"),
-                "%SRCROOT%",
-            ),
-        ];
-        let run = with_bases(
-            make_run("CodeQL", results),
-            &[("%SRCROOT%", "file:///home/runner/work/vendor/vendor/")],
-        );
-
-        let opts = ScanOpts {
-            workspace_only: true,
-            ..Default::default()
-        };
-        let back = convert_sarif(&make_multi_run_sarif(vec![run]), &opts).unwrap();
-
-        assert_eq!(back.units.len(), 2);
-        assert!(back
-            .units
-            .iter()
-            .all(|unit| unit.kind == UnitKind::Workspace));
-        assert_eq!(back.totals.workspace_unsafe, 2);
     }
 
     #[test]

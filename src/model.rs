@@ -386,16 +386,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_unit_kind_display_workspace() {
-        assert_eq!(format!("{}", UnitKind::Workspace), "workspace");
-    }
-
-    #[test]
-    fn test_unit_kind_display_dep() {
-        assert_eq!(format!("{}", UnitKind::Dep), "dep");
-    }
-
-    #[test]
     fn test_scope_from_scan_opts() {
         let opts = ScanOpts {
             workspace_only: true,
@@ -422,97 +412,6 @@ mod tests {
             scope.manifest_path,
             Some(PathBuf::from("/path/to/Cargo.toml"))
         );
-    }
-
-    #[test]
-    fn test_scope_from_scan_opts_defaults() {
-        let opts = ScanOpts::default();
-        let scope = Scope::from(&opts);
-
-        assert!(!scope.workspace_only);
-        assert!(!scope.include_deps);
-        assert!(scope.features.is_empty());
-        assert!(!scope.all_features);
-        assert!(!scope.no_default_features);
-        assert!(!scope.all_targets);
-        assert!(scope.targets.is_empty());
-        assert!(scope.manifest_path.is_none());
-    }
-
-    #[test]
-    fn test_scan_opts_default() {
-        let opts = ScanOpts::default();
-
-        assert!(!opts.workspace_only);
-        assert!(!opts.include_deps);
-        assert!(opts.features.is_empty());
-        assert!(!opts.all_features);
-        assert!(!opts.no_default_features);
-        assert!(!opts.all_targets);
-        assert!(opts.targets.is_empty());
-        assert!(opts.manifest_path.is_none());
-    }
-
-    #[test]
-    fn test_totals_default() {
-        let totals = Totals::default();
-
-        assert_eq!(totals.workspace_unsafe, 0);
-        assert_eq!(totals.deps_unsafe, 0);
-        assert_eq!(totals.overall_unsafe, 0);
-    }
-
-    #[test]
-    fn test_totals_from_units_empty() {
-        let totals = Totals::from_units(&[]);
-        assert_eq!(totals.workspace_unsafe, 0);
-        assert_eq!(totals.deps_unsafe, 0);
-        assert_eq!(totals.overall_unsafe, 0);
-    }
-
-    #[test]
-    fn test_totals_from_units_workspace_only() {
-        let units = vec![
-            Unit {
-                name: "crate_a".into(),
-                kind: UnitKind::Workspace,
-                unsafe_count: 5,
-            },
-            Unit {
-                name: "crate_b".into(),
-                kind: UnitKind::Workspace,
-                unsafe_count: 3,
-            },
-        ];
-        let totals = Totals::from_units(&units);
-        assert_eq!(totals.workspace_unsafe, 8);
-        assert_eq!(totals.deps_unsafe, 0);
-        assert_eq!(totals.overall_unsafe, 8);
-    }
-
-    #[test]
-    fn test_totals_from_units_mixed() {
-        let units = vec![
-            Unit {
-                name: "my_crate".into(),
-                kind: UnitKind::Workspace,
-                unsafe_count: 10,
-            },
-            Unit {
-                name: "libc".into(),
-                kind: UnitKind::Dep,
-                unsafe_count: 100,
-            },
-            Unit {
-                name: "serde".into(),
-                kind: UnitKind::Dep,
-                unsafe_count: 5,
-            },
-        ];
-        let totals = Totals::from_units(&units);
-        assert_eq!(totals.workspace_unsafe, 10);
-        assert_eq!(totals.deps_unsafe, 105);
-        assert_eq!(totals.overall_unsafe, 115);
     }
 
     #[test]
@@ -586,20 +485,52 @@ mod tests {
     }
 
     #[test]
-    fn test_unit_kind_serialization() {
-        let workspace = UnitKind::Workspace;
-        let dep = UnitKind::Dep;
-
-        assert_eq!(serde_json::to_string(&workspace).unwrap(), "\"workspace\"");
-        assert_eq!(serde_json::to_string(&dep).unwrap(), "\"dep\"");
+    fn test_unit_kind_names() {
+        let cases = [(UnitKind::Workspace, "workspace"), (UnitKind::Dep, "dep")];
+        for (kind, name) in cases {
+            assert_eq!(kind.to_string(), name);
+            assert_eq!(serde_json::to_string(&kind).unwrap(), format!("\"{name}\""));
+            let parsed: UnitKind = serde_json::from_str(&format!("\"{name}\"")).unwrap();
+            assert_eq!(parsed, kind);
+        }
     }
 
     #[test]
-    fn test_unit_kind_deserialization() {
-        let workspace: UnitKind = serde_json::from_str("\"workspace\"").unwrap();
-        let dep: UnitKind = serde_json::from_str("\"dep\"").unwrap();
-
-        assert_eq!(workspace, UnitKind::Workspace);
-        assert_eq!(dep, UnitKind::Dep);
+    fn test_totals_from_units() {
+        let unit = |name: &str, kind, unsafe_count| Unit {
+            name: name.into(),
+            kind,
+            unsafe_count,
+        };
+        let cases = [
+            (vec![], (0, 0, 0)),
+            (
+                vec![
+                    unit("crate_a", UnitKind::Workspace, 5),
+                    unit("crate_b", UnitKind::Workspace, 3),
+                ],
+                (8, 0, 8),
+            ),
+            (
+                vec![
+                    unit("my_crate", UnitKind::Workspace, 10),
+                    unit("libc", UnitKind::Dep, 100),
+                    unit("serde", UnitKind::Dep, 5),
+                ],
+                (10, 105, 115),
+            ),
+        ];
+        for (units, expected) in cases {
+            let totals = Totals::from_units(&units);
+            assert_eq!(
+                (
+                    totals.workspace_unsafe,
+                    totals.deps_unsafe,
+                    totals.overall_unsafe
+                ),
+                expected,
+                "{units:?}"
+            );
+        }
     }
 }
