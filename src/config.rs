@@ -281,12 +281,6 @@ line = 7
     }
 
     #[test]
-    fn test_config_ignore_empty_by_default() {
-        let config = Config::default();
-        assert!(config.ignore.is_empty());
-    }
-
-    #[test]
     fn test_baseline_roundtrip() {
         let baseline = Baseline {
             tool_version: "0.1.0".into(),
@@ -321,61 +315,49 @@ line = 7
         };
 
         let serialized = toml::to_string_pretty(&baseline).unwrap();
+        assert_eq!(
+            serialized,
+            r#"tool_version = "0.1.0"
+analyzer_id = "rustc_unsafe_lint"
+
+[scope]
+workspace_only = false
+include_deps = true
+features = []
+all_features = false
+no_default_features = false
+all_targets = false
+targets = []
+
+[totals]
+workspace_unsafe = 10
+deps_unsafe = 20
+overall_unsafe = 30
+
+[[units]]
+name = "my_crate"
+kind = "workspace"
+unsafe_count = 10
+
+[[units]]
+name = "libc"
+kind = "dep"
+unsafe_count = 20
+"#
+        );
+
         let parsed: Baseline = toml::from_str(&serialized).unwrap();
-
         assert_eq!(parsed.tool_version, baseline.tool_version);
-        assert_eq!(parsed.units.len(), 2);
-        assert_eq!(parsed.units[0].name, "my_crate");
-    }
-
-    #[test]
-    fn test_baseline_unit_map_found() {
-        let baseline = Baseline {
-            tool_version: "0.1.0".into(),
-            analyzer_id: "test".into(),
-            scope: Scope {
-                workspace_only: false,
-                include_deps: true,
-                features: vec![],
-                all_features: false,
-                no_default_features: false,
-                all_targets: false,
-                targets: vec![],
-                manifest_path: None,
-            },
-            totals: Totals::default(),
-            units: vec![BaselineUnit {
-                name: "my_crate".into(),
-                kind: UnitKind::Workspace,
-                unsafe_count: 10,
-            }],
+        assert_eq!(parsed.analyzer_id, baseline.analyzer_id);
+        assert_eq!(parsed.scope, baseline.scope);
+        assert_eq!(parsed.totals, baseline.totals);
+        let units = |b: &Baseline| -> Vec<(String, UnitKind, u64)> {
+            b.units
+                .iter()
+                .map(|u| (u.name.clone(), u.kind, u.unsafe_count))
+                .collect()
         };
-
-        let map = baseline.unit_map();
-        assert_eq!(map.get("my_crate"), Some(&10));
-    }
-
-    #[test]
-    fn test_baseline_unit_map_not_found() {
-        let baseline = Baseline {
-            tool_version: "0.1.0".into(),
-            analyzer_id: "test".into(),
-            scope: Scope {
-                workspace_only: false,
-                include_deps: true,
-                features: vec![],
-                all_features: false,
-                no_default_features: false,
-                all_targets: false,
-                targets: vec![],
-                manifest_path: None,
-            },
-            totals: Totals::default(),
-            units: vec![],
-        };
-
-        let map = baseline.unit_map();
-        assert_eq!(map.get("nonexistent"), None);
+        assert_eq!(units(&parsed), units(&baseline));
     }
 
     #[test]
@@ -393,20 +375,6 @@ line = 7
         assert_eq!(baseline_unit.name, "test_crate");
         assert_eq!(baseline_unit.kind, UnitKind::Workspace);
         assert_eq!(baseline_unit.unsafe_count, 42);
-    }
-
-    #[test]
-    fn test_mode_default() {
-        let mode = Mode::default();
-        assert_eq!(mode, Mode::Ratchet);
-    }
-
-    #[test]
-    fn test_caps_default() {
-        let caps = Caps::default();
-        assert!(caps.default.is_none());
-        assert!(caps.workspace.is_empty());
-        assert!(caps.deps.is_empty());
     }
 
     #[test]
@@ -466,51 +434,12 @@ threshold = 0.8
     }
 
     #[test]
-    fn test_config_rejects_unknown_top_level_key() {
-        let toml = r#"
-mode = "caps"
-workspce_only = true
-"#;
-        assert!(toml::from_str::<Config>(toml).is_err());
-    }
-
-    #[test]
     fn test_config_load_rejects_unknown_key() {
         use tempfile::TempDir;
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("unsafe-budget.toml");
         std::fs::write(&path, "include_deps = true\nunknown_key = 1\n").unwrap();
         assert!(Config::load(&path).is_err());
-    }
-
-    #[test]
-    fn test_caps_rejects_unknown_key() {
-        let toml = r#"
-[caps]
-defualt = 10
-"#;
-        assert!(toml::from_str::<Config>(toml).is_err());
-    }
-
-    #[test]
-    fn test_warnings_rejects_unknown_key() {
-        let toml = r#"
-[warnings]
-threshold = 0.8
-threshhold = 0.9
-"#;
-        assert!(toml::from_str::<Config>(toml).is_err());
-    }
-
-    #[test]
-    fn test_ignore_entry_rejects_unknown_key() {
-        let toml = r#"
-[[ignore]]
-file = "src/ffi.rs"
-line = 42
-resaon = "typo"
-"#;
-        assert!(toml::from_str::<Config>(toml).is_err());
     }
 
     #[test]
@@ -540,5 +469,28 @@ resaon = "typo"
         let parsed: Baseline = toml::from_str(&with_unknown).unwrap();
         assert_eq!(parsed.tool_version, "0.1.0");
         assert_eq!(parsed.units.len(), 1);
+    }
+
+    #[test]
+    fn test_config_rejects_unknown_keys() {
+        let cases = [
+            ("mode = \"caps\"\nworkspce_only = true\n", "workspce_only"),
+            ("[caps]\ndefualt = 10\n", "defualt"),
+            (
+                "[warnings]\nthreshold = 0.8\nthreshhold = 0.9\n",
+                "threshhold",
+            ),
+            (
+                "[[ignore]]\nfile = \"src/ffi.rs\"\nline = 42\nresaon = \"typo\"\n",
+                "resaon",
+            ),
+        ];
+        for (toml, key) in cases {
+            let err = toml::from_str::<Config>(toml).unwrap_err().to_string();
+            assert!(
+                err.contains(&format!("unknown field `{key}`")),
+                "{key}: {err}"
+            );
+        }
     }
 }

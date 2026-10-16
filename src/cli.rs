@@ -118,35 +118,26 @@ mod tests {
     use clap::error::ErrorKind;
 
     #[test]
-    fn include_deps_and_no_deps_conflict() {
-        let result = Cli::try_parse_from(["unsafe-budget", "scan", "--include-deps", "--no-deps"]);
-        match result {
-            Err(e) => assert_eq!(e.kind(), ErrorKind::ArgumentConflict),
-            Ok(_) => panic!("expected ArgumentConflict error"),
-        }
-    }
-
-    #[test]
-    fn include_deps_alone_is_accepted() {
-        let cli = Cli::try_parse_from(["unsafe-budget", "scan", "--include-deps"]).unwrap();
-        match cli.command {
-            Command::Scan(args) => {
-                assert!(args.include_deps);
-                assert!(!args.no_deps);
+    fn include_deps_and_no_deps_flags() {
+        // flags -> Some((include_deps, no_deps)), or None for a conflict
+        type Case<'a> = (&'a [&'a str], Option<(bool, bool)>);
+        let cases: [Case; 3] = [
+            (&["--include-deps", "--no-deps"], None),
+            (&["--include-deps"], Some((true, false))),
+            (&["--no-deps"], Some((false, true))),
+        ];
+        for (flags, expected) in cases {
+            let argv = ["unsafe-budget", "scan"].iter().chain(flags);
+            match (Cli::try_parse_from(argv), expected) {
+                (Err(e), None) => assert_eq!(e.kind(), ErrorKind::ArgumentConflict, "{flags:?}"),
+                (Ok(cli), Some(expected)) => match cli.command {
+                    Command::Scan(args) => {
+                        assert_eq!((args.include_deps, args.no_deps), expected, "{flags:?}")
+                    }
+                    _ => panic!("expected scan command"),
+                },
+                (result, _) => panic!("{flags:?}: unexpected {:?}", result.map(|_| ())),
             }
-            _ => panic!("expected scan command"),
-        }
-    }
-
-    #[test]
-    fn no_deps_alone_is_accepted() {
-        let cli = Cli::try_parse_from(["unsafe-budget", "scan", "--no-deps"]).unwrap();
-        match cli.command {
-            Command::Scan(args) => {
-                assert!(!args.include_deps);
-                assert!(args.no_deps);
-            }
-            _ => panic!("expected scan command"),
         }
     }
 }

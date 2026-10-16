@@ -309,49 +309,41 @@ mod tests {
         }
 
         #[test]
-        fn success_is_ok() {
-            assert!(check_cargo_output(&exit_success(), b"output", "").is_ok());
-        }
-
-        #[test]
-        fn nonzero_exit_with_stdout_is_ok() {
-            // warnings cause non-zero exit but produce JSON on stdout
-            assert!(check_cargo_output(
-                &exit_failure(),
-                b"{\"reason\":\"compiler-message\"}",
-                "warning: unused variable"
-            )
-            .is_ok());
-        }
-
-        #[test]
-        fn nonzero_exit_empty_stdout_is_err() {
-            let result =
-                check_cargo_output(&exit_failure(), b"", "error: no such command: 'check'");
-            assert!(result.is_err());
-        }
-
-        #[test]
-        fn nonzero_exit_empty_stdout_empty_stderr_is_err() {
-            // even with empty stderr, empty stdout + failure = error
-            let result = check_cargo_output(&exit_failure(), b"", "");
-            assert!(result.is_err());
-        }
-
-        #[test]
-        fn nonzero_exit_empty_stdout_unknown_error_is_err() {
-            // empty stdout + failure is an error regardless of stderr content
-            let result = check_cargo_output(&exit_failure(), b"", "error: linker `cc` not found");
-            assert!(result.is_err());
-        }
-
-        #[test]
-        fn preserves_stderr_in_error() {
-            let stderr = "error: toolchain 'nightly' is not installed";
-            let result = check_cargo_output(&exit_failure(), b"", stderr);
-            let err = result.unwrap_err();
-            let msg = format!("{}", err);
-            assert!(msg.contains(stderr));
+        fn empty_stdout_on_failure_is_an_error_carrying_stderr() {
+            let cases: [(_, &[u8], &str, bool); 6] = [
+                (exit_success(), b"output", "", true),
+                // warnings cause non-zero exit but produce JSON on stdout
+                (
+                    exit_failure(),
+                    b"{\"reason\":\"compiler-message\"}",
+                    "warning: unused variable",
+                    true,
+                ),
+                (
+                    exit_failure(),
+                    b"",
+                    "error: no such command: 'check'",
+                    false,
+                ),
+                (exit_failure(), b"", "", false),
+                (exit_failure(), b"", "error: linker `cc` not found", false),
+                (
+                    exit_failure(),
+                    b"",
+                    "error: toolchain 'nightly' is not installed",
+                    false,
+                ),
+            ];
+            for (status, stdout, stderr, ok) in cases {
+                match check_cargo_output(&status, stdout, stderr) {
+                    Ok(()) => assert!(ok, "{stderr:?}"),
+                    Err(Error::Cargo { stderr: got, .. }) => {
+                        assert!(!ok, "{stderr:?}");
+                        assert_eq!(got, stderr);
+                    }
+                    Err(e) => panic!("unexpected error: {e}"),
+                }
+            }
         }
     }
 
@@ -454,81 +446,55 @@ mod tests {
     }
 
     #[test]
-    fn test_aggregate_occurrences_workspace_only() {
+    fn test_aggregate_occurrences_drops_deps() {
         let workspace_members: HashSet<String> = ["my_crate".to_string()].into_iter().collect();
-        let opts = ScanOpts {
-            workspace_only: true,
-            include_deps: true,
-            ..Default::default()
-        };
-
-        let occurrences = vec![
+        let cases = [
             (
-                Occurrence {
-                    unit: "my_crate".into(),
-                    file: "src/lib.rs".into(),
-                    line: 10,
-                    col: 5,
-                    message: None,
+                "workspace_only",
+                ScanOpts {
+                    workspace_only: true,
+                    include_deps: true,
+                    ..Default::default()
                 },
-                UnitKind::Workspace,
             ),
             (
-                Occurrence {
-                    unit: "libc".into(),
-                    file: "src/lib.rs".into(),
-                    line: 100,
-                    col: 1,
-                    message: None,
+                "no deps",
+                ScanOpts {
+                    include_deps: false,
+                    ..Default::default()
                 },
-                UnitKind::Dep,
             ),
         ];
+        for (name, opts) in cases {
+            let occurrences = vec![
+                (
+                    Occurrence {
+                        unit: "my_crate".into(),
+                        file: "src/lib.rs".into(),
+                        line: 10,
+                        col: 5,
+                        message: None,
+                    },
+                    UnitKind::Workspace,
+                ),
+                (
+                    Occurrence {
+                        unit: "libc".into(),
+                        file: "src/lib.rs".into(),
+                        line: 100,
+                        col: 1,
+                        message: None,
+                    },
+                    UnitKind::Dep,
+                ),
+            ];
 
-        let (units, details) = aggregate_occurrences(occurrences, &workspace_members, &opts);
+            let (units, details) = aggregate_occurrences(occurrences, &workspace_members, &opts);
 
-        // should only have workspace crate, deps filtered out
-        assert_eq!(units.len(), 1);
-        assert_eq!(units[0].name, "my_crate");
-        assert_eq!(details.len(), 1);
-    }
-
-    #[test]
-    fn test_aggregate_occurrences_no_deps() {
-        let workspace_members: HashSet<String> = ["my_crate".to_string()].into_iter().collect();
-        let opts = ScanOpts {
-            include_deps: false,
-            ..Default::default()
-        };
-
-        let occurrences = vec![
-            (
-                Occurrence {
-                    unit: "my_crate".into(),
-                    file: "src/lib.rs".into(),
-                    line: 10,
-                    col: 5,
-                    message: None,
-                },
-                UnitKind::Workspace,
-            ),
-            (
-                Occurrence {
-                    unit: "libc".into(),
-                    file: "src/lib.rs".into(),
-                    line: 100,
-                    col: 1,
-                    message: None,
-                },
-                UnitKind::Dep,
-            ),
-        ];
-
-        let (units, details) = aggregate_occurrences(occurrences, &workspace_members, &opts);
-
-        assert_eq!(units.len(), 1);
-        assert_eq!(units[0].name, "my_crate");
-        assert_eq!(details.len(), 1);
+            assert_eq!(units.len(), 1, "{name}");
+            assert_eq!(units[0].name, "my_crate", "{name}");
+            assert_eq!(details.len(), 1, "{name}");
+        }
     }
 
     #[test]
@@ -729,45 +695,40 @@ mod tests {
     }
 
     #[test]
-    fn test_rustflags_with_unsafe_lint_without_existing_flags() {
-        let expected = ("RUSTFLAGS", "--force-warn=unsafe_code".to_string());
-        assert_eq!(rustflags_with_unsafe_lint(None, None), expected);
-        assert_eq!(
-            rustflags_with_unsafe_lint(None, Some(String::new())),
-            expected
-        );
-    }
-
-    #[test]
-    fn test_rustflags_with_unsafe_lint_preserves_rustflags() {
-        assert_eq!(
-            rustflags_with_unsafe_lint(None, Some("-C opt-level=1 --cfg foo".into())),
+    fn test_rustflags_with_unsafe_lint() {
+        // (CARGO_ENCODED_RUSTFLAGS, RUSTFLAGS) -> (variable, value)
+        type Case<'a> = (Option<&'a str>, Option<&'a str>, (&'a str, &'a str));
+        let cases: [Case; 5] = [
+            (None, None, ("RUSTFLAGS", "--force-warn=unsafe_code")),
+            (None, Some(""), ("RUSTFLAGS", "--force-warn=unsafe_code")),
             (
-                "RUSTFLAGS",
-                "-C opt-level=1 --cfg foo --force-warn=unsafe_code".to_string()
-            )
-        );
-    }
-
-    #[test]
-    fn test_rustflags_with_unsafe_lint_appends_to_encoded_rustflags() {
-        assert_eq!(
-            rustflags_with_unsafe_lint(Some("--cfg\x1ffoo".into()), Some("-Dwarnings".into())),
+                None,
+                Some("-C opt-level=1 --cfg foo"),
+                (
+                    "RUSTFLAGS",
+                    "-C opt-level=1 --cfg foo --force-warn=unsafe_code",
+                ),
+            ),
             (
-                "CARGO_ENCODED_RUSTFLAGS",
-                "--cfg\x1ffoo\x1f--force-warn=unsafe_code".to_string()
-            )
-        );
-    }
-
-    #[test]
-    fn test_rustflags_with_unsafe_lint_fills_empty_encoded_rustflags() {
-        assert_eq!(
-            rustflags_with_unsafe_lint(Some(String::new()), Some("-Dwarnings".into())),
+                Some("--cfg\x1ffoo"),
+                Some("-Dwarnings"),
+                (
+                    "CARGO_ENCODED_RUSTFLAGS",
+                    "--cfg\x1ffoo\x1f--force-warn=unsafe_code",
+                ),
+            ),
             (
-                "CARGO_ENCODED_RUSTFLAGS",
-                "--force-warn=unsafe_code".to_string()
-            )
-        );
+                Some(""),
+                Some("-Dwarnings"),
+                ("CARGO_ENCODED_RUSTFLAGS", "--force-warn=unsafe_code"),
+            ),
+        ];
+        for (encoded, rustflags, (var, value)) in cases {
+            assert_eq!(
+                rustflags_with_unsafe_lint(encoded.map(String::from), rustflags.map(String::from)),
+                (var, value.to_string()),
+                "{encoded:?} {rustflags:?}"
+            );
+        }
     }
 }

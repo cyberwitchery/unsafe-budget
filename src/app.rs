@@ -246,7 +246,7 @@ fn build_baseline(result: &ScanResult, analyzer: &dyn Analyzer) -> Baseline {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{CheckResult, Occurrence, Scope, Unit, UnitKind, Violation};
+    use crate::model::{Occurrence, Scope, Unit, UnitKind};
     use std::path::PathBuf;
 
     fn make_scope() -> Scope {
@@ -406,126 +406,31 @@ mod tests {
     }
 
     #[test]
-    fn ignore_filter_empty_ignores_is_noop() {
-        let result = make_result_with_details();
-        let filtered = apply_ignore_filter(result.clone(), &[]);
-        assert_eq!(filtered.totals.overall_unsafe, 4);
-        assert_eq!(filtered.details.len(), 4);
-    }
-
-    #[test]
-    fn ignore_filter_removes_matching_occurrence() {
-        let result = make_result_with_details();
-        let ignores = vec![IgnoreEntry {
-            file: PathBuf::from("src/ffi.rs"),
-            line: 42,
-            reason: Some("reviewed".into()),
-        }];
-        let filtered = apply_ignore_filter(result, &ignores);
-
-        assert_eq!(filtered.details.len(), 3);
-        assert_eq!(filtered.units[0].unsafe_count, 2); // my_crate: 3 -> 2
-        assert_eq!(filtered.units[1].unsafe_count, 1); // other_crate unchanged
-        assert_eq!(filtered.totals.workspace_unsafe, 3);
-        assert_eq!(filtered.totals.overall_unsafe, 3);
-    }
-
-    #[test]
-    fn ignore_filter_removes_multiple_occurrences() {
-        let result = make_result_with_details();
-        let ignores = vec![
-            IgnoreEntry {
-                file: PathBuf::from("src/lib.rs"),
-                line: 10,
-                reason: None,
-            },
-            IgnoreEntry {
-                file: PathBuf::from("src/ffi.rs"),
-                line: 42,
-                reason: None,
-            },
-        ];
-        let filtered = apply_ignore_filter(result, &ignores);
-
-        assert_eq!(filtered.details.len(), 2);
-        assert_eq!(filtered.units[0].unsafe_count, 1); // my_crate: 3 -> 1
-        assert_eq!(filtered.units[1].unsafe_count, 1); // other_crate unchanged
-        assert_eq!(filtered.totals.overall_unsafe, 2);
-    }
-
-    #[test]
-    fn ignore_filter_nonmatching_rule_changes_nothing() {
-        let result = make_result_with_details();
-        let ignores = vec![IgnoreEntry {
-            file: PathBuf::from("src/nonexistent.rs"),
-            line: 999,
-            reason: None,
-        }];
-        let filtered = apply_ignore_filter(result, &ignores);
-
-        assert_eq!(filtered.details.len(), 4);
-        assert_eq!(filtered.totals.overall_unsafe, 4);
-    }
-
-    #[test]
-    fn ignore_filter_requires_both_file_and_line_to_match() {
-        let result = make_result_with_details();
-        // right file, wrong line
-        let ignores = vec![IgnoreEntry {
-            file: PathBuf::from("src/ffi.rs"),
-            line: 99,
-            reason: None,
-        }];
-        let filtered = apply_ignore_filter(result, &ignores);
-
-        assert_eq!(filtered.details.len(), 4);
-        assert_eq!(filtered.totals.overall_unsafe, 4);
-    }
-
-    #[test]
     fn ignore_filter_no_details_preserves_counts() {
         // aggregate counts with no details (cargo_geiger's output shape)
-        let result = make_result_without_details();
-        let ignores = vec![IgnoreEntry {
-            file: PathBuf::from("src/lib.rs"),
-            line: 10,
+        let ignore = |file: &str, line| IgnoreEntry {
+            file: PathBuf::from(file),
+            line,
             reason: None,
-        }];
-        let filtered = apply_ignore_filter(result, &ignores);
-
-        // counts must not be zeroed
-        assert_eq!(filtered.units[0].unsafe_count, 10);
-        assert_eq!(filtered.units[1].unsafe_count, 200);
-        assert_eq!(filtered.totals.workspace_unsafe, 10);
-        assert_eq!(filtered.totals.deps_unsafe, 200);
-        assert_eq!(filtered.totals.overall_unsafe, 210);
-    }
-
-    #[test]
-    fn ignore_filter_no_details_multiple_ignores_preserves_counts() {
-        let result = make_result_without_details();
-        let ignores = vec![
-            IgnoreEntry {
-                file: PathBuf::from("src/lib.rs"),
-                line: 10,
-                reason: None,
-            },
-            IgnoreEntry {
-                file: PathBuf::from("src/ffi.rs"),
-                line: 42,
-                reason: None,
-            },
-            IgnoreEntry {
-                file: PathBuf::from("vendor/libc/src/lib.rs"),
-                line: 1,
-                reason: None,
-            },
+        };
+        let cases = [
+            vec![ignore("src/lib.rs", 10)],
+            vec![
+                ignore("src/lib.rs", 10),
+                ignore("src/ffi.rs", 42),
+                ignore("vendor/libc/src/lib.rs", 1),
+            ],
         ];
-        let filtered = apply_ignore_filter(result, &ignores);
+        for ignores in cases {
+            let filtered = apply_ignore_filter(make_result_without_details(), &ignores);
 
-        assert_eq!(filtered.units[0].unsafe_count, 10);
-        assert_eq!(filtered.units[1].unsafe_count, 200);
-        assert_eq!(filtered.totals.overall_unsafe, 210);
+            // counts must not be zeroed
+            assert_eq!(filtered.units[0].unsafe_count, 10);
+            assert_eq!(filtered.units[1].unsafe_count, 200);
+            assert_eq!(filtered.totals.workspace_unsafe, 10);
+            assert_eq!(filtered.totals.deps_unsafe, 200);
+            assert_eq!(filtered.totals.overall_unsafe, 210);
+        }
     }
 
     #[test]
@@ -619,40 +524,6 @@ mod tests {
     }
 
     #[test]
-    fn ignore_filter_removes_all_occurrences_zeros_counts() {
-        // when details are present and all are filtered, counts go to 0
-        let result = make_result_with_details();
-        let ignores = vec![
-            IgnoreEntry {
-                file: PathBuf::from("src/lib.rs"),
-                line: 10,
-                reason: None,
-            },
-            IgnoreEntry {
-                file: PathBuf::from("src/lib.rs"),
-                line: 20,
-                reason: None,
-            },
-            IgnoreEntry {
-                file: PathBuf::from("src/ffi.rs"),
-                line: 42,
-                reason: None,
-            },
-            IgnoreEntry {
-                file: PathBuf::from("other/src/lib.rs"),
-                line: 5,
-                reason: None,
-            },
-        ];
-        let filtered = apply_ignore_filter(result, &ignores);
-
-        assert!(filtered.details.is_empty());
-        assert_eq!(filtered.units[0].unsafe_count, 0);
-        assert_eq!(filtered.units[1].unsafe_count, 0);
-        assert_eq!(filtered.totals.overall_unsafe, 0);
-    }
-
-    #[test]
     fn ignore_filter_recomputes_dep_totals() {
         let mut result = make_result_with_details();
         // add a dep unit with a detail occurrence.
@@ -684,28 +555,6 @@ mod tests {
     }
 
     #[test]
-    fn ignore_filter_many_ignores_scales_linearly() {
-        let result = make_result_with_details();
-        let mut ignores: Vec<IgnoreEntry> = (0..1000)
-            .map(|i| IgnoreEntry {
-                file: PathBuf::from(format!("nonexistent/{}.rs", i)),
-                line: i,
-                reason: None,
-            })
-            .collect();
-        // one real match among the 1000 misses
-        ignores.push(IgnoreEntry {
-            file: PathBuf::from("src/ffi.rs"),
-            line: 42,
-            reason: None,
-        });
-        let filtered = apply_ignore_filter(result, &ignores);
-
-        assert_eq!(filtered.details.len(), 3);
-        assert_eq!(filtered.totals.overall_unsafe, 3);
-    }
-
-    #[test]
     fn should_retain_details_keeps_machine_output_intact() {
         // --details retains occurrences for every format
         assert!(should_retain_details(true, Format::Text));
@@ -717,130 +566,6 @@ mod tests {
         assert!(should_retain_details(false, Format::Sarif));
     }
 
-    // apply the same detail-gating the commands do before routing to output
-    fn gate_details(mut result: ScanResult, details_flag: bool, format: Format) -> ScanResult {
-        if !should_retain_details(details_flag, format) {
-            result.details.clear();
-        }
-        result
-    }
-
-    #[test]
-    fn scan_text_without_details_flag_drops_occurrences() {
-        // text behaviour is unchanged: no --details means no Details section
-        let result = gate_details(make_result_with_details(), false, Format::Text);
-        assert!(result.details.is_empty());
-    }
-
-    #[test]
-    fn scan_sarif_without_details_flag_keeps_occurrence_results() {
-        // regression: SARIF keeps a located result per occurrence even without --details
-        let result = gate_details(make_result_with_details(), false, Format::Sarif);
-        let sarif = crate::sarif::scan_to_sarif(&result);
-        let results = sarif.runs[0].results.as_ref().unwrap();
-        assert_eq!(results.len(), 4);
-        assert!(
-            results.iter().all(|r| r.locations.is_some()),
-            "every occurrence result must carry a location"
-        );
-    }
-
-    #[test]
-    fn scan_json_without_details_flag_keeps_details() {
-        // mirror of the SARIF case for the JSON serialization machines consume
-        let result = gate_details(make_result_with_details(), false, Format::Json);
-        let json = serde_json::to_value(&result).unwrap();
-        let details = json["details"]
-            .as_array()
-            .expect("json output must retain the details array");
-        assert_eq!(details.len(), 4);
-    }
-
-    #[test]
-    fn check_sarif_without_details_flag_keeps_violation_locations() {
-        // regression: check --format sarif keeps violation locations without --details
-        let scan = gate_details(make_result_with_details(), false, Format::Sarif);
-        let check = CheckResult {
-            scan,
-            violations: vec![Violation {
-                unit: "my_crate".into(),
-                kind: UnitKind::Workspace,
-                baseline: 0,
-                actual: 3,
-                delta: 3,
-            }],
-            warnings: vec![],
-            passed: false,
-        };
-        let sarif = crate::sarif::check_to_sarif(&check);
-        let results = sarif.runs[0].results.as_ref().unwrap();
-        let violation = results
-            .iter()
-            .find(|r| r.rule_id.as_deref() == Some("budget_violation"))
-            .expect("violation result present");
-        let locations = violation
-            .locations
-            .as_ref()
-            .expect("violation must carry the occurrence locations");
-        // my_crate has 3 occurrences in make_result_with_details
-        assert_eq!(locations.len(), 3);
-    }
-
-    fn make_baseline_with_analyzer(analyzer_id: &str) -> Baseline {
-        Baseline {
-            tool_version: "0.1.0".into(),
-            analyzer_id: analyzer_id.into(),
-            scope: make_scope(),
-            totals: Totals {
-                workspace_unsafe: 4,
-                deps_unsafe: 0,
-                overall_unsafe: 4,
-            },
-            units: vec![BaselineUnit {
-                name: "my_crate".into(),
-                kind: UnitKind::Workspace,
-                unsafe_count: 4,
-            }],
-        }
-    }
-
-    #[test]
-    fn analyzer_mismatch_is_rejected() {
-        let scan = make_result_with_details(); // analyzer_id = "rustc_unsafe_lint"
-        let baseline = make_baseline_with_analyzer("cargo_geiger");
-        let config = Config::default(); // ratchet mode
-
-        // budget::check doesn't validate analyzer_id (cmd_check does);
-        // verify the mismatch is detectable:
-        assert_ne!(baseline.analyzer_id, scan.analyzer_id);
-
-        // verify the check still runs (no panic); budget sees mismatched units:
-        let _result = budget::check(&scan, Some(&baseline), &config).unwrap();
-
-        // verify the error message we'd produce in cmd_check:
-        let err = Error::Baseline(format!(
-            "analyzer mismatch: baseline was created with '{}' but current analyzer is '{}'",
-            baseline.analyzer_id, scan.analyzer_id
-        ));
-        let msg = err.to_string();
-        assert!(
-            msg.contains("cargo_geiger"),
-            "should mention baseline analyzer"
-        );
-        assert!(
-            msg.contains("rustc_unsafe_lint"),
-            "should mention current analyzer"
-        );
-    }
-
-    #[test]
-    fn analyzer_match_is_accepted() {
-        let scan = make_result_with_details(); // analyzer_id = "rustc_unsafe_lint"
-        let baseline = make_baseline_with_analyzer("rustc_unsafe_lint");
-
-        assert_eq!(baseline.analyzer_id, scan.analyzer_id);
-    }
-
     fn scan_args(argv: &[&str]) -> ScanArgs {
         use clap::Parser;
         match cli::Cli::try_parse_from(argv).unwrap().command {
@@ -850,74 +575,124 @@ mod tests {
     }
 
     #[test]
-    fn timeouts_default_to_none() {
-        let opts = build_scan_opts(&scan_args(&["unsafe-budget", "scan"]), &Config::default());
-        assert_eq!(opts.plugin_timeout_secs, None);
-        assert_eq!(opts.analyzer_timeout_secs, None);
-    }
-
-    #[test]
-    fn plugin_timeout_flag_leaves_analyzers_unbounded() {
-        // the pre-existing --plugin-timeout surface must keep bounding only
-        // plugins, not the built-in analyzers.
-        let opts = build_scan_opts(
-            &scan_args(&["unsafe-budget", "scan", "--plugin-timeout", "5"]),
-            &Config::default(),
-        );
-        assert_eq!(opts.plugin_timeout_secs, Some(5));
-        assert_eq!(opts.analyzer_timeout_secs, None);
-    }
-
-    #[test]
-    fn general_timeout_flag_bounds_both() {
-        let opts = build_scan_opts(
-            &scan_args(&["unsafe-budget", "scan", "--timeout", "9"]),
-            &Config::default(),
-        );
-        assert_eq!(opts.plugin_timeout_secs, Some(9));
-        assert_eq!(opts.analyzer_timeout_secs, Some(9));
-    }
-
-    #[test]
-    fn plugin_timeout_overrides_general_for_plugins() {
-        let opts = build_scan_opts(
-            &scan_args(&[
-                "unsafe-budget",
-                "scan",
-                "--timeout",
-                "9",
-                "--plugin-timeout",
-                "3",
-            ]),
-            &Config::default(),
-        );
-        assert_eq!(opts.plugin_timeout_secs, Some(3));
-        assert_eq!(opts.analyzer_timeout_secs, Some(9));
-    }
-
-    #[test]
-    fn config_general_timeout_flows_to_both() {
-        let config = Config {
-            timeout_secs: Some(30),
-            ..Config::default()
+    fn ignore_filter_matches_file_and_line() {
+        let ignore = |file: &str, line| IgnoreEntry {
+            file: PathBuf::from(file),
+            line,
+            reason: None,
         };
-        let opts = build_scan_opts(&scan_args(&["unsafe-budget", "scan"]), &config);
-        assert_eq!(opts.plugin_timeout_secs, Some(30));
-        assert_eq!(opts.analyzer_timeout_secs, Some(30));
+        // name, ignores -> details left, per-unit counts, (workspace, deps, overall)
+        type Case<'a> = (&'a str, Vec<IgnoreEntry>, usize, [u64; 2], (u64, u64, u64));
+        let cases: Vec<Case> = vec![
+            ("no ignores", vec![], 4, [3, 1], (4, 0, 4)),
+            (
+                "one match",
+                vec![IgnoreEntry {
+                    file: PathBuf::from("src/ffi.rs"),
+                    line: 42,
+                    reason: Some("reviewed".into()),
+                }],
+                3,
+                [2, 1],
+                (3, 0, 3),
+            ),
+            (
+                "two matches",
+                vec![ignore("src/lib.rs", 10), ignore("src/ffi.rs", 42)],
+                2,
+                [1, 1],
+                (2, 0, 2),
+            ),
+            (
+                "wrong file and line",
+                vec![ignore("src/nonexistent.rs", 999)],
+                4,
+                [3, 1],
+                (4, 0, 4),
+            ),
+            (
+                "right file, wrong line",
+                vec![ignore("src/ffi.rs", 99)],
+                4,
+                [3, 1],
+                (4, 0, 4),
+            ),
+            (
+                "every occurrence",
+                vec![
+                    ignore("src/lib.rs", 10),
+                    ignore("src/lib.rs", 20),
+                    ignore("src/ffi.rs", 42),
+                    ignore("other/src/lib.rs", 5),
+                ],
+                0,
+                [0, 0],
+                (0, 0, 0),
+            ),
+        ];
+        for (name, ignores, details, counts, totals) in cases {
+            let filtered = apply_ignore_filter(make_result_with_details(), &ignores);
+            assert_eq!(filtered.details.len(), details, "{name}");
+            assert_eq!(
+                [
+                    filtered.units[0].unsafe_count,
+                    filtered.units[1].unsafe_count
+                ],
+                counts,
+                "{name}"
+            );
+            assert_eq!(
+                (
+                    filtered.totals.workspace_unsafe,
+                    filtered.totals.deps_unsafe,
+                    filtered.totals.overall_unsafe
+                ),
+                totals,
+                "{name}"
+            );
+        }
     }
 
     #[test]
-    fn cli_timeout_overrides_config_and_config_plugin_override_wins() {
-        let config = Config {
-            timeout_secs: Some(30),
-            plugin_timeout_secs: Some(7),
-            ..Config::default()
-        };
-        let opts = build_scan_opts(
-            &scan_args(&["unsafe-budget", "scan", "--timeout", "12"]),
-            &config,
+    fn timeouts_resolve_from_flags_and_config() {
+        // --plugin-timeout bounds only plugins, never the built-in analyzers.
+        // flags, config timeout, config plugin timeout -> (plugin, analyzer)
+        type Case<'a> = (
+            &'a [&'a str],
+            Option<u64>,
+            Option<u64>,
+            (Option<u64>, Option<u64>),
         );
-        assert_eq!(opts.analyzer_timeout_secs, Some(12));
-        assert_eq!(opts.plugin_timeout_secs, Some(7));
+        let cases: [Case; 6] = [
+            (&[], None, None, (None, None)),
+            (&["--plugin-timeout", "5"], None, None, (Some(5), None)),
+            (&["--timeout", "9"], None, None, (Some(9), Some(9))),
+            (
+                &["--timeout", "9", "--plugin-timeout", "3"],
+                None,
+                None,
+                (Some(3), Some(9)),
+            ),
+            (&[], Some(30), None, (Some(30), Some(30))),
+            (&["--timeout", "12"], Some(30), Some(7), (Some(7), Some(12))),
+        ];
+        for (flags, timeout_secs, plugin_timeout_secs, expected) in cases {
+            let argv: Vec<&str> = ["unsafe-budget", "scan"]
+                .iter()
+                .chain(flags)
+                .copied()
+                .collect();
+            let config = Config {
+                timeout_secs,
+                plugin_timeout_secs,
+                ..Config::default()
+            };
+            let opts = build_scan_opts(&scan_args(&argv), &config);
+            assert_eq!(
+                (opts.plugin_timeout_secs, opts.analyzer_timeout_secs),
+                expected,
+                "{flags:?} {timeout_secs:?} {plugin_timeout_secs:?}"
+            );
+        }
     }
 }

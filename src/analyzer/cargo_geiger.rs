@@ -658,8 +658,17 @@ mod tests {
     #[test]
     fn test_parse_geiger_output_invalid() {
         let json = r#"{"invalid": true}"#;
-        let result = parse_geiger_output(json.as_bytes());
-        assert!(result.is_err());
+        match parse_geiger_output(json.as_bytes()) {
+            Err(Error::Analyzer { analyzer, message }) => {
+                assert_eq!(analyzer, "cargo_geiger");
+                assert!(
+                    message.starts_with("failed to parse cargo-geiger output"),
+                    "{message}"
+                );
+            }
+            Err(e) => panic!("unexpected error: {e}"),
+            Ok(_) => panic!("expected an error"),
+        }
     }
 
     #[test]
@@ -737,7 +746,7 @@ mod tests {
         };
         let (units, _) = convert_reports(&reports, &members, &PackageDirs::new(), &opts);
 
-        assert!(units.iter().all(|u| u.name != "itoa"));
+        assert_eq!(unit_rows(&units), [("beta", UnitKind::Workspace, 4)]);
     }
 
     #[test]

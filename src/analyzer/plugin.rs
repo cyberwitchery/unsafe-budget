@@ -246,45 +246,30 @@ mod tests {
     // --- is_executable ---
 
     #[test]
-    fn executable_file_returns_true() {
-        let tmp = TempDir::new().unwrap();
-        let p = make_file(tmp.path(), "exe", 0o755);
-        assert!(is_executable(&p));
-    }
-
-    #[test]
-    fn non_executable_file_returns_false() {
-        let tmp = TempDir::new().unwrap();
-        let p = make_file(tmp.path(), "noexe", 0o644);
-        assert!(!is_executable(&p));
-    }
-
-    #[test]
-    fn directory_returns_false() {
+    fn is_executable_needs_any_execute_bit_on_a_file() {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path().join("subdir");
         fs::create_dir(&dir).unwrap();
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
-        assert!(!is_executable(&dir));
-    }
-
-    #[test]
-    fn nonexistent_path_returns_false() {
-        assert!(!is_executable(&PathBuf::from("/no/such/path")));
-    }
-
-    #[test]
-    fn group_execute_only_returns_true() {
-        let tmp = TempDir::new().unwrap();
-        let p = make_file(tmp.path(), "gexe", 0o610);
-        assert!(is_executable(&p));
-    }
-
-    #[test]
-    fn other_execute_only_returns_true() {
-        let tmp = TempDir::new().unwrap();
-        let p = make_file(tmp.path(), "oexe", 0o601);
-        assert!(is_executable(&p));
+        let cases = [
+            ("owner execute", make_file(tmp.path(), "exe", 0o755), true),
+            ("no execute", make_file(tmp.path(), "noexe", 0o644), false),
+            (
+                "group execute only",
+                make_file(tmp.path(), "gexe", 0o610),
+                true,
+            ),
+            (
+                "other execute only",
+                make_file(tmp.path(), "oexe", 0o601),
+                true,
+            ),
+            ("directory", dir, false),
+            ("nonexistent", PathBuf::from("/no/such/path"), false),
+        ];
+        for (name, path, expected) in cases {
+            assert_eq!(is_executable(&path), expected, "{name}");
+        }
     }
 
     // --- probe_plugin_language ---
@@ -298,28 +283,20 @@ mod tests {
     }
 
     #[test]
-    fn probe_returns_none_on_missing_field() {
+    fn probe_returns_none_when_info_is_unusable() {
         let _lock = test_spawn_guard();
         let tmp = TempDir::new().unwrap();
-        let p = make_script(tmp.path(), "plugin", r#"echo '{"version":"1"}'"#);
-        assert_eq!(probe_plugin_language(&p, None), None);
-    }
-
-    #[test]
-    fn probe_returns_none_on_non_zero_exit() {
-        let _lock = test_spawn_guard();
-        let tmp = TempDir::new().unwrap();
-        let p = make_script(tmp.path(), "plugin", "exit 1");
-        assert_eq!(probe_plugin_language(&p, None), None);
-    }
-
-    #[test]
-    fn probe_returns_none_for_nonexistent_binary() {
-        let _lock = test_spawn_guard();
-        assert_eq!(
-            probe_plugin_language(&PathBuf::from("/no/such/binary"), None),
-            None
-        );
+        let cases = [
+            (
+                "missing field",
+                make_script(tmp.path(), "missing", r#"echo '{"version":"1"}'"#),
+            ),
+            ("non-zero exit", make_script(tmp.path(), "fails", "exit 1")),
+            ("nonexistent binary", PathBuf::from("/no/such/binary")),
+        ];
+        for (name, path) in cases {
+            assert_eq!(probe_plugin_language(&path, None), None, "{name}");
+        }
     }
 
     #[test]
@@ -375,7 +352,10 @@ mod tests {
         let info = found.unwrap();
         assert_eq!(info.language, "demo-lang");
         assert!(!info.builtin);
-        assert!(info.path.is_some());
+        assert_eq!(
+            info.path.as_deref(),
+            Some(tmp.path().join("unsafe-budget-plugin-demo").as_path())
+        );
     }
 
     #[test]
@@ -505,15 +485,17 @@ mod tests {
 
         std::env::set_var("PATH", &old_path);
 
-        let ids: Vec<&str> = plugins.iter().map(|p| p.id.as_str()).collect();
-        let aaa_count = ids.iter().filter(|&&id| id == "aaa").count();
-        assert_eq!(aaa_count, 1, "duplicates should be removed");
-
-        if let Some(aaa_pos) = ids.iter().position(|&id| id == "aaa") {
-            if let Some(zzz_pos) = ids.iter().position(|&id| id == "zzz") {
-                assert!(aaa_pos < zzz_pos, "plugins should be sorted by id");
-            }
-        }
+        let ours: Vec<_> = plugins
+            .iter()
+            .filter(|p| p.id == "aaa" || p.id == "zzz")
+            .collect();
+        let ids: Vec<&str> = ours.iter().map(|p| p.id.as_str()).collect();
+        assert_eq!(ids, ["aaa", "zzz"], "sorted by id, duplicates removed");
+        // the earlier PATH entry wins
+        assert_eq!(
+            ours[0].path.as_deref(),
+            Some(tmp1.path().join("unsafe-budget-plugin-aaa").as_path())
+        );
     }
 
     // --- sanitize_plugin_result ---

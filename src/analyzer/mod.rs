@@ -242,37 +242,15 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     #[test]
-    fn test_get_analyzer_rustc() {
-        let analyzer = get_analyzer(RUSTC_UNSAFE_LINT, None).unwrap();
-        assert_eq!(analyzer.id(), "rustc_unsafe_lint");
-        assert_eq!(analyzer.language(), "rust");
-    }
-
-    #[test]
-    fn test_get_analyzer_cargo_geiger() {
-        let analyzer = get_analyzer(CARGO_GEIGER, None).unwrap();
-        assert_eq!(analyzer.id(), "cargo_geiger");
-        assert_eq!(analyzer.language(), "rust");
-    }
-
-    #[test]
-    fn test_get_analyzer_go_geiger() {
-        let analyzer = get_analyzer(GO_GEIGER, None).unwrap();
-        assert_eq!(analyzer.id(), "go_geiger");
-        assert_eq!(analyzer.language(), "go");
-    }
-
-    #[test]
-    fn test_get_analyzer_sarif() {
-        let analyzer = get_analyzer(SARIF, None).unwrap();
-        assert_eq!(analyzer.id(), "sarif");
-        assert_eq!(analyzer.language(), "unknown");
-    }
-
-    #[test]
     fn test_get_analyzer_unknown() {
-        let result = get_analyzer("unknown_analyzer", None);
-        assert!(result.is_err());
+        match get_analyzer("unknown_analyzer", None) {
+            Err(Error::Analyzer { analyzer, message }) => {
+                assert_eq!(analyzer, "unknown_analyzer");
+                assert_eq!(message, "unknown analyzer: unknown_analyzer");
+            }
+            Err(e) => panic!("unexpected error: {e}"),
+            Ok(_) => panic!("expected an error"),
+        }
     }
 
     #[test]
@@ -280,38 +258,6 @@ mod tests {
         let analyzer = default_analyzer();
         assert_eq!(analyzer.id(), "rustc_unsafe_lint");
         assert_eq!(analyzer.language(), "rust");
-    }
-
-    #[test]
-    fn test_list_analyzers_has_builtins() {
-        let analyzers = list_analyzers(None);
-
-        // should have at least the 4 built-in analyzers
-        assert!(analyzers.len() >= 4);
-
-        let ids: Vec<_> = analyzers.iter().map(|a| a.id.as_str()).collect();
-        assert!(ids.contains(&"rustc_unsafe_lint"));
-        assert!(ids.contains(&"cargo_geiger"));
-        assert!(ids.contains(&"go_geiger"));
-        assert!(ids.contains(&"sarif"));
-    }
-
-    #[test]
-    fn test_list_analyzers_builtins_are_marked() {
-        let analyzers = list_analyzers(None);
-
-        let rustc = analyzers
-            .iter()
-            .find(|a| a.id == RUSTC_UNSAFE_LINT)
-            .unwrap();
-        assert!(rustc.builtin);
-        assert!(rustc.path.is_none());
-
-        let cargo_geiger = analyzers.iter().find(|a| a.id == CARGO_GEIGER).unwrap();
-        assert!(cargo_geiger.builtin);
-
-        let go_geiger = analyzers.iter().find(|a| a.id == GO_GEIGER).unwrap();
-        assert!(go_geiger.builtin);
     }
 
     #[test]
@@ -450,125 +396,138 @@ mod tests {
     }
 
     #[test]
-    fn test_classify_unit_kind_cargo_registry_is_dep() {
-        let path =
-            Path::new("/home/user/.cargo/registry/src/index.crates.io-abc/libc-0.2.0/src/lib.rs");
-        assert_eq!(classify_unit_kind(path), UnitKind::Dep);
+    fn test_get_analyzer_builtins() {
+        let cases = [
+            (RUSTC_UNSAFE_LINT, "rustc_unsafe_lint", "rust"),
+            (CARGO_GEIGER, "cargo_geiger", "rust"),
+            (GO_GEIGER, "go_geiger", "go"),
+            (SARIF, "sarif", "unknown"),
+        ];
+        for (id, expected_id, language) in cases {
+            let analyzer = get_analyzer(id, None).unwrap();
+            assert_eq!(
+                (analyzer.id(), analyzer.language()),
+                (expected_id, language)
+            );
+        }
     }
 
     #[test]
-    fn test_classify_unit_kind_cargo_git_is_dep() {
-        let path = Path::new("/home/user/.cargo/git/checkouts/some-crate-abc/rev/src/lib.rs");
-        assert_eq!(classify_unit_kind(path), UnitKind::Dep);
+    fn test_list_analyzers_includes_builtins() {
+        let analyzers = list_analyzers(None);
+        for (id, language) in [
+            ("rustc_unsafe_lint", "rust"),
+            ("cargo_geiger", "rust"),
+            ("go_geiger", "go"),
+            ("sarif", "any"),
+        ] {
+            let analyzer = analyzers
+                .iter()
+                .find(|a| a.id == id)
+                .unwrap_or_else(|| panic!("{id} is listed"));
+            assert_eq!(analyzer.language, language, "{id}");
+            assert!(analyzer.builtin, "{id}");
+            assert_eq!(analyzer.path, None, "{id}");
+        }
     }
 
     #[test]
-    fn test_classify_unit_kind_go_vendor_is_dep() {
-        let path = Path::new("/home/user/project/vendor/github.com/pkg/errors/errors.go");
-        assert_eq!(classify_unit_kind(path), UnitKind::Dep);
+    fn test_classify_unit_kind() {
+        let cases = [
+            (
+                "/home/user/.cargo/registry/src/index.crates.io-abc/libc-0.2.0/src/lib.rs",
+                UnitKind::Dep,
+            ),
+            (
+                "/home/user/.cargo/git/checkouts/some-crate-abc/rev/src/lib.rs",
+                UnitKind::Dep,
+            ),
+            (
+                "/home/user/project/vendor/github.com/pkg/errors/errors.go",
+                UnitKind::Dep,
+            ),
+            (
+                "/home/user/go/pkg/mod/github.com/pkg/errors@v0.9.1/errors.go",
+                UnitKind::Dep,
+            ),
+            ("crate_a/src/lib.rs", UnitKind::Workspace),
+            ("/home/user/project/src/main.rs", UnitKind::Workspace),
+            ("vendor-tools/gen.go", UnitKind::Workspace),
+        ];
+        for (path, kind) in cases {
+            assert_eq!(classify_unit_kind(Path::new(path)), kind, "{path}");
+        }
     }
 
     #[test]
-    fn test_classify_unit_kind_go_module_cache_is_dep() {
-        let path = Path::new("/home/user/go/pkg/mod/github.com/pkg/errors@v0.9.1/errors.go");
-        assert_eq!(classify_unit_kind(path), UnitKind::Dep);
+    fn test_apply_cargo_flags() {
+        let cases: [(ScanOpts, &[&str]); 4] = [
+            (ScanOpts::default(), &[]),
+            (
+                ScanOpts {
+                    all_features: true,
+                    no_default_features: true,
+                    features: vec!["feat1".into(), "feat2".into()],
+                    all_targets: true,
+                    targets: vec!["x86_64-unknown-linux-gnu".into()],
+                    manifest_path: Some(PathBuf::from("/path/to/Cargo.toml")),
+                    ..Default::default()
+                },
+                &[
+                    "--all-features",
+                    "--no-default-features",
+                    "--features",
+                    "feat1",
+                    "--features",
+                    "feat2",
+                    "--all-targets",
+                    "--target",
+                    "x86_64-unknown-linux-gnu",
+                    "--manifest-path",
+                    "/path/to/Cargo.toml",
+                ],
+            ),
+            (
+                ScanOpts {
+                    features: vec!["serde".into()],
+                    ..Default::default()
+                },
+                &["--features", "serde"],
+            ),
+            (
+                ScanOpts {
+                    manifest_path: Some(PathBuf::from("sub/Cargo.toml")),
+                    ..Default::default()
+                },
+                &["--manifest-path", "sub/Cargo.toml"],
+            ),
+        ];
+        for (opts, expected) in cases {
+            let mut cmd = Command::new("cargo");
+            apply_cargo_flags(&mut cmd, &opts);
+            let args: Vec<_> = cmd
+                .get_args()
+                .map(|a| a.to_string_lossy().to_string())
+                .collect();
+            // cargo does not care about flag order, only that each value stays
+            // with its flag.
+            assert_eq!(flag_units(&args), flag_units(expected), "{expected:?}");
+        }
     }
 
-    #[test]
-    fn test_classify_unit_kind_workspace_default() {
-        assert_eq!(
-            classify_unit_kind(Path::new("crate_a/src/lib.rs")),
-            UnitKind::Workspace
-        );
-        assert_eq!(
-            classify_unit_kind(Path::new("/home/user/project/src/main.rs")),
-            UnitKind::Workspace
-        );
-        assert_eq!(
-            classify_unit_kind(Path::new("vendor-tools/gen.go")),
-            UnitKind::Workspace
-        );
-    }
-
-    #[test]
-    fn test_apply_cargo_flags_default_opts() {
-        let opts = ScanOpts::default();
-        let mut cmd = Command::new("cargo");
-        apply_cargo_flags(&mut cmd, &opts);
-
-        let args: Vec<_> = cmd.get_args().collect::<Vec<_>>();
-        assert!(args.is_empty());
-    }
-
-    #[test]
-    fn test_apply_cargo_flags_all_flags() {
-        let opts = ScanOpts {
-            all_features: true,
-            no_default_features: true,
-            features: vec!["feat1".into(), "feat2".into()],
-            all_targets: true,
-            targets: vec!["x86_64-unknown-linux-gnu".into()],
-            manifest_path: Some(PathBuf::from("/path/to/Cargo.toml")),
-            ..Default::default()
-        };
-        let mut cmd = Command::new("cargo");
-        apply_cargo_flags(&mut cmd, &opts);
-
-        let args: Vec<_> = cmd
-            .get_args()
-            .map(|a| a.to_string_lossy().to_string())
-            .collect();
-        assert!(args.contains(&"--all-features".to_string()));
-        assert!(args.contains(&"--no-default-features".to_string()));
-        assert!(args.contains(&"--all-targets".to_string()));
-        assert!(args.contains(&"--manifest-path".to_string()));
-        assert!(args.contains(&"/path/to/Cargo.toml".to_string()));
-
-        // check features are paired correctly
-        let feat_positions: Vec<_> = args
-            .iter()
-            .enumerate()
-            .filter(|(_, a)| a.as_str() == "--features")
-            .map(|(i, _)| i)
-            .collect();
-        assert_eq!(feat_positions.len(), 2);
-        assert_eq!(args[feat_positions[0] + 1], "feat1");
-        assert_eq!(args[feat_positions[1] + 1], "feat2");
-
-        // check target is paired correctly
-        let target_pos = args.iter().position(|a| a == "--target").unwrap();
-        assert_eq!(args[target_pos + 1], "x86_64-unknown-linux-gnu");
-    }
-
-    #[test]
-    fn test_apply_cargo_flags_features_only() {
-        let opts = ScanOpts {
-            features: vec!["serde".into()],
-            ..Default::default()
-        };
-        let mut cmd = Command::new("cargo");
-        apply_cargo_flags(&mut cmd, &opts);
-
-        let args: Vec<_> = cmd
-            .get_args()
-            .map(|a| a.to_string_lossy().to_string())
-            .collect();
-        assert_eq!(args, vec!["--features", "serde"]);
-    }
-
-    #[test]
-    fn test_apply_cargo_flags_manifest_path_only() {
-        let opts = ScanOpts {
-            manifest_path: Some(PathBuf::from("sub/Cargo.toml")),
-            ..Default::default()
-        };
-        let mut cmd = Command::new("cargo");
-        apply_cargo_flags(&mut cmd, &opts);
-
-        let args: Vec<_> = cmd
-            .get_args()
-            .map(|a| a.to_string_lossy().to_string())
-            .collect();
-        assert_eq!(args, vec!["--manifest-path", "sub/Cargo.toml"]);
+    fn flag_units<S: AsRef<str>>(args: &[S]) -> Vec<Vec<String>> {
+        let mut units = Vec::new();
+        let mut args = args.iter().map(|a| a.as_ref().to_string());
+        while let Some(flag) = args.next() {
+            let takes_value =
+                matches!(flag.as_str(), "--features" | "--target" | "--manifest-path");
+            let mut unit = vec![flag];
+            if takes_value {
+                unit.extend(args.next());
+            }
+            units.push(unit);
+        }
+        units.sort();
+        units
     }
 }

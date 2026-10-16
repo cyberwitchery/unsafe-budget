@@ -498,42 +498,40 @@ mod tests {
     }
 
     #[test]
-    fn test_print_scan_text_empty() {
-        let mut result = make_scan_result();
-        result.units.clear();
-        let mut buf = Vec::new();
-        print_scan_text(&mut buf, &result).unwrap();
-        let output = String::from_utf8(buf).unwrap();
-
-        assert!(output.contains("No units found"));
-    }
-
-    #[test]
     fn test_print_scan_and_check_text_without_units_print_parse_warnings() {
-        let mut scan = make_scan_result();
-        scan.units.clear();
-        scan.parse_warnings = vec![ParseWarning {
+        let warning = ParseWarning {
             message: "go-geiger: skipping unexpected output line: x".into(),
-        }];
-        let mut scan_buf = Vec::new();
-        print_scan_text(&mut scan_buf, &scan).unwrap();
-        let check = CheckResult {
-            scan,
-            violations: vec![],
-            warnings: vec![],
-            passed: true,
         };
-        let mut check_buf = Vec::new();
-        print_check_text(&mut check_buf, &check, None).unwrap();
+        for parse_warnings in [vec![], vec![warning]] {
+            let mut scan = make_scan_result();
+            scan.units.clear();
+            scan.parse_warnings = parse_warnings;
+            let with_warnings = !scan.parse_warnings.is_empty();
+            let mut scan_buf = Vec::new();
+            print_scan_text(&mut scan_buf, &scan).unwrap();
+            let check = CheckResult {
+                scan,
+                violations: vec![],
+                warnings: vec![],
+                passed: true,
+            };
+            let mut check_buf = Vec::new();
+            print_check_text(&mut check_buf, &check, None).unwrap();
 
-        for buf in [scan_buf, check_buf] {
-            let output = String::from_utf8(buf).unwrap();
-            assert!(output.contains("No units found"), "{output}");
-            assert!(output.contains("Parse warnings (1):"), "{output}");
-            assert!(
-                output.contains("go-geiger: skipping unexpected output line: x"),
-                "{output}"
-            );
+            for buf in [scan_buf, check_buf] {
+                let output = String::from_utf8(buf).unwrap();
+                assert!(output.contains("No units found"), "{output}");
+                assert_eq!(
+                    output.contains("Parse warnings (1):"),
+                    with_warnings,
+                    "{output}"
+                );
+                assert_eq!(
+                    output.contains("go-geiger: skipping unexpected output line: x"),
+                    with_warnings,
+                    "{output}"
+                );
+            }
         }
     }
 
@@ -544,10 +542,33 @@ mod tests {
         print_json(&mut buf, &result).unwrap();
         let output = String::from_utf8(buf).unwrap();
 
-        // should be valid JSON
         let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
-        assert_eq!(parsed["analyzer_id"], "test");
-        assert_eq!(parsed["totals"]["overall_unsafe"], 15);
+        assert_eq!(
+            parsed,
+            serde_json::json!({
+                "tool_version": "0.1.0",
+                "analyzer_id": "test",
+                "language": "rust",
+                "scope": {
+                    "workspace_only": false,
+                    "include_deps": true,
+                    "features": [],
+                    "all_features": false,
+                    "no_default_features": false,
+                    "all_targets": false,
+                    "targets": []
+                },
+                "units": [
+                    {"name": "my_crate", "kind": "workspace", "unsafe_count": 10},
+                    {"name": "dep_a", "kind": "dep", "unsafe_count": 5}
+                ],
+                "totals": {
+                    "workspace_unsafe": 10,
+                    "deps_unsafe": 5,
+                    "overall_unsafe": 15
+                }
+            })
+        );
     }
 
     #[test]
@@ -615,8 +636,17 @@ mod tests {
 
         assert!(output.contains("Status: PASSED"));
         assert!(output.contains("Warnings (1):"));
-        assert!(output.contains("my_crate: 10 unsafe"));
-        assert!(output.contains("WARN"));
+        assert!(
+            output
+                .lines()
+                .any(|l| l == "  - my_crate: 10 unsafe (83% of budget 12, remaining: 2)"),
+            "{output}"
+        );
+        let row = output
+            .lines()
+            .find(|l| l.trim_start().starts_with("my_crate "))
+            .unwrap();
+        assert!(row.ends_with("WARN"), "{row}");
     }
 
     #[test]
@@ -688,58 +718,6 @@ mod tests {
                 message: Some("unsafe function call".into()),
             },
         ]
-    }
-
-    #[test]
-    fn test_print_details_text_grouped_by_unit() {
-        let details = make_occurrences();
-        let mut buf = Vec::new();
-        print_details_text(&mut buf, &details).unwrap();
-        let output = String::from_utf8(buf).unwrap();
-
-        assert!(output.contains("Details:"));
-        // units sorted alphabetically
-        let dep_pos = output.find("dep_a:").unwrap();
-        let crate_pos = output.find("my_crate:").unwrap();
-        assert!(dep_pos < crate_pos, "dep_a should appear before my_crate");
-    }
-
-    #[test]
-    fn test_print_details_text_sorted_within_unit() {
-        let details = make_occurrences();
-        let mut buf = Vec::new();
-        print_details_text(&mut buf, &details).unwrap();
-        let output = String::from_utf8(buf).unwrap();
-
-        // within my_crate: src/api.rs should come before src/lib.rs
-        let api_pos = output.find("src/api.rs:42:13").unwrap();
-        let lib10_pos = output.find("src/lib.rs:10:5").unwrap();
-        let lib25_pos = output.find("src/lib.rs:25:9").unwrap();
-        assert!(api_pos < lib10_pos);
-        assert!(lib10_pos < lib25_pos);
-    }
-
-    #[test]
-    fn test_print_details_text_with_message() {
-        let details = make_occurrences();
-        let mut buf = Vec::new();
-        print_details_text(&mut buf, &details).unwrap();
-        let output = String::from_utf8(buf).unwrap();
-
-        assert!(output.contains("src/lib.rs:10:5 — unsafe block"));
-        assert!(output.contains("src/api.rs:42:13 — unsafe function call"));
-    }
-
-    #[test]
-    fn test_print_details_text_without_message() {
-        let details = make_occurrences();
-        let mut buf = Vec::new();
-        print_details_text(&mut buf, &details).unwrap();
-        let output = String::from_utf8(buf).unwrap();
-
-        // dep_a occurrence has no message - just the location
-        assert!(output.contains("src/ffi.rs:3:1\n"));
-        assert!(!output.contains("src/ffi.rs:3:1 —"));
     }
 
     #[test]
@@ -824,25 +802,6 @@ mod tests {
         let output = String::from_utf8(buf).unwrap();
 
         assert!(!output.contains("Details:"));
-    }
-
-    #[test]
-    fn test_print_details_text_single_occurrence() {
-        let details = vec![Occurrence {
-            unit: "only_crate".into(),
-            file: "src/main.rs".into(),
-            line: 1,
-            col: 1,
-            message: Some("unsafe fn".into()),
-        }];
-
-        let mut buf = Vec::new();
-        print_details_text(&mut buf, &details).unwrap();
-        let output = String::from_utf8(buf).unwrap();
-
-        assert!(output.contains("Details:"));
-        assert!(output.contains("  only_crate:"));
-        assert!(output.contains("    src/main.rs:1:1 — unsafe fn"));
     }
 
     #[test]
@@ -945,5 +904,29 @@ mod tests {
 
         let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
         assert!(parsed.get("parse_warnings").is_none());
+    }
+
+    #[test]
+    fn test_print_details_text() {
+        let single = vec![Occurrence {
+            unit: "only_crate".into(),
+            file: "src/main.rs".into(),
+            line: 1,
+            col: 1,
+            message: Some("unsafe fn".into()),
+        }];
+        // units sorted by name, occurrences by file/line/col; no message, no dash.
+        let cases = [
+            (
+                make_occurrences(),
+                "\nDetails:\n  dep_a:\n    src/ffi.rs:3:1\n  my_crate:\n    src/api.rs:42:13 — unsafe function call\n    src/lib.rs:10:5 — unsafe block\n    src/lib.rs:25:9 — unsafe impl\n",
+            ),
+            (single, "\nDetails:\n  only_crate:\n    src/main.rs:1:1 — unsafe fn\n"),
+        ];
+        for (details, expected) in cases {
+            let mut buf = Vec::new();
+            print_details_text(&mut buf, &details).unwrap();
+            assert_eq!(String::from_utf8(buf).unwrap(), expected);
+        }
     }
 }
