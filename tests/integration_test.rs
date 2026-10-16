@@ -550,7 +550,7 @@ fn write_go_geiger_stub(root: &Path, packages: &[&str], table: &Path) -> std::ff
     let bin = root.join("bin");
     fs::create_dir_all(&bin).unwrap();
     for (name, output) in [
-        ("go", format!("printf '%s\\n' {}", packages.join(" "))),
+        ("go", format!("printf '%s\\n' '{}'", packages.join("' '"))),
         ("go-geiger", format!("cat \"{}\"", table.display())),
     ] {
         let stub = bin.join(name);
@@ -583,7 +583,7 @@ fn test_go_geiger_counts_each_package_of_its_tables_once() {
         &[
             "example.com/mp",
             "example.com/mp/clean",
-            "example.com/mp/inner",
+            "example.com/mp/inner [example.com/mp]",
         ],
         &project_root().join("tests/fixtures/go_geiger/mp.out"),
     );
@@ -630,7 +630,7 @@ fn test_go_geiger_counts_each_package_of_its_tables_once() {
     assert!(!text.contains("example.com/dep"), "{text}");
 
     let calls = format!(
-        "{0} go list -e -deps -f {1} ./...\n{0} go-geiger --max-depth 1000000 ./...\n",
+        "{0} go list -m\n{0} go list -e -deps -f {1} ./...\n{0} go-geiger --max-depth 1000000 ./...\n",
         project.display(),
         "{{with .Module}}{{if .Main}}{{$.ImportPath}}{{end}}{{end}}"
     );

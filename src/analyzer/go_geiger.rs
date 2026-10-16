@@ -62,13 +62,19 @@ fn scan_dir(opts: &ScanOpts) -> Option<&Path> {
 
 /// the packages go-geiger scans that belong to the main module, or to any module of a go.work workspace.
 fn workspace_packages(dir: Option<&Path>, opts: &ScanOpts) -> Result<HashSet<String>> {
+    // fails in GOPATH mode, where the query below would place no package in a main module.
+    run_tool(
+        Command::new("go").args(["list", "-m"]),
+        dir,
+        "go list -m",
+        opts,
+    )?;
     let mut cmd = Command::new("go");
     cmd.args(["list", "-e", "-deps", "-f", MAIN_MODULE_PACKAGE, "./..."]);
     let stdout = run_tool(&mut cmd, dir, "go list", opts)?;
     Ok(String::from_utf8_lossy(&stdout)
         .lines()
-        .map(str::trim)
-        .filter(|package| !package.is_empty())
+        .filter_map(|line| line.split_whitespace().next())
         .map(String::from)
         .collect())
 }

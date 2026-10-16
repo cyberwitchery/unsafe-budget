@@ -48,7 +48,7 @@ unsafe-budget scan --analyzer cargo_geiger
 
 analyzer for go projects.
 
-**backend**: `go list -e -deps ./...`, then `go-geiger --max-depth 1000000 ./...`
+**backend**: `go list -m` and `go list -e -deps ./...`, then `go-geiger --max-depth 1000000 ./...`
 
 **features**:
 - counts `unsafe.Pointer` uses, go-geiger's default match filter; `unsafe.Sizeof`, `unsafe.Offsetof` and `unsafe.Alignof` are not counted
