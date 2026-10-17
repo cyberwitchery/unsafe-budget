@@ -2,13 +2,16 @@ use crate::analyzer::process::{self, Run};
 use crate::analyzer::Analyzer;
 use crate::error::{Error, Result};
 use crate::model::{ParseWarning, ScanOpts, ScanResult, Unit, UnitKind};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 
 /// deeper than any import chain, so go-geiger lists every package.
 const MAX_DEPTH: &str = "1000000";
+
+/// a `go list` template printing the import path of each package in a main module.
+const MAIN_MODULE_PACKAGE: &str = "{{with .Module}}{{if .Main}}{{$.ImportPath}}{{end}}{{end}}";
 
 /// the characters go-geiger draws its import tree with.
 const TREE: &[char] = &[' ', '│', '├', '└', '─'];
@@ -38,9 +41,9 @@ impl Analyzer for GoGeigerAnalyzer {
 
     fn run(&self, opts: &ScanOpts) -> Result<ScanResult> {
         let dir = scan_dir(opts);
-        let main_modules = main_modules(dir, opts)?;
+        let workspace = workspace_packages(dir, opts)?;
         let output = run_go_geiger(dir, opts)?;
-        let (units, warnings) = parse_geiger_output(&output, &main_modules, opts);
+        let (units, warnings) = parse_geiger_output(&output, &workspace, opts);
 
         let mut result =
             ScanResult::from_parts(self.id(), self.language(), opts, units, Vec::new());
@@ -57,15 +60,21 @@ fn scan_dir(opts: &ScanOpts) -> Option<&Path> {
         .filter(|dir| !dir.as_os_str().is_empty())
 }
 
-/// the main module's path, or every module's of a go.work workspace.
-fn main_modules(dir: Option<&Path>, opts: &ScanOpts) -> Result<Vec<String>> {
+/// the packages go-geiger scans that belong to the main module, or to any module of a go.work workspace.
+fn workspace_packages(dir: Option<&Path>, opts: &ScanOpts) -> Result<HashSet<String>> {
+    // fails in GOPATH mode, where the query below would place no package in a main module.
+    run_tool(
+        Command::new("go").args(["list", "-m"]),
+        dir,
+        "go list -m",
+        opts,
+    )?;
     let mut cmd = Command::new("go");
-    cmd.args(["list", "-m"]);
-    let stdout = run_tool(&mut cmd, dir, "go list -m", opts)?;
+    cmd.args(["list", "-e", "-deps", "-f", MAIN_MODULE_PACKAGE, "./..."]);
+    let stdout = run_tool(&mut cmd, dir, "go list", opts)?;
     Ok(String::from_utf8_lossy(&stdout)
         .lines()
-        .map(str::trim)
-        .filter(|module| !module.is_empty())
+        .filter_map(|line| line.split_whitespace().next())
         .map(String::from)
         .collect())
 }
@@ -109,7 +118,7 @@ fn run_tool(cmd: &mut Command, dir: Option<&Path>, name: &str, opts: &ScanOpts) 
 /// one unit per package in go-geiger's tables, counted from its LOCAL PACKAGE column.
 fn parse_geiger_output(
     output: &[u8],
-    main_modules: &[String],
+    workspace: &HashSet<String>,
     opts: &ScanOpts,
 ) -> (Vec<Unit>, Vec<ParseWarning>) {
     let mut counts = HashMap::new();
@@ -125,7 +134,7 @@ fn parse_geiger_output(
         if let Some((package, local)) = table_row(line) {
             counts
                 .entry(package.to_string())
-                .or_insert((package_kind(package, main_modules), local));
+                .or_insert((package_kind(package, workspace), local));
         } else if line
             .trim_start_matches(TREE)
             .starts_with("Maximum depth reached.")
@@ -190,14 +199,9 @@ fn table_row(line: &str) -> Option<(&str, u64)> {
     (!package.is_empty() && !package.contains(char::is_whitespace)).then_some((package, local))
 }
 
-/// a package in a main module, or below one, is workspace code.
-fn package_kind(package: &str, main_modules: &[String]) -> UnitKind {
-    let in_main_module = main_modules.iter().any(|module| {
-        package
-            .strip_prefix(module.as_str())
-            .is_some_and(|below| below.is_empty() || below.starts_with('/'))
-    });
-    if in_main_module {
+/// a package `go list` places in a main module is workspace code; any other is a dependency.
+fn package_kind(package: &str, workspace: &HashSet<String>) -> UnitKind {
+    if workspace.contains(package) {
         UnitKind::Workspace
     } else {
         UnitKind::Dep
@@ -262,9 +266,15 @@ mod tests {
     const MULTI_PACKAGE: &[u8] = include_bytes!("../../tests/fixtures/go_geiger/mp.out");
     const X_SYS_UNIX: &[u8] = include_bytes!("../../tests/fixtures/go_geiger/rw.out");
     const DEPTH_CUT: &[u8] = include_bytes!("../../tests/fixtures/go_geiger/deep_root.out");
+    const MP_WORKSPACE: &[&str] = &[
+        "example.com/mp",
+        "example.com/mp/clean",
+        "example.com/mp/inner",
+    ];
 
-    fn parse(output: &[u8], main_module: &str, opts: &ScanOpts) -> (Vec<Unit>, Vec<ParseWarning>) {
-        parse_geiger_output(output, &[main_module.to_string()], opts)
+    fn parse(output: &[u8], workspace: &[&str], opts: &ScanOpts) -> (Vec<Unit>, Vec<ParseWarning>) {
+        let workspace = workspace.iter().copied().map(String::from).collect();
+        parse_geiger_output(output, &workspace, opts)
     }
 
     fn with_deps() -> ScanOpts {
@@ -283,7 +293,7 @@ mod tests {
 
     #[test]
     fn test_parse_geiger_output_counts_each_package_of_a_real_scan_once() {
-        let (units, warnings) = parse(MULTI_PACKAGE, "example.com/mp", &with_deps());
+        let (units, warnings) = parse(MULTI_PACKAGE, MP_WORKSPACE, &with_deps());
         assert_eq!(
             unit_rows(&units),
             [
@@ -298,7 +308,7 @@ mod tests {
 
     #[test]
     fn test_parse_geiger_output_reads_a_real_dependency() {
-        let (units, warnings) = parse(X_SYS_UNIX, "example.com/rw", &with_deps());
+        let (units, warnings) = parse(X_SYS_UNIX, &["example.com/rw"], &with_deps());
         assert_eq!(
             unit_rows(&units),
             [
@@ -311,7 +321,12 @@ mod tests {
 
     #[test]
     fn test_parse_geiger_output_counts_a_repeated_package_once_and_warns_at_a_depth_cut() {
-        let (units, warnings) = parse(DEPTH_CUT, "example.com/deep", &ScanOpts::default());
+        let every_package: HashSet<_> = String::from_utf8_lossy(DEPTH_CUT)
+            .lines()
+            .filter_map(|line| Some(table_row(strip_sgr(line).trim())?.0.to_string()))
+            .collect();
+        let (units, warnings) =
+            parse_geiger_output(DEPTH_CUT, &every_package, &ScanOpts::default());
         assert_eq!(units.len(), 14);
         assert!(units
             .iter()
@@ -339,7 +354,7 @@ mod tests {
             ..Default::default()
         };
         for opts in [workspace_only, ScanOpts::default()] {
-            let (units, _) = parse(MULTI_PACKAGE, "example.com/mp", &opts);
+            let (units, _) = parse(MULTI_PACKAGE, MP_WORKSPACE, &opts);
             let names: Vec<_> = units.iter().map(|u| u.name.as_str()).collect();
             assert_eq!(
                 names,
@@ -360,7 +375,7 @@ mod tests {
                       3 4 ├─\n\
                       some of those contain unsafe usages\n\
                       Packages in blue are new\n";
-        let (units, warnings) = parse(output.as_bytes(), "example.com/mp", &with_deps());
+        let (units, warnings) = parse(output.as_bytes(), MP_WORKSPACE, &with_deps());
         assert!(units.is_empty(), "{units:?}");
         let messages: Vec<_> = warnings.into_iter().map(|w| w.message).collect();
         let expected: Vec<_> = output
@@ -377,16 +392,20 @@ mod tests {
     }
 
     #[test]
-    fn test_package_kind_is_workspace_in_or_below_a_main_module() {
-        let main_modules = ["example.com/mp".to_string(), "example.com/dep".to_string()];
+    fn test_package_kind_is_workspace_in_a_main_module() {
+        let workspace = HashSet::from(
+            ["example.com/mp", "example.com/mp/inner", "example.com/dep"].map(String::from),
+        );
         for (package, kind) in [
             ("example.com/mp", UnitKind::Workspace),
             ("example.com/mp/inner", UnitKind::Workspace),
             ("example.com/dep", UnitKind::Workspace),
             ("example.com/mpx", UnitKind::Dep),
+            ("example.com/mp/lib", UnitKind::Dep),
+            ("example.com/mp/v2", UnitKind::Dep),
             ("golang.org/x/sys/unix", UnitKind::Dep),
         ] {
-            assert_eq!(package_kind(package, &main_modules), kind, "{package}");
+            assert_eq!(package_kind(package, &workspace), kind, "{package}");
         }
     }
 

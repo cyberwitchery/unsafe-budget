@@ -1,5 +1,9 @@
 # changelog
 
+## Unreleased
+
+- fix: the `go_geiger` analyzer counts a separate module whose path sits below the main module's, such as a nested module with its own `go.mod` or a major version (`example.com/app/v2`), as a dependency. previously every package at or below a main module's path was workspace code, so such a module counted against workspace caps and under `--workspace-only`. baselines written by earlier versions charge it to the workspace: run `unsafe-budget update` after upgrading.
+
 ## [0.5.2] - 2026-10-14
 
 - fix: the `go_geiger` analyzer reads the tables go-geiger actually prints. previously it looked for `file:line:col` lines, which go-geiger only prints under `--show-code` (and that flag panics under current go), so every go scan read 0 unsafe and `check` could never fail. it now counts each package once, by import path, from the tables' LOCAL PACKAGE column, and counts `unsafe.Pointer` uses (go-geiger's default), not `unsafe.Sizeof`, `Offsetof` or `Alignof` as the docs claimed. a package in a module `go list -m` prints, or below one, is workspace code, so `go` must be on `PATH`. go-geiger's default `--max-depth` of 10 left out deeper dependencies; the analyzer now lifts it. go_geiger units carry no line-level details, and a go-geiger that exits non-zero now fails the scan. baselines written by earlier versions record 0: run `unsafe-budget update` after upgrading.
