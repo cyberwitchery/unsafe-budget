@@ -640,6 +640,37 @@ fn test_go_geiger_counts_each_package_of_its_tables_once() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn test_go_geiger_fails_when_go_list_m_fails() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().canonicalize().unwrap();
+    let path = write_go_geiger_stub(
+        &root,
+        &[],
+        &project_root().join("tests/fixtures/go_geiger/mp.out"),
+    );
+    fs::write(
+        root.join("bin/go"),
+        "#!/bin/sh\n[ \"$2\" != -m ] || exit 1\n",
+    )
+    .unwrap();
+
+    let output = unsafe_budget(
+        &root,
+        Path::new("go.mod"),
+        &["scan", "--analyzer", "go_geiger"],
+    )
+    .env("PATH", &path)
+    .output()
+    .unwrap();
+    assert!(!output.status.success(), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("go list -m failed"),
+        "{output:?}"
+    );
+}
+
 #[test]
 fn test_sarif_output_leaves_out_an_unknown_line_or_column() {
     let tmp = tempfile::tempdir().unwrap();

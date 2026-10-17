@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- fix: the `go_geiger` analyzer counts a separate module whose path sits below the main module's, such as a nested module with its own `go.mod` or a major version (`example.com/app/v2`), as a dependency. previously every package at or below a main module's path was workspace code, so such a module counted against workspace caps and under `--workspace-only`. baselines written by earlier versions charge it to the workspace: run `unsafe-budget update` after upgrading.
+- fix: the `go_geiger` analyzer counts a separate module whose path sits below the main module's, such as a nested module with its own `go.mod`, a major version (`example.com/app/v2`) or a locally replaced module (`=> ../lib` or `=> ./lib`), as a dependency. previously every package at or below a main module's path was workspace code, so such a module counted against workspace caps and under `--workspace-only`. in a monorepo, code under such a local `replace` now leaves the workspace caps and `--workspace-only`. baselines written by earlier versions charge such a module to the workspace: run `unsafe-budget update` after upgrading.
 
 ## [0.5.2] - 2026-10-14
 
