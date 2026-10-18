@@ -536,6 +536,46 @@ mod tests {
     }
 
     #[test]
+    fn test_print_scan_and_check_text_rows_line_up_with_header() {
+        let scan = make_scan_result();
+        let mut scan_buf = Vec::new();
+        print_scan_text(&mut scan_buf, &scan).unwrap();
+        let check = CheckResult {
+            scan,
+            violations: vec![],
+            warnings: vec![],
+            passed: true,
+        };
+        let mut check_buf = Vec::new();
+        print_check_text(&mut check_buf, &check, None).unwrap();
+
+        let cases = [
+            (
+                scan_buf,
+                [
+                    "  UNIT                           KIND           UNSAFE",
+                    "  my_crate                       workspace          10",
+                    "  dep_a                          dep                 5",
+                ],
+            ),
+            (
+                check_buf,
+                [
+                    "  UNIT                           KIND         UNSAFE   STATUS",
+                    "  my_crate                       workspace        10       ok",
+                    "  dep_a                          dep               5       ok",
+                ],
+            ),
+        ];
+        for (buf, lines) in cases {
+            let output = String::from_utf8(buf).unwrap();
+            for line in lines {
+                assert!(output.lines().any(|l| l == line), "{output}");
+            }
+        }
+    }
+
+    #[test]
     fn test_print_scan_json() {
         let result = make_scan_result();
         let mut buf = Vec::new();
