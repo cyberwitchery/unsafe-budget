@@ -137,17 +137,22 @@ original scan's units exactly, including units with no occurrences. it also
 reads back the `parse_warning` results, and counts only `unsafe_code` results,
 so a `check` report's `budget_violation`/`budget_warning` results are not
 mistaken for unsafe code. for any other SARIF the unit is derived from the
-artifact's file path. a file the analyzer classifies as a dependency is named
-after that dependency: a cargo registry file after its crate without the
-version, as the rust analyzers do
+artifact's file path. a file in a dependency cache or under `vendor/` is a
+dependency, named after that dependency: a cargo registry file after its crate
+without the version, as the rust analyzers do
 (`…/registry/src/<index>/serde-1.0.200/src/lib.rs` → `serde`); a cargo git
 checkout file after the directory before the nearest `src` below the revision,
 or else the checkout's repository
 (`…/git/checkouts/my_crate-<hash>/<rev>/src/lib.rs` → `my_crate`); a go module
 cache file after its module, with go's case encoding undone
 (`…/go/pkg/mod/github.com/!burnt!sushi/toml@v1.3.2/decode.go` →
-`github.com/BurntSushi/toml`). these caches decide the name even when a
-`vendor` directory sits inside or above them. a file in a go vendor tree is
+`github.com/BurntSushi/toml`). the caches are recognized under any
+`CARGO_HOME`, `GOPATH` or `GOMODCACHE` by the directories cargo and go write:
+cargo's `<name>-<16 hex digits>` index and checkout directories, and the
+`<module>@<version>` directory, whose module path starts below `pkg/mod`, else
+at the first directory from which the rest of the path is a valid go module
+path. these caches decide the name even when a `vendor` directory sits inside
+or above them. a file in a go vendor tree is
 named after its package path below the innermost `vendor/`, as the go_geiger
 analyzer does (`vendor/a/vendor/b/x.go` → `b`): that is a `.go` file, or any
 file whose directory directly below the first `vendor/` reads as a host name,
@@ -163,8 +168,7 @@ path that starts with `vendor/` is under `vendor/` too. otherwise the
 directory before the `src` component nearest the file names the crate
 (`my_crate/src/lib.rs` → `my_crate`), falling back to the first directory
 component (`crate_a/lib.rs` → `crate_a`) and to `unknown` for a bare filename.
-its kind comes from whether the path sits in a dependency cache, and its count
-from the number of results.
+its count comes from the number of results.
 
 **paths and URIs**: SARIF output writes each path as an RFC 3986 URI
 reference: a percent-encoded relative reference for a relative path, a `file:`

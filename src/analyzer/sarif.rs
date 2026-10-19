@@ -114,15 +114,16 @@ fn convert_sarif(sarif: &Sarif, opts: &ScanOpts) -> Result<ScanResult> {
                     .and_then(|r| r.start_column)
                     .unwrap_or(0) as u32;
 
-                let kind = super::classify_unit_kind(Path::new(&located));
+                let dependency = dependency_unit_name(&located);
+                let kind = if dependency.is_some() {
+                    UnitKind::Dep
+                } else {
+                    UnitKind::Workspace
+                };
                 let unit_name = own_run
                     .then(|| logical_unit_name(location))
                     .flatten()
-                    .or_else(|| {
-                        (kind == UnitKind::Dep)
-                            .then(|| dependency_unit_name(&located))
-                            .flatten()
-                    })
+                    .or(dependency)
                     .unwrap_or_else(|| extract_unit_name(&file));
 
                 let occurrence = Occurrence {
@@ -388,9 +389,7 @@ fn infer_language(tool_name: &str) -> String {
 
 /// extract a unit name from an artifact's file path.
 ///
-/// a file in the cargo registry names its crate without the version
-/// (`…/registry/src/<index>/serde-1.0.200/src/lib.rs` → `serde`). otherwise the
-/// directory before the `src` component nearest the file names the crate
+/// the directory before the `src` component nearest the file names the crate
 /// (`crate_name/src/lib.rs` → `crate_name`), falling back to the first
 /// directory component when there is none, or `"unknown"` for bare filenames.
 fn extract_unit_name(file: &str) -> String {
@@ -404,17 +403,13 @@ fn extract_unit_name(file: &str) -> String {
 
     let dirs = &components[..components.len() - 1];
 
-    if let Some(name) = registry_crate(dirs) {
-        return name;
-    }
-
     match dirs.iter().rposition(|dir| dir == "src") {
         Some(i) if i > 0 => dirs[i - 1].clone(),
         _ => dirs[0].clone(),
     }
 }
 
-/// the dependency a file under a dependency cache or `vendor/` belongs to.
+/// the dependency a file under a dependency cache or `vendor/` belongs to; `None` for a workspace file.
 fn dependency_unit_name(located: &str) -> Option<String> {
     let components = normal_components(located);
     let (file_name, dirs) = components.split_last()?;
@@ -472,37 +467,34 @@ fn normal_components(path: &str) -> Vec<String> {
 }
 
 fn registry_crate(dirs: &[String]) -> Option<String> {
-    dirs.windows(5)
-        .find(|w| w[0] == ".cargo" && w[1] == "registry" && w[2] == "src")
-        .map(|w| strip_crate_version(&w[4]).to_string())
+    dirs.windows(4)
+        .find(|w| w[0] == "registry" && w[1] == "src" && strip_cargo_hash(&w[2]).is_some())
+        .map(|w| strip_crate_version(&w[3]).to_string())
 }
 
 fn git_checkout_crate(dirs: &[String]) -> Option<String> {
     let start = dirs
         .windows(3)
-        .position(|w| w[0] == ".cargo" && w[1] == "git" && w[2] == "checkouts")?;
-    let [checkout, _rev, below @ ..] = &dirs[start + 3..] else {
+        .position(|w| w[0] == "git" && w[1] == "checkouts" && strip_cargo_hash(&w[2]).is_some())?;
+    let [checkout, _rev, below @ ..] = &dirs[start + 2..] else {
         return None;
     };
     match below.iter().rposition(|dir| dir == "src") {
         Some(i) if i > 0 => Some(below[i - 1].clone()),
-        _ => Some(strip_checkout_hash(checkout).to_string()),
+        _ => strip_cargo_hash(checkout).map(str::to_string),
     }
 }
 
-/// `my_crate-0123456789abcdef` → `my_crate`: cargo suffixes a hash of the repository url.
-fn strip_checkout_hash(dir: &str) -> &str {
-    match dir.rsplit_once('-') {
-        Some((name, hash)) if !hash.is_empty() && hash.chars().all(|c| c.is_ascii_hexdigit()) => {
-            name
-        }
-        _ => dir,
-    }
+/// `my_crate-0123456789abcdef` → `my_crate`: cargo's `<name>-<16 hex digits>[-shallow]` directories.
+fn strip_cargo_hash(dir: &str) -> Option<&str> {
+    let dir = dir.strip_suffix("-shallow").unwrap_or(dir);
+    let (name, hash) = dir.rsplit_once('-')?;
+    (hash.len() == 16 && hash.bytes().all(|b| b.is_ascii_hexdigit())).then_some(name)
 }
 
 fn vendored_crate(located: &str) -> Option<String> {
     let below = go_geiger::below_first_vendor(located)?;
-    below.split_once('/').map(|(dir, _)| dir.to_string())
+    below.split('/').next().map(str::to_string)
 }
 
 /// `serde-1.0.200` → `serde`: the version follows the last `-` before the first `.`.
@@ -561,16 +553,41 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_unit_name_names_registry_crates_without_version() {
+    fn test_dependency_caches_are_read_from_their_layout_under_any_root() {
         let registry = "/home/u/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f";
         let cases = [
-            ("serde-1.0.200/src/lib.rs", "serde"),
-            ("proc-macro2-1.0.86/build.rs", "proc-macro2"),
-            ("foo-2d-0.1.0-alpha.1/src/lib.rs", "foo-2d"),
-            ("windows_x86_64_gnu-0.52.6/src/lib.rs", "windows_x86_64_gnu"),
+            (format!("{registry}/serde-1.0.200/src/lib.rs"), Some("serde")),
+            (format!("{registry}/proc-macro2-1.0.86/build.rs"), Some("proc-macro2")),
+            (format!("{registry}/foo-2d-0.1.0-alpha.1/src/lib.rs"), Some("foo-2d")),
+            (
+                format!("{registry}/windows_x86_64_gnu-0.52.6/src/lib.rs"),
+                Some("windows_x86_64_gnu"),
+            ),
+            (
+                "/usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libc-0.2.155/src/unix/mod.rs".into(),
+                Some("libc"),
+            ),
+            (
+                "C:/cargo/registry/src/github.com-1ecc6299db9ec823/libc-0.2.155/src/lib.rs".into(),
+                Some("libc"),
+            ),
+            (
+                "/home/u/.cargo/registry/src/github.com-1ecc6299db9ec823-shallow/serde-1.0.200/src/lib.rs".into(),
+                Some("serde"),
+            ),
+            (
+                "/usr/local/cargo/git/checkouts/my_crate-fedcba9876543210/9f8e7d6/src/lib.rs".into(),
+                Some("my_crate"),
+            ),
+            ("crates/registry/src/backend-db/pg/mod.rs".into(), None),
+            (
+                "web/node_modules/.pnpm/socket.io@4.7.2/node_modules/socket.io/index.js".into(),
+                None,
+            ),
+            ("vendor-tools/gen.go".into(), None),
         ];
-        for (rest, name) in cases {
-            assert_eq!(extract_unit_name(&format!("{registry}/{rest}")), name);
+        for (path, name) in cases {
+            assert_eq!(dependency_unit_name(&path).as_deref(), name, "{path}");
         }
     }
 
@@ -818,6 +835,18 @@ mod tests {
                 1,
                 "dependency unsafe",
             ),
+            make_sarif_result(
+                "/usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libc-0.2.155/src/unix/mod.rs",
+                6,
+                1,
+                "dependency unsafe",
+            ),
+            make_sarif_result(
+                "/cache/gomod/github.com/pkg/errors@v0.9.1/errors.go",
+                7,
+                1,
+                "dependency unsafe",
+            ),
         ]);
 
         let opts = ScanOpts {
@@ -843,7 +872,7 @@ mod tests {
         let sarif_log = make_sarif(vec![
             make_sarif_result("my_crate/src/lib.rs", 1, 1, "workspace"),
             make_sarif_result(
-                "/home/user/.cargo/registry/src/index.crates.io-abc/libc-0.2.0/src/lib.rs",
+                "/home/user/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libc-0.2.0/src/lib.rs",
                 2,
                 1,
                 "registry dep",
@@ -1385,7 +1414,7 @@ mod tests {
         let mut run = make_run(
             "unsafe-budget",
             vec![own_sarif_result(
-                "/home/u/.cargo/registry/src/index.crates.io-abc/libc-0.2.0/src/lib.rs",
+                "/home/u/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libc-0.2.0/src/lib.rs",
                 7,
                 1,
                 "unsafe",
@@ -1722,13 +1751,13 @@ mod tests {
         let checkouts = "/home/u/.cargo/git/checkouts";
         let results = vec![
             make_sarif_result(
-                &format!("{checkouts}/my_crate-abc/9f8e7d6/src/lib.rs"),
+                &format!("{checkouts}/my_crate-fedcba9876543210/9f8e7d6/src/lib.rs"),
                 1,
                 1,
                 "unsafe",
             ),
             make_sarif_result(
-                &format!("{checkouts}/my_crate-abc/9f8e7d6/build.rs"),
+                &format!("{checkouts}/my_crate-fedcba9876543210/9f8e7d6/build.rs"),
                 2,
                 1,
                 "unsafe",
@@ -1794,18 +1823,15 @@ mod tests {
     }
 
     #[test]
-    fn test_unanchored_cache_paths_keep_workspace_naming() {
+    fn test_a_relative_cache_path_is_a_dependency() {
         let results = vec![make_sarif_result(
-            ".cargo/git/checkouts/my_crate-abc/9f8e7d6/src/lib.rs",
+            ".cargo/git/checkouts/my_crate-fedcba9876543210/9f8e7d6/src/lib.rs",
             1,
             1,
             "unsafe",
         )];
         let back = scan_run(make_run("rustc", results));
-        assert_eq!(
-            unit_counts(&back),
-            vec![("9f8e7d6", UnitKind::Workspace, 1)]
-        );
+        assert_eq!(unit_counts(&back), vec![dep("my_crate", 1)]);
     }
 
     #[test]
@@ -1903,6 +1929,7 @@ mod tests {
                 "/home/u/proj/vendor/mbedtls-2.28/library/aes.c",
                 "mbedtls-2.28",
             ),
+            ("/home/u/proj/vendor/x.c", "x.c"),
         ] {
             assert_eq!(dependency_unit_name(path).as_deref(), Some(unit), "{path}");
         }
