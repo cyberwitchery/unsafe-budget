@@ -156,8 +156,8 @@ pub enum UnitKind {
 impl std::fmt::Display for UnitKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            UnitKind::Workspace => write!(f, "workspace"),
-            UnitKind::Dep => write!(f, "dep"),
+            UnitKind::Workspace => f.pad("workspace"),
+            UnitKind::Dep => f.pad("dep"),
         }
     }
 }
