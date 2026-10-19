@@ -229,13 +229,44 @@ pub(crate) fn below_first_vendor(path: &str) -> Option<&str> {
 
 /// the module a file in the go module cache belongs to, without its version
 /// (`…/go/pkg/mod/github.com/!burnt!sushi/toml@v1.3.2/decode.go` → `github.com/BurntSushi/toml`).
+/// the module path starts below `pkg/mod`, else at the first directory a module path can start at.
 pub(crate) fn cached_module(path: &str) -> Option<String> {
-    let idx = path.find("/go/pkg/mod/")?;
-    let after_mod = &path[idx + 12..];
-    // format: module@version/path
-    let at_idx = after_mod.find('@')?;
-    let escaped = &after_mod[..at_idx];
-    Some(unescape_module_path(escaped).unwrap_or_else(|| escaped.to_string()))
+    let mut dirs: Vec<&str> = path.split('/').collect();
+    dirs.pop();
+    let (root, last) = dirs.iter().enumerate().find_map(|(i, dir)| {
+        let (last, version) = dir.split_once('@')?;
+        let is_version = version
+            .strip_prefix('v')
+            .is_some_and(|v| v.starts_with(|c: char| c.is_ascii_digit()));
+        is_version.then_some((i, last))
+    })?;
+    let below_pkg_mod = dirs[..root]
+        .windows(2)
+        .position(|w| w == ["pkg", "mod"])
+        .map(|i| i + 2);
+    dirs.truncate(root);
+    dirs.push(last);
+    let start = below_pkg_mod.or_else(|| (0..dirs.len()).find(|&i| is_module_path(&dirs[i..])))?;
+    let escaped = dirs[start..].join("/");
+    Some(unescape_module_path(&escaped).unwrap_or(escaped))
+}
+
+/// whether `elems` pass golang.org/x/mod's `CheckPath` character rules as an escaped module path.
+fn is_module_path(elems: &[&str]) -> bool {
+    let Some(first) = elems.first() else {
+        return false;
+    };
+    first.contains('.')
+        && !first.starts_with('-')
+        && first
+            .bytes()
+            .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'.' | b'-'))
+        && elems.iter().all(|elem| {
+            !elem.starts_with('.')
+                && elem.bytes().all(
+                    |b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'.' | b'-' | b'_' | b'~' | b'!'),
+                )
+        })
 }
 
 /// `unescapeString` from golang.org/x/mod/module: `!` + a lower-case letter is
@@ -475,6 +506,18 @@ mod tests {
             (
                 "/home/u/go/pkg/mod/github.com/!burnt!sushi/toml@v1.3.2/decode.go",
                 "github.com/BurntSushi/toml",
+            ),
+            (
+                "/cache/gomod/github.com/pkg/errors@v0.9.1/errors.go",
+                "github.com/pkg/errors",
+            ),
+            (
+                "/home/first.last/.cache/gomod/github.com/pkg/errors@v0.9.1/errors.go",
+                "github.com/pkg/errors",
+            ),
+            (
+                "/home/first.last/go/pkg/mod/github.com/pkg/errors@v0.9.1/errors.go",
+                "github.com/pkg/errors",
             ),
         ] {
             assert_eq!(cached_module(path), Some(module.into()), "{path}");

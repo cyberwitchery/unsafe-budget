@@ -153,27 +153,6 @@ pub(crate) fn apply_cargo_flags(cmd: &mut Command, opts: &ScanOpts) {
     }
 }
 
-/// classify a source-file path as a workspace unit or an external dependency.
-///
-/// returns [`UnitKind::Dep`] when the path contains an unambiguous
-/// dependency-cache marker for one of the ecosystems this tool targets, and
-/// [`UnitKind::Workspace`] otherwise.
-pub(crate) fn classify_unit_kind(path: &std::path::Path) -> UnitKind {
-    const DEP_MARKERS: &[&str] = &[
-        "/.cargo/registry/", // Rust: crates.io / registry download cache
-        "/.cargo/git/",      // Rust: git-dependency checkout cache
-        "/vendor/",          // Go: vendored dependencies
-        "/go/pkg/mod/",      // Go: module download cache
-    ];
-
-    let path = path.to_string_lossy();
-    if DEP_MARKERS.iter().any(|marker| path.contains(marker)) || path.starts_with("vendor/") {
-        UnitKind::Dep
-    } else {
-        UnitKind::Workspace
-    }
-}
-
 /// aggregate pre-collected unit counts and occurrences into sorted, filtered
 /// results.
 ///
@@ -239,7 +218,7 @@ pub(crate) fn test_spawn_guard() -> std::sync::MutexGuard<'static, ()> {
 mod tests {
     use super::*;
     use std::collections::HashMap;
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
 
     #[test]
     fn test_get_analyzer_unknown() {
@@ -428,34 +407,6 @@ mod tests {
             assert_eq!(analyzer.language, language, "{id}");
             assert!(analyzer.builtin, "{id}");
             assert_eq!(analyzer.path, None, "{id}");
-        }
-    }
-
-    #[test]
-    fn test_classify_unit_kind() {
-        let cases = [
-            (
-                "/home/user/.cargo/registry/src/index.crates.io-abc/libc-0.2.0/src/lib.rs",
-                UnitKind::Dep,
-            ),
-            (
-                "/home/user/.cargo/git/checkouts/some-crate-abc/rev/src/lib.rs",
-                UnitKind::Dep,
-            ),
-            (
-                "/home/user/project/vendor/github.com/pkg/errors/errors.go",
-                UnitKind::Dep,
-            ),
-            (
-                "/home/user/go/pkg/mod/github.com/pkg/errors@v0.9.1/errors.go",
-                UnitKind::Dep,
-            ),
-            ("crate_a/src/lib.rs", UnitKind::Workspace),
-            ("/home/user/project/src/main.rs", UnitKind::Workspace),
-            ("vendor-tools/gen.go", UnitKind::Workspace),
-        ];
-        for (path, kind) in cases {
-            assert_eq!(classify_unit_kind(Path::new(path)), kind, "{path}");
         }
     }
 
