@@ -23,14 +23,17 @@ jobs:
 
 the action downloads a pre-built release binary for the current runner and
 runs `unsafe-budget` directly (no `cargo install` required). pin the action to
-a commit and `version` to the matching tag, so the action code and the binary
-it runs stay fixed.
+a commit. the action now reads its default binary version from the
+`Cargo.toml` in that action checkout, so dependabot can update the action and
+binary together by changing only `uses:`. omit `version` after upgrading to
+an action ref containing this change. older refs, including v0.5.2 in these
+examples, still need an explicit matching `version`.
 
 inputs:
 
 - `mode`: `scan`, `check`, `update`, or `plugins` (default: `check`)
 - `args`: additional cli args, split on whitespace (default: empty)
-- `version`: release tag or `latest` (default: `latest`)
+- `version`: release tag or `latest` (default: the action's package version)
 - `repository`: release source repo (default: `cyberwitchery/unsafe-budget`)
 - `working-directory`: execution directory (default: `.`)
 - `verify`: check the downloaded archive's build provenance with

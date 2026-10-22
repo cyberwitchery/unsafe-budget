@@ -12,9 +12,9 @@ inputs:
     required: false
     default: ""
   version:
-    description: Release tag to install (for example v0.1.1), or "latest"
+    description: Release tag to install (defaults to the action's package version), or "latest"
     required: false
-    default: latest
+    default: ""
   repository:
     description: Repository to download release assets from
     required: false
@@ -91,20 +91,9 @@ runs:
         INPUT_VERSION: ${{ inputs.version }}
         INPUT_REPOSITORY: ${{ inputs.repository }}
         GH_TOKEN: ${{ inputs.token }}
+        ACTION_PATH: ${{ github.action_path }}
       run: |
-        set -euo pipefail
-        if [ "${INPUT_VERSION}" != "latest" ]; then
-          echo "tag=${INPUT_VERSION}" >> "${GITHUB_OUTPUT}"
-          exit 0
-        fi
-
-        tag="$(gh api "repos/${INPUT_REPOSITORY}/releases/latest" --jq .tag_name)"
-        if [ -z "${tag}" ]; then
-          echo "failed to resolve latest release tag of ${INPUT_REPOSITORY}" >&2
-          exit 1
-        fi
-
-        echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
+        bash "${ACTION_PATH}/scripts/action-version.sh"
 
     - name: Download and install unsafe-budget
       shell: bash
