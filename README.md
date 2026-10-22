@@ -29,6 +29,11 @@ github actions can also run via the pre-built binary action:
     version: v0.5.2
 ```
 
+the action now defaults to the package version in its own checkout. after
+upgrading to an action ref containing this change, omit `version` so
+dependabot only needs to update `uses:`. the v0.5.2 ref above still needs the
+explicit version. `version: latest` remains available as an override.
+
 ## features
 
 - **multi-language**: rust (rustc lint, cargo-geiger) and go (go-geiger)
