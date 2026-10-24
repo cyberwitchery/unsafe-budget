@@ -64,6 +64,7 @@ fn convert_sarif(sarif: &Sarif, opts: &ScanOpts) -> Result<ScanResult> {
     let mut occurrences: Vec<Occurrence> = Vec::new();
     let mut parse_warnings: Vec<ParseWarning> = Vec::new();
     let mut counts: HashMap<String, (UnitKind, u64)> = HashMap::new();
+    let mut recorded_runs: Vec<Vec<Unit>> = Vec::new();
 
     for run in &sarif.runs {
         let own_run = is_own_run(run);
@@ -138,10 +139,16 @@ fn convert_sarif(sarif: &Sarif, opts: &ScanOpts) -> Result<ScanResult> {
         }
 
         match recorded {
-            Some(units) => accumulate_recorded(&mut counts, units),
-            None => accumulate_derived(&mut counts, &run_occurrences),
+            Some(units) => {
+                recorded_runs.push(units);
+                occurrences.extend(run_occurrences.into_iter().map(|(occ, _)| occ));
+            }
+            None => accumulate_derived(&mut counts, &mut occurrences, run_occurrences, opts),
         }
-        occurrences.extend(run_occurrences.into_iter().map(|(occ, _)| occ));
+    }
+
+    for units in recorded_runs {
+        accumulate_recorded(&mut counts, units);
     }
 
     let (units, details) = super::aggregate_units(counts, occurrences, opts);
@@ -163,11 +170,22 @@ fn accumulate_recorded(counts: &mut HashMap<String, (UnitKind, u64)>, units: Vec
 
 fn accumulate_derived(
     counts: &mut HashMap<String, (UnitKind, u64)>,
-    occurrences: &[(Occurrence, UnitKind)],
+    details: &mut Vec<Occurrence>,
+    occurrences: Vec<(Occurrence, UnitKind)>,
+    opts: &ScanOpts,
 ) {
+    let exclude_deps = opts.workspace_only || !opts.include_deps;
+
     for (occ, kind) in occurrences {
-        let entry = counts.entry(occ.unit.clone()).or_insert((*kind, 0));
+        if exclude_deps && kind == UnitKind::Dep {
+            continue;
+        }
+        let entry = counts.entry(occ.unit.clone()).or_insert((kind, 0));
+        if kind == UnitKind::Workspace {
+            entry.0 = kind;
+        }
         entry.1 += 1;
+        details.push(occ);
     }
 }
 
@@ -863,6 +881,86 @@ mod tests {
         assert_eq!(result.totals.deps_unsafe, 0);
         // the filtered dependency's detail occurrence is dropped too.
         assert_eq!(result.details.len(), 1);
+    }
+
+    #[test]
+    fn test_convert_sarif_makes_a_unit_shared_by_a_dependency_and_a_member_workspace() {
+        let member = || make_sarif_result("foo/src/lib.rs", 7, 5, "member");
+        let dependency = || {
+            make_sarif_result(
+                "/home/u/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/foo-1.0.0/src/lib.rs",
+                3,
+                5,
+                "dependency",
+            )
+        };
+        let orders = [
+            ("dependency first", vec![dependency(), member()]),
+            ("member first", vec![member(), dependency()]),
+        ];
+        let rows = [
+            (
+                "default",
+                ScanOpts {
+                    include_deps: true,
+                    ..Default::default()
+                },
+                vec!["dependency", "member"],
+            ),
+            (
+                "workspace only",
+                ScanOpts {
+                    workspace_only: true,
+                    include_deps: true,
+                    ..Default::default()
+                },
+                vec!["member"],
+            ),
+            ("no deps", ScanOpts::default(), vec!["member"]),
+        ];
+
+        for (order, results) in orders {
+            let sarif_log = make_sarif(results);
+            for (label, opts, messages) in &rows {
+                let scan = convert_sarif(&sarif_log, opts).unwrap();
+                let details: Vec<_> = scan
+                    .details
+                    .iter()
+                    .map(|occ| occ.message.as_deref().unwrap())
+                    .collect();
+                let count = messages.len() as u64;
+                assert_eq!(
+                    unit_counts(&scan),
+                    vec![("foo", UnitKind::Workspace, count)],
+                    "{order}, {label}"
+                );
+                assert_eq!(&details, messages, "{order}, {label}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_a_recorded_kind_wins_over_a_derived_one_in_either_run_order() {
+        let opts = round_trip_opts();
+        let units = vec![Unit {
+            name: "foo".into(),
+            kind: UnitKind::Dep,
+            unsafe_count: 1,
+        }];
+        let scan = ScanResult::from_parts("rustc_unsafe_lint", "rust", &opts, units, vec![]);
+        let recorded = crate::sarif::scan_to_sarif(&scan).runs.remove(0);
+        let derived = make_run(
+            "clippy",
+            vec![make_sarif_result("foo/src/lib.rs", 7, 5, "member")],
+        );
+
+        for runs in [
+            vec![recorded.clone(), derived.clone()],
+            vec![derived, recorded],
+        ] {
+            let back = reread(&make_multi_run_sarif(runs), &opts);
+            assert_eq!(unit_counts(&back), vec![dep("foo", 2)]);
+        }
     }
 
     #[test]
