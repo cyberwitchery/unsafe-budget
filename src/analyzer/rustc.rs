@@ -270,11 +270,7 @@ fn aggregate_occurrences(
         if exclude_deps && kind == UnitKind::Dep {
             continue;
         }
-        let entry = counts.entry(occ.unit.clone()).or_insert((kind, 0));
-        if kind == UnitKind::Workspace {
-            entry.0 = kind;
-        }
-        entry.1 += 1;
+        super::add_unit_count(&mut counts, occ.unit.clone(), kind, 1);
         details.push(occ);
     }
 

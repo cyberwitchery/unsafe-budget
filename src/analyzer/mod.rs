@@ -153,6 +153,20 @@ pub(crate) fn apply_cargo_flags(cmd: &mut Command, opts: &ScanOpts) {
     }
 }
 
+/// add `count` to the unit `name`; a workspace row makes the unit workspace code.
+pub(crate) fn add_unit_count(
+    counts: &mut HashMap<String, (UnitKind, u64)>,
+    name: String,
+    kind: UnitKind,
+    count: u64,
+) {
+    let entry = counts.entry(name).or_insert((kind, 0));
+    if kind == UnitKind::Workspace {
+        entry.0 = kind;
+    }
+    entry.1 += count;
+}
+
 /// aggregate pre-collected unit counts and occurrences into sorted, filtered
 /// results.
 ///

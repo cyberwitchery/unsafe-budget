@@ -235,8 +235,9 @@ the host sanitizes this output: `analyzer_id` and `scope` are overwritten with
 its own values, units whose `kind` is `dep` are filtered out under
 `--workspace-only`/`--no-deps`, and `totals` are recomputed from the surviving
 units. `tool_version`, `language`, `units`, and `details` are kept as reported.
-`scope`, `analyzer_id`, and `totals` must still be present for the JSON to
-parse.
+rows in `units` that name the same unit are added together, and a `workspace`
+row makes that unit workspace code. `scope`, `analyzer_id`, and `totals` must
+still be present for the JSON to parse.
 
 each `details` entry has a `unit`, a `file`, a 1-indexed `line` and `col`, and
 an optional `message`. a `line` or `col` of `0` means the position is unknown:
