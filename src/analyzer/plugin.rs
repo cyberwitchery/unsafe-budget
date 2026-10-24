@@ -1,5 +1,5 @@
 use crate::analyzer::process::{self, Run};
-use crate::analyzer::{aggregate_units, Analyzer, AnalyzerInfo};
+use crate::analyzer::{add_unit_count, aggregate_units, Analyzer, AnalyzerInfo};
 use crate::error::{Error, Result};
 use crate::model::{ScanOpts, ScanResult, Scope, Totals, UnitKind};
 use std::collections::HashMap;
@@ -192,14 +192,18 @@ fn parse_plugin_output(
 /// overwrite the host-authoritative fields of a plugin's self-reported result.
 ///
 /// `analyzer_id` and `scope` are set to the host's values, dependency units are
-/// filtered per `opts`, and `totals` are recomputed from the surviving units.
-/// `tool_version`, `language`, and findings are kept as the plugin reported them.
+/// filtered per `opts`, units reported more than once are summed, and `totals`
+/// are recomputed from the surviving units. `tool_version`, `language`, and
+/// findings are kept as the plugin reported them.
 fn sanitize_plugin_result(id: &str, opts: &ScanOpts, result: ScanResult) -> ScanResult {
-    let counts: HashMap<String, (UnitKind, u64)> = result
-        .units
-        .into_iter()
-        .map(|u| (u.name, (u.kind, u.unsafe_count)))
-        .collect();
+    let exclude_deps = opts.workspace_only || !opts.include_deps;
+    let mut counts: HashMap<String, (UnitKind, u64)> = HashMap::new();
+    for unit in result.units {
+        if exclude_deps && unit.kind == UnitKind::Dep {
+            continue;
+        }
+        add_unit_count(&mut counts, unit.name, unit.kind, unit.unsafe_count);
+    }
     let (units, details) = aggregate_units(counts, result.details, opts);
     let totals = Totals::from_units(&units);
 
@@ -584,6 +588,77 @@ mod tests {
             out.details.iter().all(|d| d.unit == "app"),
             "dependency occurrences must be dropped"
         );
+    }
+
+    #[test]
+    fn sanitize_sums_repeated_units_and_workspace_wins() {
+        let with_deps = ScanOpts {
+            include_deps: true,
+            ..Default::default()
+        };
+        let workspace_only = ScanOpts {
+            workspace_only: true,
+            ..Default::default()
+        };
+        let cases = [
+            (
+                "dep rows",
+                &with_deps,
+                vec![("lodash", UnitKind::Dep, 5), ("lodash", UnitKind::Dep, 2)],
+                vec![("lodash", UnitKind::Dep, 7)],
+            ),
+            (
+                "workspace then dep",
+                &with_deps,
+                vec![("app", UnitKind::Workspace, 5), ("app", UnitKind::Dep, 2)],
+                vec![("app", UnitKind::Workspace, 7)],
+            ),
+            (
+                "dep then workspace",
+                &with_deps,
+                vec![("app", UnitKind::Dep, 2), ("app", UnitKind::Workspace, 5)],
+                vec![("app", UnitKind::Workspace, 7)],
+            ),
+            (
+                "workspace then dep, workspace only",
+                &workspace_only,
+                vec![("app", UnitKind::Workspace, 5), ("app", UnitKind::Dep, 2)],
+                vec![("app", UnitKind::Workspace, 5)],
+            ),
+            (
+                "dep then workspace, workspace only",
+                &workspace_only,
+                vec![("app", UnitKind::Dep, 2), ("app", UnitKind::Workspace, 5)],
+                vec![("app", UnitKind::Workspace, 5)],
+            ),
+            (
+                "dep rows, workspace only",
+                &workspace_only,
+                vec![("lodash", UnitKind::Dep, 5), ("lodash", UnitKind::Dep, 2)],
+                vec![],
+            ),
+        ];
+        for (case, opts, rows, expected) in cases {
+            let units = rows
+                .into_iter()
+                .map(|(name, kind, unsafe_count)| Unit {
+                    name: name.into(),
+                    kind,
+                    unsafe_count,
+                })
+                .collect();
+            let out = sanitize_plugin_result(
+                "plug",
+                opts,
+                plugin_scan_result(host_scope(), units, Totals::default(), vec![]),
+            );
+            let got: Vec<_> = out
+                .units
+                .iter()
+                .map(|u| (u.name.as_str(), u.kind, u.unsafe_count))
+                .collect();
+            assert_eq!(got, expected, "{case}");
+        }
     }
 
     #[test]

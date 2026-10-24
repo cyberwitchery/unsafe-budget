@@ -460,11 +460,7 @@ fn convert_reports(
                 continue;
             }
 
-            let entry = counts.entry(id.name.clone()).or_insert((kind, 0));
-            if kind == UnitKind::Workspace {
-                entry.0 = kind;
-            }
-            entry.1 += unsafe_count;
+            super::add_unit_count(&mut counts, id.name.clone(), kind, unsafe_count);
         }
     }
 
