@@ -1,6 +1,6 @@
 # changelog
 
-## Unreleased
+## [0.5.3] - 2026-10-25
 
 - fix: the github action defaults to its own package version instead of `latest`. after upgrading the action, omit `version` so dependabot updates the action and binary together. explicit release tags and `version: latest` still work.
 - fix: the per-unit table in `scan` and `check` text output lines up with its header. previously every column after KIND sat left of its heading.
