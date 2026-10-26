@@ -1,5 +1,9 @@
 # changelog
 
+## Unreleased
+
+- fix: when runs in unsafe-budget's own SARIF record one unit both as `workspace` and as `dep`, the sarif analyzer counts it as workspace code whichever run comes first, and `--workspace-only` and `--no-deps` leave the `dep` run's count and results out of it. previously the last run decided the unit's kind and every run counted: when the dependency's run came last, the member's unsafe counted as the dependency's, so `check` passed a workspace cap the member exceeded and `--workspace-only` dropped the member, and when it came first, `--workspace-only` counted the dependency's unsafe as the member's. baselines holding such a unit need `unsafe-budget update`.
+
 ## [0.5.3] - 2026-10-25
 
 - fix: a plugin that reports one unit in several `units` rows has those rows added together, and a `workspace` row makes the unit workspace code, as the `rustc_unsafe_lint` and `cargo_geiger` analyzers do. previously only the unit's last row counted, so a plugin reporting `lodash` as 5 and then 2 scanned as 2 and `check` passed a cap of 6, and under `--workspace-only` or `--no-deps` a workspace unit whose last row was a dependency disappeared. baselines written from such a plugin by earlier versions record only the last row: run `unsafe-budget update` after upgrading.
