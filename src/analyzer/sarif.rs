@@ -12,7 +12,7 @@ use crate::sarif::{
     UNIT_LOGICAL_KIND,
 };
 use serde_sarif::sarif::{self, Sarif};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 pub struct SarifAnalyzer;
@@ -64,7 +64,7 @@ fn convert_sarif(sarif: &Sarif, opts: &ScanOpts) -> Result<ScanResult> {
     let mut occurrences: Vec<Occurrence> = Vec::new();
     let mut parse_warnings: Vec<ParseWarning> = Vec::new();
     let mut counts: HashMap<String, (UnitKind, u64)> = HashMap::new();
-    let mut recorded_runs: Vec<Vec<Unit>> = Vec::new();
+    let mut recorded_counts: HashMap<String, (UnitKind, u64)> = HashMap::new();
 
     for run in &sarif.runs {
         let own_run = is_own_run(run);
@@ -139,16 +139,22 @@ fn convert_sarif(sarif: &Sarif, opts: &ScanOpts) -> Result<ScanResult> {
         }
 
         match recorded {
-            Some(units) => {
-                recorded_runs.push(units);
-                occurrences.extend(run_occurrences.into_iter().map(|(occ, _)| occ));
-            }
+            Some(units) => accumulate_recorded(
+                &mut recorded_counts,
+                &mut occurrences,
+                units,
+                run_occurrences,
+                opts,
+            ),
             None => accumulate_derived(&mut counts, &mut occurrences, run_occurrences, opts),
         }
     }
 
-    for units in recorded_runs {
-        accumulate_recorded(&mut counts, units);
+    // a recorded kind overrides one another run derived from a file path.
+    for (name, (kind, count)) in recorded_counts {
+        let entry = counts.entry(name).or_insert((kind, 0));
+        entry.0 = kind;
+        entry.1 += count;
     }
 
     let (units, details) = super::aggregate_units(counts, occurrences, opts);
@@ -158,14 +164,33 @@ fn convert_sarif(sarif: &Sarif, opts: &ScanOpts) -> Result<ScanResult> {
     Ok(scan)
 }
 
-/// fold a run's recorded units into the running per-unit counts; a recorded
-/// kind overrides one another run derived from a file path.
-fn accumulate_recorded(counts: &mut HashMap<String, (UnitKind, u64)>, units: Vec<Unit>) {
+/// fold a run's recorded units into `counts`; when deps are excluded, a
+/// dependency unit adds its kind but no count, and its occurrences are dropped.
+fn accumulate_recorded(
+    counts: &mut HashMap<String, (UnitKind, u64)>,
+    details: &mut Vec<Occurrence>,
+    units: Vec<Unit>,
+    occurrences: Vec<(Occurrence, UnitKind)>,
+    opts: &ScanOpts,
+) {
+    let exclude_deps = opts.workspace_only || !opts.include_deps;
+    let mut excluded = HashSet::new();
+
     for unit in units {
-        let entry = counts.entry(unit.name).or_insert((unit.kind, 0));
-        entry.0 = unit.kind;
-        entry.1 += unit.unsafe_count;
+        let count = if exclude_deps && unit.kind == UnitKind::Dep {
+            excluded.insert(unit.name.clone());
+            0
+        } else {
+            unit.unsafe_count
+        };
+        super::add_unit_count(counts, unit.name, unit.kind, count);
     }
+    details.extend(
+        occurrences
+            .into_iter()
+            .map(|(occ, _)| occ)
+            .filter(|occ| !excluded.contains(&occ.unit)),
+    );
 }
 
 fn accumulate_derived(
@@ -180,11 +205,7 @@ fn accumulate_derived(
         if exclude_deps && kind == UnitKind::Dep {
             continue;
         }
-        let entry = counts.entry(occ.unit.clone()).or_insert((kind, 0));
-        if kind == UnitKind::Workspace {
-            entry.0 = kind;
-        }
-        entry.1 += 1;
+        super::add_unit_count(counts, occ.unit.clone(), kind, 1);
         details.push(occ);
     }
 }
@@ -894,9 +915,21 @@ mod tests {
                 "dependency",
             )
         };
+        let recorded = |result| {
+            let scan = convert_sarif(&make_sarif(vec![result]), &round_trip_opts()).unwrap();
+            crate::sarif::scan_to_sarif(&scan).runs.remove(0)
+        };
         let orders = [
-            ("dependency first", vec![dependency(), member()]),
-            ("member first", vec![member(), dependency()]),
+            ("dependency first", make_sarif(vec![dependency(), member()])),
+            ("member first", make_sarif(vec![member(), dependency()])),
+            (
+                "recorded dependency first",
+                make_multi_run_sarif(vec![recorded(dependency()), recorded(member())]),
+            ),
+            (
+                "recorded member first",
+                make_multi_run_sarif(vec![recorded(member()), recorded(dependency())]),
+            ),
         ];
         let rows = [
             (
@@ -919,10 +952,9 @@ mod tests {
             ("no deps", ScanOpts::default(), vec!["member"]),
         ];
 
-        for (order, results) in orders {
-            let sarif_log = make_sarif(results);
+        for (order, sarif_log) in &orders {
             for (label, opts, messages) in &rows {
-                let scan = convert_sarif(&sarif_log, opts).unwrap();
+                let scan = convert_sarif(sarif_log, opts).unwrap();
                 let details: Vec<_> = scan
                     .details
                     .iter()
@@ -958,8 +990,11 @@ mod tests {
             vec![recorded.clone(), derived.clone()],
             vec![derived, recorded],
         ] {
-            let back = reread(&make_multi_run_sarif(runs), &opts);
+            let sarif_log = make_multi_run_sarif(runs);
+            let back = reread(&sarif_log, &opts);
             assert_eq!(unit_counts(&back), vec![dep("foo", 2)]);
+            let no_deps = reread(&sarif_log, &ScanOpts::default());
+            assert_eq!(unit_counts(&no_deps), vec![]);
         }
     }
 
