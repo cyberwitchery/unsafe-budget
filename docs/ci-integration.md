@@ -41,6 +41,28 @@ inputs:
   and including v0.5.1 are not attested and need `verify: false`.
 - `token`: token for resolving `latest` and verifying attestations
   (default: `github.token`)
+- `lock-artifact`: when `check` finds a violation, run `update` and upload the
+  new lock under this artifact name (default: `unsafe-budget-lock`, empty
+  disables it)
+
+the action's `lock` output is the path of that lock, empty without a violation.
+
+### accepting a violation
+
+unsafe counts depend on the platform (architecture-specific code in
+dependencies), so `unsafe-budget update` on a laptop writes a different lock
+than the ci runner checks. on a violation the action keeps the runner's lock
+as the `unsafe-budget-lock` artifact. after reviewing the new unsafe, accept it
+from a clone of the repository:
+
+```sh
+scripts/accept-unsafe.sh <pr>
+```
+
+the script, in this repository, prints each changed unit, asks, then commits
+the artifact's lock to the pull request's branch and pushes. it needs `gh`,
+refuses a branch that moved since the failing run, and refuses a lock whose
+tool version or scope differs from the committed one.
 
 example with extra flags:
 

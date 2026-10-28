@@ -34,6 +34,18 @@ inputs:
     description: GitHub token used to resolve "latest" and to verify attestations
     required: false
     default: ${{ github.token }}
+  lock-artifact:
+    description: >
+      When `check` finds a budget violation, run `update` and upload the new
+      `unsafe-budget.lock` as an artifact of this name, for
+      `scripts/accept-unsafe.sh`. Empty disables it.
+    required: false
+    default: unsafe-budget-lock
+
+outputs:
+  lock:
+    description: Path of the lock `update` wrote after a violation, relative to the workspace; empty otherwise
+    value: ${{ steps.run.outputs.lock }}
 
 runs:
   using: composite
@@ -142,12 +154,52 @@ runs:
         echo "${install_dir}" >> "${GITHUB_PATH}"
 
     - name: Run unsafe-budget
+      id: run
       shell: bash
       working-directory: ${{ inputs.working-directory }}
       env:
         INPUT_MODE: ${{ inputs.mode }}
         INPUT_ARGS: ${{ inputs.args }}
+        INPUT_LOCK_ARTIFACT: ${{ inputs.lock-artifact }}
       run: |
         set -euo pipefail
         read -r -a args <<< "${INPUT_ARGS}"
-        unsafe-budget "${INPUT_MODE}" ${args[@]+"${args[@]}"}
+        status=0
+        unsafe-budget "${INPUT_MODE}" ${args[@]+"${args[@]}"} || status=$?
+        echo "status=${status}" >> "${GITHUB_OUTPUT}"
+
+        # counts differ between platforms, so a violation keeps this runner's
+        # lock. only a lock that update changed is kept: in caps mode the fix
+        # is the config, not the lock.
+        if [ "${status}" = 2 ] && [ "${INPUT_MODE}" = check ] && [ -n "${INPUT_LOCK_ARTIFACT}" ]; then
+          unsafe-budget update ${args[@]+"${args[@]}"}
+          lock="$(git -C "${GITHUB_WORKSPACE}" status --porcelain -- ':(glob)**/unsafe-budget.lock' | awk '$1 ~ /M$/ { print $2; exit }')"
+          if [ -n "${lock}" ]; then
+            stage="${RUNNER_TEMP}/unsafe-budget-lock"
+            mkdir -p "${stage}"
+            cp "${GITHUB_WORKSPACE}/${lock}" "${stage}/unsafe-budget.lock"
+            echo "${lock}" > "${stage}/path"
+            echo "lock=${lock}" >> "${GITHUB_OUTPUT}"
+            echo "stage=${stage}" >> "${GITHUB_OUTPUT}"
+          fi
+        fi
+
+    - name: Upload lock
+      if: steps.run.outputs.stage != ''
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: ${{ inputs.lock-artifact }}
+        path: ${{ steps.run.outputs.stage }}
+
+    - name: Report
+      if: steps.run.outputs.status != '0'
+      shell: bash
+      env:
+        STATUS: ${{ steps.run.outputs.status }}
+        LOCK: ${{ steps.run.outputs.lock }}
+        ARTIFACT: ${{ inputs.lock-artifact }}
+      run: |
+        if [ -n "${LOCK}" ]; then
+          echo "::error::unsafe budget exceeded. after review, accept with scripts/accept-unsafe.sh <pr> from cyberwitchery/unsafe-budget (artifact ${ARTIFACT}, ${LOCK})"
+        fi
+        exit "${STATUS}"
