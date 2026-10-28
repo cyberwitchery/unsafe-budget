@@ -62,7 +62,8 @@ scripts/accept-unsafe.sh <pr>
 the script, in this repository, prints each changed unit, asks, then commits
 the artifact's lock to the pull request's branch and pushes. it needs `gh`,
 refuses a branch that moved since the failing run, and refuses a lock whose
-tool version or scope differs from the committed one.
+analyzer or scope differs from the committed one. a new tool version is shown,
+not refused.
 
 example with extra flags:
 
