@@ -1,6 +1,6 @@
 # changelog
 
-## Unreleased
+## [0.5.4] - 2026-10-28
 
 - add: on a budget violation, the github action runs `update` and uploads the runner's lock as the `unsafe-budget-lock` artifact (`lock-artifact` input, `lock` output). `scripts/accept-unsafe.sh <pr>` commits it to the pull request after review.
 - fix: when runs in unsafe-budget's own SARIF record one unit both as `workspace` and as `dep`, the sarif analyzer counts it as workspace code whichever run comes first, and `--workspace-only` and `--no-deps` leave the `dep` run's count and results out of it. previously the last run decided the unit's kind and every run counted: when the dependency's run came last, the member's unsafe counted as the dependency's, so `check` passed a workspace cap the member exceeded and `--workspace-only` dropped the member, and when it came first, `--workspace-only` counted the dependency's unsafe as the member's. baselines holding such a unit need `unsafe-budget update`.
