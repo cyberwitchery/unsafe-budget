@@ -1,5 +1,9 @@
 # changelog
 
+## Unreleased
+
+- fix: `scripts/accept-unsafe.sh` accepts a lock written by a newer unsafe-budget and shows the tool version change. previously the first violation after upgrading the action was refused.
+
 ## [0.5.4] - 2026-10-28
 
 - add: on a budget violation, the github action runs `update` and uploads the runner's lock as the `unsafe-budget-lock` artifact (`lock-artifact` input, `lock` output). `scripts/accept-unsafe.sh <pr>` commits it to the pull request after review.

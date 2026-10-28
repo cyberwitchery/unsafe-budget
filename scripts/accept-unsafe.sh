@@ -28,9 +28,13 @@ units() {
   ' "$1" | sort
 }
 
-# everything outside the unit counts: tool version, analyzer, scope.
+# everything outside the unit counts but the tool version: analyzer, scope.
 header() {
-  sed -n '1,/^\[totals\]/p' "$1"
+  sed -n '1,/^\[totals\]/p' "$1" | grep -v '^tool_version = '
+}
+
+tool_version() {
+  sed -n 's/^tool_version = "\(.*\)"$/\1/p' "$1"
 }
 
 pr="${1:-}"
@@ -71,12 +75,14 @@ old="$work/tree/$lock"
 new="$work/lock/unsafe-budget.lock"
 [ -f "$old" ] || die "#$pr has no $lock"
 diff -q <(header "$old") <(header "$new") >/dev/null ||
-  die "the artifact's tool version or scope differs from $lock, update it by hand"
+  die "the artifact's analyzer or scope differs from $lock, update it by hand"
 
 changes="$(join -a1 -a2 -e - -o 0,1.2,2.2 <(units "$old") <(units "$new") | awk '$2 != $3')"
 [ -n "$changes" ] || die "the artifact matches $lock, nothing to accept"
 
 echo "#$pr ($branch), $lock:"
+[ "$(tool_version "$old")" = "$(tool_version "$new")" ] ||
+  echo "  tool version $(tool_version "$old") -> $(tool_version "$new")"
 echo "$changes" | awk '{ printf "  %-30s %6s -> %s\n", $1, $2, $3 }'
 read -r -p "accept? [y/N] " answer </dev/tty
 [ "$answer" = y ] || die "not accepted"
