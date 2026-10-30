@@ -134,25 +134,17 @@ fn run_cargo_check(opts: &ScanOpts) -> Result<(Vec<u8>, String)> {
         }
     };
 
+    check_cargo_output(&output)?;
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-    check_cargo_output(&output.status, &output.stdout, &stderr)?;
     Ok((output.stdout, stderr))
 }
 
-/// check whether cargo's output indicates an infrastructure failure.
-/// warnings cause non-zero exit but still produce JSON diagnostics on stdout,
-/// so a non-zero exit alone isn't an error. but empty stdout with a non-zero exit
-/// means cargo itself broke (missing toolchain, linker error, network failure)
-/// and must not be silently treated as zero violations.
-fn check_cargo_output(
-    status: &std::process::ExitStatus,
-    stdout: &[u8],
-    stderr: &str,
-) -> Result<()> {
-    if !status.success() && stdout.is_empty() {
+/// a failed cargo check left crates unchecked, so its diagnostics are an incomplete count.
+fn check_cargo_output(output: &process::Output) -> Result<()> {
+    if !output.status.success() {
         return Err(Error::Cargo {
             message: "cargo check failed".into(),
-            stderr: stderr.to_string(),
+            stderr: String::from_utf8_lossy(&output.stderr).to_string(),
         });
     }
     Ok(())
@@ -301,19 +293,24 @@ mod tests {
 
         fn exit_failure() -> std::process::ExitStatus {
             // waitpid raw status: exit code in bits 8-15
-            std::process::ExitStatus::from_raw(1 << 8)
+            std::process::ExitStatus::from_raw(101 << 8)
         }
 
         #[test]
-        fn empty_stdout_on_failure_is_an_error_carrying_stderr() {
-            let cases: [(_, &[u8], &str, bool); 6] = [
+        fn failed_cargo_check_is_an_error_carrying_stderr() {
+            let cases: [(_, &[u8], &str, bool); 7] = [
                 (exit_success(), b"output", "", true),
-                // warnings cause non-zero exit but produce JSON on stdout
                 (
-                    exit_failure(),
+                    exit_success(),
                     b"{\"reason\":\"compiler-message\"}",
                     "warning: unused variable",
                     true,
+                ),
+                (
+                    exit_failure(),
+                    b"{\"reason\":\"compiler-message\"}\n{\"reason\":\"build-finished\",\"success\":false}",
+                    "error: could not compile `app` (lib) due to 1 previous error",
+                    false,
                 ),
                 (
                     exit_failure(),
@@ -331,7 +328,12 @@ mod tests {
                 ),
             ];
             for (status, stdout, stderr, ok) in cases {
-                match check_cargo_output(&status, stdout, stderr) {
+                let output = process::Output {
+                    status,
+                    stdout: stdout.to_vec(),
+                    stderr: stderr.as_bytes().to_vec(),
+                };
+                match check_cargo_output(&output) {
                     Ok(()) => assert!(ok, "{stderr:?}"),
                     Err(Error::Cargo { stderr: got, .. }) => {
                         assert!(!ok, "{stderr:?}");

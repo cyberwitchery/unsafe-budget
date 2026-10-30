@@ -272,6 +272,36 @@ fn test_workspace_only_and_no_deps_exclude_dependency_units() {
     }
 }
 
+#[test]
+#[ignore = "runs cargo"]
+fn test_scan_and_update_fail_when_a_crate_does_not_compile() {
+    let tmp = tempfile::tempdir().unwrap();
+    let manifest = tmp.path().join("Cargo.toml");
+    fs::write(
+        &manifest,
+        "[package]\nname = \"broken\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    fs::create_dir(tmp.path().join("src")).unwrap();
+    fs::write(
+        tmp.path().join("src/lib.rs"),
+        "pub fn f() -> u8 { missing() }\n",
+    )
+    .unwrap();
+
+    for command in ["scan", "update"] {
+        let output = unsafe_budget(tmp.path(), &manifest, &[command])
+            .output()
+            .unwrap();
+        assert!(!output.status.success(), "{command}: {output:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("could not compile `broken`"),
+            "{command}: {output:?}"
+        );
+    }
+    assert!(!tmp.path().join("unsafe-budget.lock").exists());
+}
+
 #[cfg(unix)]
 fn write_geiger_workspace(root: &Path) -> PathBuf {
     let ws = root.join("ws");
