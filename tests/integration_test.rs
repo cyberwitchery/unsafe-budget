@@ -302,6 +302,41 @@ fn test_scan_and_update_fail_when_a_crate_does_not_compile() {
     assert!(!tmp.path().join("unsafe-budget.lock").exists());
 }
 
+#[test]
+#[ignore = "runs cargo"]
+fn test_scan_keeps_the_rustflags_of_cargo_config() {
+    for section in ["build", "target.'cfg(all())'"] {
+        let tmp = tempfile::tempdir().unwrap();
+        let manifest = tmp.path().join("Cargo.toml");
+        fs::write(
+            &manifest,
+            "[package]\nname = \"fast\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        fs::create_dir(tmp.path().join("src")).unwrap();
+        fs::write(
+            tmp.path().join("src/lib.rs"),
+            "pub fn f(p: *const u8) -> u8 {\n    unsafe { *p }\n}\n\n\
+             #[cfg(fast_path)]\npub fn g(p: *const u8) -> u8 {\n    unsafe { *p }\n}\n",
+        )
+        .unwrap();
+        fs::create_dir(tmp.path().join(".cargo")).unwrap();
+        fs::write(
+            tmp.path().join(".cargo/config.toml"),
+            format!("[{section}]\nrustflags = [\"--cfg\", \"fast_path\"]\n"),
+        )
+        .unwrap();
+
+        let stdout = run_ok(
+            unsafe_budget(tmp.path(), &manifest, &["scan", "--format", "json"])
+                .env_remove("RUSTFLAGS")
+                .env_remove("CARGO_ENCODED_RUSTFLAGS"),
+        );
+        let result: serde_json::Value = serde_json::from_slice(&stdout).unwrap();
+        assert_eq!(result["totals"]["workspace_unsafe"], 2, "{section}");
+    }
+}
+
 #[cfg(unix)]
 fn write_geiger_workspace(root: &Path) -> PathBuf {
     let ws = root.join("ws");
