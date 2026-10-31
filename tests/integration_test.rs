@@ -305,7 +305,21 @@ fn test_scan_and_update_fail_when_a_crate_does_not_compile() {
 #[test]
 #[ignore = "runs cargo"]
 fn test_scan_keeps_the_rustflags_of_cargo_config() {
-    for section in ["build", "target.'cfg(all())'"] {
+    let rustc = Command::new("rustc").arg("-vV").output().unwrap();
+    let rustc = String::from_utf8(rustc.stdout).unwrap();
+    let host = rustc
+        .lines()
+        .find_map(|l| l.strip_prefix("host: "))
+        .unwrap();
+    let target_section = format!("target.{host}");
+    // (.cargo/config.toml section, CARGO_BUILD_RUSTFLAGS, extra scan args)
+    let cases: [(Option<&str>, Option<&str>, &[&str]); 4] = [
+        (Some("build"), None, &[]),
+        (Some("target.'cfg(all())'"), None, &[]),
+        (Some(&target_section), None, &["--targets", host]),
+        (None, Some("--cfg fast_path"), &[]),
+    ];
+    for (section, build_env, args) in cases {
         let tmp = tempfile::tempdir().unwrap();
         let manifest = tmp.path().join("Cargo.toml");
         fs::write(
@@ -320,21 +334,66 @@ fn test_scan_keeps_the_rustflags_of_cargo_config() {
              #[cfg(fast_path)]\npub fn g(p: *const u8) -> u8 {\n    unsafe { *p }\n}\n",
         )
         .unwrap();
-        fs::create_dir(tmp.path().join(".cargo")).unwrap();
-        fs::write(
-            tmp.path().join(".cargo/config.toml"),
-            format!("[{section}]\nrustflags = [\"--cfg\", \"fast_path\"]\n"),
-        )
-        .unwrap();
+        if let Some(section) = section {
+            fs::create_dir(tmp.path().join(".cargo")).unwrap();
+            fs::write(
+                tmp.path().join(".cargo/config.toml"),
+                format!("[{section}]\nrustflags = [\"--cfg\", \"fast_path\"]\n"),
+            )
+            .unwrap();
+        }
 
-        let stdout = run_ok(
-            unsafe_budget(tmp.path(), &manifest, &["scan", "--format", "json"])
-                .env_remove("RUSTFLAGS")
-                .env_remove("CARGO_ENCODED_RUSTFLAGS"),
+        let mut cmd = unsafe_budget(
+            tmp.path(),
+            &manifest,
+            &[&["scan", "--format", "json"][..], args].concat(),
         );
+        cmd.env_remove("RUSTFLAGS")
+            .env_remove("CARGO_ENCODED_RUSTFLAGS")
+            .env_remove("CARGO_BUILD_RUSTFLAGS");
+        if let Some(flags) = build_env {
+            cmd.env("CARGO_BUILD_RUSTFLAGS", flags);
+        }
+        let stdout = run_ok(&mut cmd);
         let result: serde_json::Value = serde_json::from_slice(&stdout).unwrap();
-        assert_eq!(result["totals"]["workspace_unsafe"], 2, "{section}");
+        assert_eq!(
+            result["totals"]["workspace_unsafe"], 2,
+            "{section:?} {build_env:?} {args:?}"
+        );
     }
+}
+
+#[test]
+#[ignore = "runs cargo"]
+fn test_scan_probes_rustflags_in_the_target_dir_not_tmpdir() {
+    let tmp = tempfile::tempdir().unwrap();
+    let manifest = tmp.path().join("Cargo.toml");
+    fs::write(
+        &manifest,
+        "[package]\nname = \"probed\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    fs::create_dir(tmp.path().join("src")).unwrap();
+    fs::write(tmp.path().join("src/lib.rs"), "").unwrap();
+    let not_a_dir = tmp.path().join("not-a-dir");
+    fs::write(&not_a_dir, "").unwrap();
+
+    run_ok(
+        unsafe_budget(tmp.path(), &manifest, &["scan"])
+            .env("TMPDIR", &not_a_dir)
+            .env_remove("CARGO_TARGET_DIR")
+            .env_remove("RUSTFLAGS")
+            .env_remove("CARGO_ENCODED_RUSTFLAGS"),
+    );
+    let target: Vec<String> = fs::read_dir(tmp.path().join("target"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    assert!(target.contains(&"CACHEDIR.TAG".to_string()), "{target:?}");
+    assert!(
+        !target.iter().any(|f| f.starts_with("unsafe-budget-probe")),
+        "{target:?}"
+    );
 }
 
 #[cfg(unix)]

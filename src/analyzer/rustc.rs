@@ -21,8 +21,8 @@ impl Analyzer for RustcAnalyzer {
     }
 
     fn run(&self, opts: &ScanOpts) -> Result<ScanResult> {
-        let members = get_workspace_members(opts)?;
-        let (stdout, _stderr) = run_cargo_check(opts)?;
+        let (members, target_dir) = get_workspace_members(opts)?;
+        let (stdout, _stderr) = run_cargo_check(opts, &target_dir)?;
         let occurrences = parse_diagnostics(&stdout, &members.ids)?;
         let (units, details) = aggregate_occurrences(occurrences, &members.names, opts);
 
@@ -41,8 +41,8 @@ struct WorkspaceMembers {
     names: HashSet<String>,
 }
 
-/// get workspace member package ids and names.
-fn get_workspace_members(opts: &ScanOpts) -> Result<WorkspaceMembers> {
+/// get workspace member package ids and names, and cargo's target directory.
+fn get_workspace_members(opts: &ScanOpts) -> Result<(WorkspaceMembers, PathBuf)> {
     let mut cmd = MetadataCommand::new();
     // the same binary as `cargo check`, so their package ids compare equal.
     cmd.cargo_path("cargo");
@@ -64,10 +64,13 @@ fn get_workspace_members(opts: &ScanOpts) -> Result<WorkspaceMembers> {
         .filter_map(|id| package_by_id.get(id).map(|p| p.name.to_string()))
         .collect();
 
-    Ok(WorkspaceMembers {
-        ids: metadata.workspace_members.iter().cloned().collect(),
-        names,
-    })
+    Ok((
+        WorkspaceMembers {
+            ids: metadata.workspace_members.iter().cloned().collect(),
+            names,
+        },
+        metadata.target_directory.into(),
+    ))
 }
 
 /// overrides both `#[allow(unsafe_code)]` in source and cargo's `--cap-lints allow`.
@@ -124,7 +127,7 @@ fn rustflags_with_unsafe_lint(
 }
 
 /// add [`UNSAFE_CODE_LINT`] to the rustflags the user's own `cargo check` would pass.
-fn unsafe_lint_flags(opts: &ScanOpts) -> Result<LintFlags> {
+fn unsafe_lint_flags(opts: &ScanOpts, target_dir: &Path) -> Result<LintFlags> {
     let env = |var| std::env::var(var).ok();
     if let Some((var, flags)) =
         rustflags_with_unsafe_lint(env("CARGO_ENCODED_RUSTFLAGS"), env("RUSTFLAGS"))
@@ -139,7 +142,7 @@ fn unsafe_lint_flags(opts: &ScanOpts) -> Result<LintFlags> {
         env: vec![appended("CARGO_BUILD_RUSTFLAGS", UNSAFE_CODE_LINT)],
         config: Vec::new(),
     };
-    for target in targets_ignoring_build_rustflags(opts)? {
+    for target in targets_ignoring_build_rustflags(opts, target_dir)? {
         match target {
             Some(triple) => {
                 let triple = triple.replace('-', "_").to_uppercase();
@@ -168,14 +171,25 @@ fn appended(var: &str, flags: &str) -> (String, String) {
 const PROBE_CFG: &str = "unsafe_budget_probe";
 
 /// the scanned targets (`None`: cargo's default) whose `target.*.rustflags` make cargo
-/// ignore `build.rustflags`, found by checking a throwaway crate from the scan's directory.
-fn targets_ignoring_build_rustflags(opts: &ScanOpts) -> Result<Vec<Option<&str>>> {
+/// ignore `build.rustflags`, found by checking a throwaway crate in `target_dir` from the
+/// scan's directory.
+fn targets_ignoring_build_rustflags<'a>(
+    opts: &'a ScanOpts,
+    target_dir: &Path,
+) -> Result<Vec<Option<&'a str>>> {
     let targets: Vec<Option<&str>> = if opts.targets.is_empty() {
         vec![None]
     } else {
         opts.targets.iter().map(|t| Some(t.as_str())).collect()
     };
-    let dir = std::env::temp_dir().join(format!("unsafe-budget-probe-{}", std::process::id()));
+    let made_target_dir = !target_dir.exists();
+    let dir = create_probe_dir(target_dir).map_err(|e| Error::Analyzer {
+        analyzer: "rustc_unsafe_lint".into(),
+        message: format!(
+            "cannot create a probe crate in {}: {e}",
+            target_dir.display()
+        ),
+    })?;
     let ignoring = write_probe_crate(&dir).and_then(|()| {
         let mut ignoring = Vec::new();
         for target in targets {
@@ -186,16 +200,38 @@ fn targets_ignoring_build_rustflags(opts: &ScanOpts) -> Result<Vec<Option<&str>>
         Ok(ignoring)
     });
     let _ = std::fs::remove_dir_all(&dir);
+    if made_target_dir {
+        // cargo tags a target directory as a cache only when it creates it.
+        let _ = std::fs::remove_dir(target_dir);
+    }
     ignoring
 }
 
+/// a fresh directory in `parent` (created if missing), mode 0700 on unix.
+fn create_probe_dir(parent: &Path) -> std::io::Result<PathBuf> {
+    std::fs::create_dir_all(parent)?;
+    #[cfg_attr(not(unix), allow(unused_mut))]
+    let mut builder = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    let mut n = 0;
+    loop {
+        let dir = parent.join(format!("unsafe-budget-probe-{}-{n}", std::process::id()));
+        match builder.create(&dir) {
+            Ok(()) => return Ok(dir),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => n += 1,
+            Err(e) => return Err(e),
+        }
+    }
+}
+
 fn write_probe_crate(dir: &Path) -> Result<()> {
-    std::fs::create_dir_all(dir.join("src"))?;
+    std::fs::create_dir(dir.join("src"))?;
     std::fs::write(
         dir.join("Cargo.toml"),
         format!(
-            "[package]\nname = \"unsafe-budget-probe\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n\
-             [workspace]\n\n[lints.rust]\n\
+            "[package]\nname = \"unsafe-budget-probe\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\
+             build = false\n\n[workspace]\n\n[lints.rust]\n\
              unexpected_cfgs = {{ level = \"warn\", check-cfg = [\"cfg({PROBE_CFG})\"] }}\n"
         ),
     )?;
@@ -255,8 +291,8 @@ fn run_cargo(cmd: &mut Command, opts: &ScanOpts) -> Result<process::Output> {
 }
 
 /// run cargo check and capture output.
-fn run_cargo_check(opts: &ScanOpts) -> Result<(Vec<u8>, String)> {
-    let lint = unsafe_lint_flags(opts)?;
+fn run_cargo_check(opts: &ScanOpts, target_dir: &Path) -> Result<(Vec<u8>, String)> {
+    let lint = unsafe_lint_flags(opts, target_dir)?;
     let output = run_cargo(&mut build_cargo_check_command(opts, &lint), opts)?;
 
     check_cargo_output(&output)?;
@@ -868,6 +904,35 @@ mod tests {
                 rustflags_with_unsafe_lint(encoded.map(String::from), rustflags.map(String::from)),
                 expected.map(|(var, value)| (var, value.to_string())),
                 "{encoded:?} {rustflags:?}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_probe_dir_is_new_and_private() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let target_dir = tmp.path().join("target");
+        let probe =
+            |n: u32| target_dir.join(format!("unsafe-budget-probe-{}-{n}", std::process::id()));
+        let elsewhere = tmp.path().join("elsewhere");
+        std::fs::create_dir_all(probe(0)).unwrap();
+        std::fs::create_dir(&elsewhere).unwrap();
+        symlink(&elsewhere, probe(1)).unwrap();
+
+        let dir = create_probe_dir(&target_dir).unwrap();
+        write_probe_crate(&dir).unwrap();
+
+        assert_eq!(dir, probe(2));
+        let mode = std::fs::metadata(&dir).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700);
+        for planted in [probe(0), elsewhere] {
+            assert_eq!(
+                std::fs::read_dir(&planted).unwrap().count(),
+                0,
+                "{planted:?}"
             );
         }
     }
