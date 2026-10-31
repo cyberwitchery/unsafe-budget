@@ -5,7 +5,7 @@ use crate::model::{Occurrence, ScanOpts, ScanResult, Unit, UnitKind};
 use cargo_metadata::{Message, MetadataCommand, Package, PackageId};
 use std::collections::{HashMap, HashSet};
 use std::io::BufRead;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
@@ -21,8 +21,8 @@ impl Analyzer for RustcAnalyzer {
     }
 
     fn run(&self, opts: &ScanOpts) -> Result<ScanResult> {
-        let members = get_workspace_members(opts)?;
-        let (stdout, _stderr) = run_cargo_check(opts)?;
+        let (members, target_dir) = get_workspace_members(opts)?;
+        let (stdout, _stderr) = run_cargo_check(opts, &target_dir)?;
         let occurrences = parse_diagnostics(&stdout, &members.ids)?;
         let (units, details) = aggregate_occurrences(occurrences, &members.names, opts);
 
@@ -41,8 +41,8 @@ struct WorkspaceMembers {
     names: HashSet<String>,
 }
 
-/// get workspace member package ids and names.
-fn get_workspace_members(opts: &ScanOpts) -> Result<WorkspaceMembers> {
+/// get workspace member package ids and names, and cargo's target directory.
+fn get_workspace_members(opts: &ScanOpts) -> Result<(WorkspaceMembers, PathBuf)> {
     let mut cmd = MetadataCommand::new();
     // the same binary as `cargo check`, so their package ids compare equal.
     cmd.cargo_path("cargo");
@@ -64,26 +64,35 @@ fn get_workspace_members(opts: &ScanOpts) -> Result<WorkspaceMembers> {
         .filter_map(|id| package_by_id.get(id).map(|p| p.name.to_string()))
         .collect();
 
-    Ok(WorkspaceMembers {
-        ids: metadata.workspace_members.iter().cloned().collect(),
-        names,
-    })
+    Ok((
+        WorkspaceMembers {
+            ids: metadata.workspace_members.iter().cloned().collect(),
+            names,
+        },
+        metadata.target_directory.into(),
+    ))
 }
 
 /// overrides both `#[allow(unsafe_code)]` in source and cargo's `--cap-lints allow`.
 const UNSAFE_CODE_LINT: &str = "--force-warn=unsafe_code";
 
+/// env vars and `--config` values that add [`UNSAFE_CODE_LINT`] to the rustflags cargo uses.
+#[derive(Debug, Default)]
+struct LintFlags {
+    env: Vec<(String, String)>,
+    config: Vec<String>,
+}
+
 /// build the `cargo check` command used to collect unsafe_code diagnostics.
-fn build_cargo_check_command(opts: &ScanOpts) -> Command {
+fn build_cargo_check_command(opts: &ScanOpts, lint: &LintFlags) -> Command {
     let mut cmd = Command::new("cargo");
     // `-vv` stops cargo capping dependency lints and makes it replay their cached diagnostics.
     cmd.arg("check").arg("--message-format=json").arg("-vv");
 
-    let (var, flags) = rustflags_with_unsafe_lint(
-        std::env::var("CARGO_ENCODED_RUSTFLAGS").ok(),
-        std::env::var("RUSTFLAGS").ok(),
-    );
-    cmd.env(var, flags);
+    cmd.envs(lint.env.iter().map(|(var, flags)| (var, flags)));
+    for value in &lint.config {
+        cmd.arg("--config").arg(value);
+    }
 
     super::apply_cargo_flags(&mut cmd, opts);
 
@@ -97,62 +106,206 @@ fn build_cargo_check_command(opts: &ScanOpts) -> Command {
     cmd
 }
 
-/// append [`UNSAFE_CODE_LINT`] to the rustflags variable cargo will read,
-/// returning that variable's name and new value.
+/// append [`UNSAFE_CODE_LINT`] to the rustflags variable the user set, returning
+/// that variable's name and new value. either one overrides all config rustflags.
 fn rustflags_with_unsafe_lint(
     encoded: Option<String>,
     plain: Option<String>,
-) -> (&'static str, String) {
+) -> Option<(&'static str, String)> {
     // cargo ignores RUSTFLAGS whenever CARGO_ENCODED_RUSTFLAGS is set, even to "".
-    let (var, existing, separator) = match encoded {
-        Some(flags) => ("CARGO_ENCODED_RUSTFLAGS", flags, '\x1f'),
-        None => ("RUSTFLAGS", plain.unwrap_or_default(), ' '),
+    let (var, existing, separator) = match (encoded, plain) {
+        (Some(flags), _) => ("CARGO_ENCODED_RUSTFLAGS", flags, '\x1f'),
+        (None, Some(flags)) => ("RUSTFLAGS", flags, ' '),
+        (None, None) => return None,
     };
     let flags = if existing.is_empty() {
         UNSAFE_CODE_LINT.to_string()
     } else {
         format!("{existing}{separator}{UNSAFE_CODE_LINT}")
     };
-    (var, flags)
+    Some((var, flags))
+}
+
+/// add [`UNSAFE_CODE_LINT`] to the rustflags the user's own `cargo check` would pass.
+fn unsafe_lint_flags(opts: &ScanOpts, target_dir: &Path) -> Result<LintFlags> {
+    let env = |var| std::env::var(var).ok();
+    if let Some((var, flags)) =
+        rustflags_with_unsafe_lint(env("CARGO_ENCODED_RUSTFLAGS"), env("RUSTFLAGS"))
+    {
+        return Ok(LintFlags {
+            env: vec![(var.to_string(), flags)],
+            config: Vec::new(),
+        });
+    }
+
+    let mut lint = LintFlags {
+        env: vec![appended("CARGO_BUILD_RUSTFLAGS", UNSAFE_CODE_LINT)],
+        config: Vec::new(),
+    };
+    for target in targets_ignoring_build_rustflags(opts, target_dir)? {
+        match target {
+            Some(triple) => {
+                let triple = triple.replace('-', "_").to_uppercase();
+                let var = format!("CARGO_TARGET_{triple}_RUSTFLAGS");
+                lint.env.push(appended(&var, UNSAFE_CODE_LINT));
+            }
+            // an always-true key that no user config sets.
+            None => lint.config.push(format!(
+                "target.'cfg(not({PROBE_CFG}))'.rustflags=[\"{UNSAFE_CODE_LINT}\"]"
+            )),
+        }
+    }
+    Ok(lint)
+}
+
+/// `var`, a rustflags variable cargo splits on whitespace, with `flags` appended.
+fn appended(var: &str, flags: &str) -> (String, String) {
+    let value = match std::env::var(var) {
+        Ok(existing) if !existing.is_empty() => format!("{existing} {flags}"),
+        _ => flags.to_string(),
+    };
+    (var.to_string(), value)
+}
+
+/// a cfg the probe crate gets only through `build.rustflags`.
+const PROBE_CFG: &str = "unsafe_budget_probe";
+
+/// the scanned targets (`None`: cargo's default) whose `target.*.rustflags` make cargo
+/// ignore `build.rustflags`, found by checking a throwaway crate in `target_dir` from the
+/// scan's directory.
+fn targets_ignoring_build_rustflags<'a>(
+    opts: &'a ScanOpts,
+    target_dir: &Path,
+) -> Result<Vec<Option<&'a str>>> {
+    let targets: Vec<Option<&str>> = if opts.targets.is_empty() {
+        vec![None]
+    } else {
+        opts.targets.iter().map(|t| Some(t.as_str())).collect()
+    };
+    let made_target_dir = !target_dir.exists();
+    let dir = create_probe_dir(target_dir).map_err(|e| Error::Analyzer {
+        analyzer: "rustc_unsafe_lint".into(),
+        message: format!(
+            "cannot create a probe crate in {}: {e}",
+            target_dir.display()
+        ),
+    })?;
+    let ignoring = write_probe_crate(&dir).and_then(|()| {
+        let mut ignoring = Vec::new();
+        for target in targets {
+            if !probe_gets_build_rustflags(&dir, target, opts)? {
+                ignoring.push(target);
+            }
+        }
+        Ok(ignoring)
+    });
+    let _ = std::fs::remove_dir_all(&dir);
+    if made_target_dir {
+        // cargo tags a target directory as a cache only when it creates it.
+        let _ = std::fs::remove_dir(target_dir);
+    }
+    ignoring
+}
+
+/// a fresh directory in `parent` (created if missing), mode 0700 on unix.
+fn create_probe_dir(parent: &Path) -> std::io::Result<PathBuf> {
+    std::fs::create_dir_all(parent)?;
+    #[cfg_attr(not(unix), allow(unused_mut))]
+    let mut builder = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    let mut n = 0;
+    loop {
+        let dir = parent.join(format!("unsafe-budget-probe-{}-{n}", std::process::id()));
+        match builder.create(&dir) {
+            Ok(()) => return Ok(dir),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => n += 1,
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+fn write_probe_crate(dir: &Path) -> Result<()> {
+    std::fs::create_dir(dir.join("src"))?;
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        format!(
+            "[package]\nname = \"unsafe-budget-probe\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\
+             build = false\n\n[workspace]\n\n[lints.rust]\n\
+             unexpected_cfgs = {{ level = \"warn\", check-cfg = [\"cfg({PROBE_CFG})\"] }}\n"
+        ),
+    )?;
+    std::fs::write(
+        dir.join("src/lib.rs"),
+        format!(
+            "//! unsafe-budget's rustflags probe.\n#![no_std]\n\
+             #[cfg(not({PROBE_CFG}))]\ncompile_error!(\"{PROBE_CFG}\");\n"
+        ),
+    )?;
+    Ok(())
+}
+
+/// whether checking the probe crate in `dir` for `target` passes it `build.rustflags`.
+fn probe_gets_build_rustflags(dir: &Path, target: Option<&str>, opts: &ScanOpts) -> Result<bool> {
+    let mut cmd = Command::new("cargo");
+    cmd.args(["check", "--quiet", "--color", "never", "--manifest-path"])
+        .arg(dir.join("Cargo.toml"))
+        .arg("--target-dir")
+        .arg(dir.join("target"));
+    if let Some(target) = target {
+        cmd.arg("--target").arg(target);
+    }
+    let (var, flags) = appended("CARGO_BUILD_RUSTFLAGS", &format!("--cfg {PROBE_CFG}"));
+    cmd.env(var, flags);
+
+    let output = run_cargo(&mut cmd, opts)?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if output.status.success() {
+        Ok(true)
+    } else if stderr
+        .lines()
+        .any(|line| line == format!("error: {PROBE_CFG}"))
+    {
+        Ok(false)
+    } else {
+        Err(Error::Cargo {
+            message: "cargo check failed on unsafe-budget's rustflags probe crate".into(),
+            stderr: stderr.into_owned(),
+        })
+    }
+}
+
+/// run a cargo command under the analyzer timeout.
+fn run_cargo(cmd: &mut Command, opts: &ScanOpts) -> Result<process::Output> {
+    let timeout_secs = opts.analyzer_timeout_secs;
+    match process::run_process(cmd, timeout_secs.map(Duration::from_secs))? {
+        Run::Completed(output) => Ok(output),
+        Run::TimedOut => Err(Error::Cargo {
+            message: format!(
+                "cargo check timed out after {}s",
+                timeout_secs.unwrap_or_default()
+            ),
+            stderr: String::new(),
+        }),
+    }
 }
 
 /// run cargo check and capture output.
-fn run_cargo_check(opts: &ScanOpts) -> Result<(Vec<u8>, String)> {
-    let mut cmd = build_cargo_check_command(opts);
+fn run_cargo_check(opts: &ScanOpts, target_dir: &Path) -> Result<(Vec<u8>, String)> {
+    let lint = unsafe_lint_flags(opts, target_dir)?;
+    let output = run_cargo(&mut build_cargo_check_command(opts, &lint), opts)?;
 
-    let timeout_secs = opts.analyzer_timeout_secs;
-    let output = match process::run_process(&mut cmd, timeout_secs.map(Duration::from_secs))? {
-        Run::Completed(output) => output,
-        Run::TimedOut => {
-            return Err(Error::Cargo {
-                message: format!(
-                    "cargo check timed out after {}s",
-                    timeout_secs.unwrap_or_default()
-                ),
-                stderr: String::new(),
-            })
-        }
-    };
-
+    check_cargo_output(&output)?;
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-    check_cargo_output(&output.status, &output.stdout, &stderr)?;
     Ok((output.stdout, stderr))
 }
 
-/// check whether cargo's output indicates an infrastructure failure.
-/// warnings cause non-zero exit but still produce JSON diagnostics on stdout,
-/// so a non-zero exit alone isn't an error. but empty stdout with a non-zero exit
-/// means cargo itself broke (missing toolchain, linker error, network failure)
-/// and must not be silently treated as zero violations.
-fn check_cargo_output(
-    status: &std::process::ExitStatus,
-    stdout: &[u8],
-    stderr: &str,
-) -> Result<()> {
-    if !status.success() && stdout.is_empty() {
+/// a failed cargo check left crates unchecked, so its diagnostics are an incomplete count.
+fn check_cargo_output(output: &process::Output) -> Result<()> {
+    if !output.status.success() {
         return Err(Error::Cargo {
             message: "cargo check failed".into(),
-            stderr: stderr.to_string(),
+            stderr: String::from_utf8_lossy(&output.stderr).to_string(),
         });
     }
     Ok(())
@@ -301,19 +454,24 @@ mod tests {
 
         fn exit_failure() -> std::process::ExitStatus {
             // waitpid raw status: exit code in bits 8-15
-            std::process::ExitStatus::from_raw(1 << 8)
+            std::process::ExitStatus::from_raw(101 << 8)
         }
 
         #[test]
-        fn empty_stdout_on_failure_is_an_error_carrying_stderr() {
-            let cases: [(_, &[u8], &str, bool); 6] = [
+        fn failed_cargo_check_is_an_error_carrying_stderr() {
+            let cases: [(_, &[u8], &str, bool); 8] = [
                 (exit_success(), b"output", "", true),
-                // warnings cause non-zero exit but produce JSON on stdout
                 (
-                    exit_failure(),
+                    exit_success(),
                     b"{\"reason\":\"compiler-message\"}",
                     "warning: unused variable",
                     true,
+                ),
+                (
+                    exit_failure(),
+                    b"{\"reason\":\"compiler-message\"}\n{\"reason\":\"build-finished\",\"success\":false}",
+                    "error: could not compile `app` (lib) due to 1 previous error",
+                    false,
                 ),
                 (
                     exit_failure(),
@@ -323,15 +481,27 @@ mod tests {
                 ),
                 (exit_failure(), b"", "", false),
                 (exit_failure(), b"", "error: linker `cc` not found", false),
+                // rustup exits 1, and a killed cargo has no exit code at all.
                 (
-                    exit_failure(),
+                    std::process::ExitStatus::from_raw(1 << 8),
                     b"",
                     "error: toolchain 'nightly' is not installed",
                     false,
                 ),
+                (
+                    std::process::ExitStatus::from_raw(9),
+                    b"{\"reason\":\"compiler-message\"}",
+                    "",
+                    false,
+                ),
             ];
             for (status, stdout, stderr, ok) in cases {
-                match check_cargo_output(&status, stdout, stderr) {
+                let output = process::Output {
+                    status,
+                    stdout: stdout.to_vec(),
+                    stderr: stderr.as_bytes().to_vec(),
+                };
+                match check_cargo_output(&output) {
                     Ok(()) => assert!(ok, "{stderr:?}"),
                     Err(Error::Cargo { stderr: got, .. }) => {
                         assert!(!ok, "{stderr:?}");
@@ -657,7 +827,7 @@ mod tests {
                 workspace_only,
                 ..Default::default()
             };
-            let cmd = build_cargo_check_command(&opts);
+            let cmd = build_cargo_check_command(&opts, &LintFlags::default());
             let args: Vec<String> = cmd
                 .get_args()
                 .map(|a| a.to_string_lossy().into_owned())
@@ -671,59 +841,98 @@ mod tests {
 
     #[test]
     fn test_cargo_check_command_forces_unsafe_lint_and_lints_dependencies() {
-        let cmd = build_cargo_check_command(&ScanOpts::default());
+        let lint = LintFlags {
+            env: vec![("CARGO_BUILD_RUSTFLAGS".into(), UNSAFE_CODE_LINT.into())],
+            config: vec!["target.'cfg(unix)'.rustflags=[\"--force-warn=unsafe_code\"]".into()],
+        };
+        let cmd = build_cargo_check_command(&ScanOpts::default(), &lint);
         let args: Vec<String> = cmd
             .get_args()
             .map(|a| a.to_string_lossy().into_owned())
             .collect();
         assert!(args.contains(&"-vv".to_string()), "got {args:?}");
-
-        let rustflags: Vec<String> = cmd
-            .get_envs()
-            .filter(|(k, _)| *k == "RUSTFLAGS" || *k == "CARGO_ENCODED_RUSTFLAGS")
-            .filter_map(|(_, v)| v.map(|v| v.to_string_lossy().into_owned()))
-            .collect();
-        assert_eq!(rustflags.len(), 1, "got {rustflags:?}");
         assert!(
-            rustflags[0].ends_with(UNSAFE_CODE_LINT),
-            "got {rustflags:?}"
+            args.windows(2).any(|w| w == ["--config", &lint.config[0]]),
+            "got {args:?}"
+        );
+
+        let envs: Vec<_> = cmd.get_envs().collect();
+        assert_eq!(
+            envs,
+            [(
+                "CARGO_BUILD_RUSTFLAGS".as_ref(),
+                Some(UNSAFE_CODE_LINT.as_ref())
+            )]
         );
     }
 
     #[test]
     fn test_rustflags_with_unsafe_lint() {
         // (CARGO_ENCODED_RUSTFLAGS, RUSTFLAGS) -> (variable, value)
-        type Case<'a> = (Option<&'a str>, Option<&'a str>, (&'a str, &'a str));
+        type Case<'a> = (Option<&'a str>, Option<&'a str>, Option<(&'a str, &'a str)>);
         let cases: [Case; 5] = [
-            (None, None, ("RUSTFLAGS", "--force-warn=unsafe_code")),
-            (None, Some(""), ("RUSTFLAGS", "--force-warn=unsafe_code")),
+            (None, None, None),
+            (
+                None,
+                Some(""),
+                Some(("RUSTFLAGS", "--force-warn=unsafe_code")),
+            ),
             (
                 None,
                 Some("-C opt-level=1 --cfg foo"),
-                (
+                Some((
                     "RUSTFLAGS",
                     "-C opt-level=1 --cfg foo --force-warn=unsafe_code",
-                ),
+                )),
             ),
             (
                 Some("--cfg\x1ffoo"),
                 Some("-Dwarnings"),
-                (
+                Some((
                     "CARGO_ENCODED_RUSTFLAGS",
                     "--cfg\x1ffoo\x1f--force-warn=unsafe_code",
-                ),
+                )),
             ),
             (
                 Some(""),
                 Some("-Dwarnings"),
-                ("CARGO_ENCODED_RUSTFLAGS", "--force-warn=unsafe_code"),
+                Some(("CARGO_ENCODED_RUSTFLAGS", "--force-warn=unsafe_code")),
             ),
         ];
-        for (encoded, rustflags, (var, value)) in cases {
+        for (encoded, rustflags, expected) in cases {
             assert_eq!(
                 rustflags_with_unsafe_lint(encoded.map(String::from), rustflags.map(String::from)),
-                (var, value.to_string()),
+                expected.map(|(var, value)| (var, value.to_string())),
                 "{encoded:?} {rustflags:?}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_probe_dir_is_new_and_private() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let target_dir = tmp.path().join("target");
+        let probe =
+            |n: u32| target_dir.join(format!("unsafe-budget-probe-{}-{n}", std::process::id()));
+        let elsewhere = tmp.path().join("elsewhere");
+        std::fs::create_dir_all(probe(0)).unwrap();
+        std::fs::create_dir(&elsewhere).unwrap();
+        symlink(&elsewhere, probe(1)).unwrap();
+
+        let dir = create_probe_dir(&target_dir).unwrap();
+        write_probe_crate(&dir).unwrap();
+
+        assert_eq!(dir, probe(2));
+        let mode = std::fs::metadata(&dir).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700);
+        for planted in [probe(0), elsewhere] {
+            assert_eq!(
+                std::fs::read_dir(&planted).unwrap().count(),
+                0,
+                "{planted:?}"
             );
         }
     }

@@ -3,6 +3,8 @@
 ## Unreleased
 
 - fix: `scripts/accept-unsafe.sh` accepts a lock written by a newer unsafe-budget and shows the tool version change. previously the first violation after upgrading the action was refused.
+- fix: the `rustc_unsafe_lint` analyzer fails the scan when `cargo check` fails, for example on a compile error or on a warning under `RUSTFLAGS="-D warnings"`. the error shows cargo's stderr, which names the crate that failed to compile but not the compiler's error. previously the scan reported the count of whatever cargo checked before it stopped, so a crate depending on the one that failed counted as 0, `check` passed and `update` wrote that count as the baseline.
+- fix: the `rustc_unsafe_lint` analyzer keeps the rustflags cargo reads from `.cargo/config.toml` (`[build]`, `[target.<triple>]` and `[target.'cfg(..)']`), `CARGO_BUILD_RUSTFLAGS` and `CARGO_TARGET_<TRIPLE>_RUSTFLAGS`, and adds `--force-warn=unsafe_code` to them. previously, unless `RUSTFLAGS` or `CARGO_ENCODED_RUSTFLAGS` was set, it set `RUSTFLAGS`, which made cargo drop those flags: unsafe code behind a `cfg` they set, such as tokio's `tokio_unstable`, went uncounted, and a crate depending on one that needed them to compile counted as 0. baselines written from such a workspace need `unsafe-budget update`.
 
 ## [0.5.4] - 2026-10-28
 

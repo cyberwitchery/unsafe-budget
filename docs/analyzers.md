@@ -6,7 +6,7 @@
 
 default analyzer for rust projects.
 
-**backend**: `cargo check --message-format=json -vv` with `--force-warn=unsafe_code` appended to `RUSTFLAGS` (or to `CARGO_ENCODED_RUSTFLAGS` when that is set)
+**backend**: `cargo check --message-format=json -vv` with `--force-warn=unsafe_code` added to the rustflags cargo would pass anyway: to `CARGO_ENCODED_RUSTFLAGS` or `RUSTFLAGS` when one is set, and otherwise to whichever of `build.rustflags` and `target.*.rustflags` in cargo's config applies to each target, which the analyzer learns by first checking a throwaway crate from the same directory
 
 with `--targets`, cargo passes these flags to the named targets' units only, so build scripts, proc-macros and build dependencies are checked without the lint and not counted.
 
