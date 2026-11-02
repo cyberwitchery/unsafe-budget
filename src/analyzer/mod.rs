@@ -202,13 +202,7 @@ pub(crate) fn aggregate_units(
         details
     };
 
-    details.sort_by(|a, b| {
-        a.unit
-            .cmp(&b.unit)
-            .then_with(|| a.file.cmp(&b.file))
-            .then_with(|| a.line.cmp(&b.line))
-            .then_with(|| a.col.cmp(&b.col))
-    });
+    details.sort();
 
     (units, details)
 }
@@ -341,6 +335,13 @@ mod tests {
                 file: PathBuf::from("z.rs"),
                 line: 10,
                 col: 1,
+                message: Some("tie".into()),
+            },
+            Occurrence {
+                unit: "zebra".into(),
+                file: PathBuf::from("z.rs"),
+                line: 10,
+                col: 1,
                 message: None,
             },
             Occurrence {
@@ -375,6 +376,7 @@ mod tests {
         assert_eq!(sorted_details[1].unit, "alpha");
         assert_eq!(sorted_details[1].line, 5);
         assert_eq!(sorted_details[2].unit, "zebra");
+        assert_eq!(sorted_details[3].message.as_deref(), Some("tie"));
     }
 
     #[test]

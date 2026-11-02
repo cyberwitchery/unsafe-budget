@@ -1,6 +1,7 @@
 use crate::analyzer::AnalyzerInfo;
 use crate::config::Baseline;
 use crate::model::{CheckResult, Occurrence, ParseWarning, ScanResult, Unit, Violation, Warning};
+use std::cmp::Reverse;
 use std::collections::{BTreeMap, HashMap};
 use std::io::{self, Write};
 
@@ -107,11 +108,7 @@ fn print_scan_text(out: &mut impl Write, result: &ScanResult) -> io::Result<()> 
 
     // sort by count desc for display
     let mut units: Vec<_> = result.units.iter().collect();
-    units.sort_by(|a, b| {
-        b.unsafe_count
-            .cmp(&a.unsafe_count)
-            .then(a.name.cmp(&b.name))
-    });
+    units.sort_by_key(|unit| display_key(unit));
 
     writeln!(out, "Per-unit breakdown:")?;
     writeln!(out, "  {:<30} {:<12} {:>8}", "UNIT", "KIND", "UNSAFE")?;
@@ -189,23 +186,13 @@ fn print_check_text(
 
     // sort: violations first, then warnings, then others by count desc
     let mut units: Vec<&Unit> = result.scan.units.iter().collect();
-    units.sort_by(|a, b| {
-        let a_viol = violation_set.contains_key(a.name.as_str());
-        let b_viol = violation_set.contains_key(b.name.as_str());
-        let a_warn = warning_set.contains_key(a.name.as_str());
-        let b_warn = warning_set.contains_key(b.name.as_str());
-        match (a_viol, b_viol) {
-            (true, false) => std::cmp::Ordering::Less,
-            (false, true) => std::cmp::Ordering::Greater,
-            _ => match (a_warn, b_warn) {
-                (true, false) => std::cmp::Ordering::Less,
-                (false, true) => std::cmp::Ordering::Greater,
-                _ => b
-                    .unsafe_count
-                    .cmp(&a.unsafe_count)
-                    .then(a.name.cmp(&b.name)),
-            },
-        }
+    units.sort_by_key(|unit| {
+        let name = unit.name.as_str();
+        (
+            !violation_set.contains_key(name),
+            !warning_set.contains_key(name),
+            display_key(unit),
+        )
     });
 
     writeln!(out, "Per-unit breakdown:")?;
@@ -328,6 +315,11 @@ fn print_plugins_text(out: &mut impl Write, plugins: &[AnalyzerInfo]) -> io::Res
     Ok(())
 }
 
+/// the order the per-unit tables list units in: most unsafe first, then by name.
+fn display_key(unit: &Unit) -> (Reverse<u64>, &str) {
+    (Reverse(unit.unsafe_count), &unit.name)
+}
+
 fn print_details_text(out: &mut impl Write, details: &[Occurrence]) -> io::Result<()> {
     if details.is_empty() {
         return Ok(());
@@ -343,13 +335,7 @@ fn print_details_text(out: &mut impl Write, details: &[Occurrence]) -> io::Resul
     writeln!(out, "Details:")?;
 
     for (unit, mut occs) in by_unit {
-        // sort by file, then line, then column
-        occs.sort_by(|a, b| {
-            a.file
-                .cmp(&b.file)
-                .then(a.line.cmp(&b.line))
-                .then(a.col.cmp(&b.col))
-        });
+        occs.sort();
 
         writeln!(out, "  {}:", unit)?;
         for occ in occs {
@@ -955,13 +941,24 @@ mod tests {
             col: 1,
             message: Some("unsafe fn".into()),
         }];
-        // units sorted by name, occurrences by file/line/col; no message, no dash.
+        let tie = |message: Option<&str>| Occurrence {
+            unit: "u".into(),
+            file: "f.rs".into(),
+            line: 1,
+            col: 1,
+            message: message.map(Into::into),
+        };
+        // units sorted by name, occurrences by file/line/col/message; no message, no dash.
         let cases = [
             (
                 make_occurrences(),
                 "\nDetails:\n  dep_a:\n    src/ffi.rs:3:1\n  my_crate:\n    src/api.rs:42:13 — unsafe function call\n    src/lib.rs:10:5 — unsafe block\n    src/lib.rs:25:9 — unsafe impl\n",
             ),
             (single, "\nDetails:\n  only_crate:\n    src/main.rs:1:1 — unsafe fn\n"),
+            (
+                vec![tie(Some("b")), tie(None), tie(Some("a"))],
+                "\nDetails:\n  u:\n    f.rs:1:1\n    f.rs:1:1 — a\n    f.rs:1:1 — b\n",
+            ),
         ];
         for (details, expected) in cases {
             let mut buf = Vec::new();

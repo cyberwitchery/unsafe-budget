@@ -6,7 +6,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
-use crate::model::{CheckResult, ScanResult};
+use crate::model::{CheckResult, Occurrence, ScanResult};
 use serde_sarif::sarif;
 
 const SARIF_SCHEMA: &str = "https://json.schemastore.org/sarif-2.1.0.json";
@@ -45,7 +45,7 @@ pub fn scan_to_sarif(result: &ScanResult) -> sarif::Sarif {
 
     let mut results = make_occurrence_results(&result.details);
     append_parse_warning_results(&mut results, &result.parse_warnings);
-    sort_results(&mut results);
+    let results = sort_results(results);
 
     sarif::Sarif::builder()
         .version(serde_json::json!("2.1.0"))
@@ -85,15 +85,11 @@ pub fn check_to_sarif(result: &CheckResult) -> sarif::Sarif {
             "unit '{}' exceeds budget: {} unsafe (budget: {}, delta: +{})",
             v.unit, v.actual, v.baseline, v.delta
         );
-        let locations = location_map
-            .get(v.unit.as_str())
-            .cloned()
-            .unwrap_or_default();
         results.push(make_budget_result(
             RULE_BUDGET_VIOLATION,
             sarif::ResultLevel::Error,
             message,
-            locations,
+            location_map.get(v.unit.as_str()),
         ));
     }
 
@@ -102,20 +98,16 @@ pub fn check_to_sarif(result: &CheckResult) -> sarif::Sarif {
             "unit '{}' is near its budget: {} unsafe (budget: {})",
             w.unit, w.actual, w.budget
         );
-        let locations = location_map
-            .get(w.unit.as_str())
-            .cloned()
-            .unwrap_or_default();
         results.push(make_budget_result(
             RULE_BUDGET_WARNING,
             sarif::ResultLevel::Note,
             message,
-            locations,
+            location_map.get(w.unit.as_str()),
         ));
     }
 
     append_parse_warning_results(&mut results, &result.scan.parse_warnings);
-    sort_results(&mut results);
+    let results = sort_results(results);
 
     sarif::Sarif::builder()
         .version(serde_json::json!("2.1.0"))
@@ -214,40 +206,46 @@ fn make_parse_warning_rule() -> sarif::ReportingDescriptor {
 }
 
 fn append_parse_warning_results(
-    results: &mut Vec<sarif::Result>,
+    results: &mut Vec<Placed>,
     warnings: &[crate::model::ParseWarning],
 ) {
     for w in warnings {
-        results.push(
+        results.push((
+            None,
             sarif::Result::builder()
                 .rule_id(RULE_PARSE_WARNING.to_string())
                 .level(sarif::ResultLevel::Note)
                 .message(sarif::Message::builder().text(w.message.clone()).build())
                 .build(),
-        );
+        ));
     }
 }
 
-fn make_budget_result(
+fn make_budget_result<'a>(
     rule_id: &str,
     level: sarif::ResultLevel,
     message: String,
-    locations: Vec<sarif::Location>,
-) -> sarif::Result {
+    located: Option<&(&'a Occurrence, Vec<sarif::Location>)>,
+) -> Placed<'a> {
     let msg = sarif::Message::builder().text(message).build();
-    if locations.is_empty() {
-        sarif::Result::builder()
-            .rule_id(rule_id.to_string())
-            .level(level)
-            .message(msg)
-            .build()
-    } else {
-        sarif::Result::builder()
-            .rule_id(rule_id.to_string())
-            .level(level)
-            .message(msg)
-            .locations(locations)
-            .build()
+    match located {
+        None => (
+            None,
+            sarif::Result::builder()
+                .rule_id(rule_id.to_string())
+                .level(level)
+                .message(msg)
+                .build(),
+        ),
+        Some((first, locations)) => (
+            Some(*first),
+            sarif::Result::builder()
+                .rule_id(rule_id.to_string())
+                .level(level)
+                .message(msg)
+                .locations(locations.clone())
+                .build(),
+        ),
     }
 }
 
@@ -319,100 +317,55 @@ fn make_region(occ: &crate::model::Occurrence) -> Option<sarif::Region> {
     Some(region)
 }
 
-/// pre-build a map from unit name to sorted locations.
+/// pre-build a map from unit name to its first occurrence and sorted locations.
 /// avoids rescanning all details for each violation/warning.
-fn build_location_map(details: &[crate::model::Occurrence]) -> HashMap<&str, Vec<sarif::Location>> {
-    let mut by_unit: HashMap<&str, Vec<&crate::model::Occurrence>> = HashMap::new();
+fn build_location_map(
+    details: &[Occurrence],
+) -> HashMap<&str, (&Occurrence, Vec<sarif::Location>)> {
+    let mut by_unit: HashMap<&str, Vec<&Occurrence>> = HashMap::new();
     for occ in details {
         by_unit.entry(occ.unit.as_str()).or_default().push(occ);
     }
     by_unit
         .into_iter()
         .map(|(unit, mut occs)| {
-            occs.sort_by(|a, b| {
-                a.file
-                    .cmp(&b.file)
-                    .then(a.line.cmp(&b.line))
-                    .then(a.col.cmp(&b.col))
-            });
-            (unit, occs.iter().map(|occ| make_location(occ)).collect())
+            occs.sort();
+            let locations = occs.iter().map(|occ| make_location(occ)).collect();
+            (unit, (occs[0], locations))
         })
         .collect()
 }
 
-fn make_occurrence_results(details: &[crate::model::Occurrence]) -> Vec<sarif::Result> {
+fn make_occurrence_results(details: &[Occurrence]) -> Vec<Placed<'_>> {
     details
         .iter()
         .map(|occ| {
             let message = occ.message.as_deref().unwrap_or("unsafe code usage");
 
-            sarif::Result::builder()
+            let result = sarif::Result::builder()
                 .rule_id(RULE_UNSAFE_CODE.to_string())
                 .level(sarif::ResultLevel::Warning)
                 .message(sarif::Message::builder().text(message.to_string()).build())
                 .locations(vec![make_location(occ)])
-                .build()
+                .build();
+            (Some(occ), result)
         })
         .collect()
 }
 
-/// sort results for deterministic output.
-/// results without locations come first sorted by message,
-/// then results with locations sorted by (file, line, col, rule_id).
-fn sort_results(results: &mut [sarif::Result]) {
-    results.sort_by(|a, b| {
-        let a_loc = a
-            .locations
-            .as_ref()
-            .and_then(|l| l.first())
-            .and_then(|l| l.physical_location.as_ref());
-        let b_loc = b
-            .locations
-            .as_ref()
-            .and_then(|l| l.first())
-            .and_then(|l| l.physical_location.as_ref());
+/// a result and the occurrence it sorts by: its own, or its unit's first.
+type Placed<'a> = (Option<&'a Occurrence>, sarif::Result);
 
-        match (a_loc, b_loc) {
-            (None, Some(_)) => std::cmp::Ordering::Less,
-            (Some(_), None) => std::cmp::Ordering::Greater,
-            (None, None) => {
-                let a_msg = a.message.text.as_deref().unwrap_or("");
-                let b_msg = b.message.text.as_deref().unwrap_or("");
-                a_msg.cmp(b_msg)
-            }
-            (Some(a_pl), Some(b_pl)) => {
-                let a_uri = a_pl
-                    .artifact_location
-                    .as_ref()
-                    .and_then(|al| al.uri.as_deref())
-                    .unwrap_or("");
-                let b_uri = b_pl
-                    .artifact_location
-                    .as_ref()
-                    .and_then(|al| al.uri.as_deref())
-                    .unwrap_or("");
-                let a_line = a_pl.region.as_ref().and_then(|r| r.start_line).unwrap_or(0);
-                let b_line = b_pl.region.as_ref().and_then(|r| r.start_line).unwrap_or(0);
-                let a_col = a_pl
-                    .region
-                    .as_ref()
-                    .and_then(|r| r.start_column)
-                    .unwrap_or(0);
-                let b_col = b_pl
-                    .region
-                    .as_ref()
-                    .and_then(|r| r.start_column)
-                    .unwrap_or(0);
-                let a_rule = a.rule_id.as_deref().unwrap_or("");
-                let b_rule = b.rule_id.as_deref().unwrap_or("");
-                a_uri
-                    .cmp(b_uri)
-                    .then(a_line.cmp(&b_line))
-                    .then(a_col.cmp(&b_col))
-                    .then(a_rule.cmp(b_rule))
-            }
-        }
-    });
+/// results without a location sort first by message, the rest by occurrence, rule and message.
+fn result_key<'a>((occ, result): &'a Placed<'_>) -> (Option<(&'a Occurrence, &'a str)>, &'a str) {
+    let rule = result.rule_id.as_deref().unwrap_or("");
+    let message = result.message.text.as_deref().unwrap_or("");
+    (occ.map(|occ| (occ, rule)), message)
+}
+
+fn sort_results(mut results: Vec<Placed>) -> Vec<sarif::Result> {
+    results.sort_by(|a, b| result_key(a).cmp(&result_key(b)));
+    results.into_iter().map(|(_, result)| result).collect()
 }
 
 #[cfg(test)]
@@ -1049,6 +1002,68 @@ mod tests {
             .map(|r| r.rule_id.as_deref().unwrap())
             .collect();
         assert_eq!(rule_ids, vec!["budget_violation", "unsafe_code"]);
+    }
+
+    #[test]
+    fn test_check_to_sarif_results_follow_occurrence_order() {
+        let occ = |unit: &str, file: &str, line, col, message: &str| Occurrence {
+            unit: unit.into(),
+            file: file.into(),
+            line,
+            col,
+            message: Some(message.into()),
+        };
+        let details = [
+            occ("a", "z.rs", 1, 1, "tie a"),
+            occ("a", "z.rs", 1, 1, "tie b"),
+            occ("b", "src/a b.rs", 1, 1, "a b.rs"),
+            occ("b", "src/a!.rs", 1, 1, "a!.rs"),
+            occ("b", "src/foo/bar.rs", 1, 1, "foo/bar.rs"),
+            occ("b", "src/foo.rs", 0, 3, "foo.rs:0:3"),
+            occ("b", "src/foo.rs", 0, 5, "foo.rs:0:5"),
+        ];
+        let mut scan = make_scan_result(details.iter().rev().cloned().collect());
+        scan.parse_warnings = ["warning b", "warning a"]
+            .map(|message| crate::model::ParseWarning {
+                message: message.into(),
+            })
+            .into();
+        let check = CheckResult {
+            scan,
+            violations: vec![Violation {
+                unit: "a".into(),
+                kind: UnitKind::Workspace,
+                baseline: 0,
+                actual: 2,
+                delta: 2,
+            }],
+            warnings: vec![],
+            passed: false,
+        };
+
+        let sarif = check_to_sarif(&check);
+        let messages: Vec<_> = sarif.runs[0]
+            .results
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|r| r.message.text.as_deref().unwrap())
+            .collect();
+        assert_eq!(
+            messages,
+            [
+                "warning a",
+                "warning b",
+                "unit 'a' exceeds budget: 2 unsafe (budget: 0, delta: +2)",
+                "tie a",
+                "tie b",
+                "a b.rs",
+                "a!.rs",
+                "foo/bar.rs",
+                "foo.rs:0:3",
+                "foo.rs:0:5",
+            ]
+        );
     }
 
     #[test]

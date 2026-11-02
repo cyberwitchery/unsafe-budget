@@ -188,7 +188,8 @@ pub struct Unit {
 /// detail for a single unsafe occurrence.
 ///
 /// provides line-level information about where unsafe code was found.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+/// occurrences order by unit, file, line, column, then message.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Occurrence {
     /// name of the unit containing this occurrence.
     pub unit: String,
@@ -384,6 +385,41 @@ pub struct CheckResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_occurrence_order() {
+        let occ = |unit: &str, file: &str, line, col, message: Option<&str>| Occurrence {
+            unit: unit.into(),
+            file: file.into(),
+            line,
+            col,
+            message: message.map(Into::into),
+        };
+        let cases = [
+            (occ("a", "z.rs", 9, 9, None), occ("b", "a.rs", 1, 1, None)),
+            (
+                occ("u", "src/a/b.rs", 1, 1, None),
+                occ("u", "src/a-b.rs", 1, 1, None),
+            ),
+            (
+                occ("u", "src/foo/bar.rs", 1, 1, None),
+                occ("u", "src/foo.rs", 1, 1, None),
+            ),
+            (occ("u", "f.rs", 0, 7, None), occ("u", "f.rs", 1, 0, None)),
+            (occ("u", "f.rs", 3, 0, None), occ("u", "f.rs", 3, 1, None)),
+            (
+                occ("u", "f.rs", 3, 1, None),
+                occ("u", "f.rs", 3, 1, Some("a")),
+            ),
+            (
+                occ("u", "f.rs", 3, 1, Some("a")),
+                occ("u", "f.rs", 3, 1, Some("b")),
+            ),
+        ];
+        for (earlier, later) in cases {
+            assert!(earlier < later, "{earlier:?} should sort before {later:?}");
+        }
+    }
 
     #[test]
     fn test_scope_from_scan_opts() {
