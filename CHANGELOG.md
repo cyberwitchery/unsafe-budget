@@ -1,6 +1,6 @@
 # changelog
 
-## Unreleased
+## [0.5.5] - 2026-11-04
 
 - fix: every command, `plugins` included, rejects a config with `mode = "caps"` and no `[caps]` section, or with a `warnings.threshold` outside 0.0 to 1.0, when it loads it. previously only `check` rejected one, after scanning, so `scan` and `update` accepted it and `update` wrote a lock that `check` then refused.
 - fix: sarif output lists results in the same order as the json and text details: unit by unit, then by path (`src/foo/bar.rs` before `src/foo.rs`), line and column. occurrences at the same position now sort by message in every format instead of keeping the analyzer's order.
