@@ -190,7 +190,7 @@ pub(crate) fn aggregate_units(
 
     units.sort_by(|a, b| a.name.cmp(&b.name));
 
-    let mut details = if !opts.include_deps && !details.is_empty() {
+    let mut details = if !opts.includes(UnitKind::Dep) && !details.is_empty() {
         let retained: HashSet<&str> = units.iter().map(|u| u.name.as_str()).collect();
         details
             .into_iter()

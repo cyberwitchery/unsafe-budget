@@ -453,7 +453,7 @@ fn convert_reports(
                     (id.name.as_str(), id.version.as_str())
                         == (member.name.as_str(), member.version.as_str())
                 }
-                UnitKind::Dep => first && opts.include_deps,
+                UnitKind::Dep => first && opts.includes(kind),
             };
             if !counted {
                 continue;

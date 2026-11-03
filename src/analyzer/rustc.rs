@@ -427,7 +427,7 @@ fn aggregate_occurrences(
     }
 
     // ensure workspace members appear with 0 count when deps are excluded
-    if !opts.include_deps {
+    if !opts.includes(UnitKind::Dep) {
         for member in workspace_members {
             counts
                 .entry(member.clone())
