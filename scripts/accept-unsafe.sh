@@ -28,9 +28,18 @@ units() {
   ' "$1" | sort
 }
 
-# everything outside the unit counts but the tool version: analyzer, scope.
+# everything outside the unit counts but the tool version: analyzer, scope, with
+# `workspace_only = true` read as `include_deps = false`, as `check` reads it.
 header() {
-  sed -n '1,/^\[totals\]/p' "$1" | grep -v '^tool_version = '
+  awk '
+    /^tool_version = / { next }
+    /^\[/ { in_scope = $0 == "[scope]" }
+    in_scope && /^workspace_only = / { workspace_only = $3; next }
+    in_scope && /^include_deps = / { include_deps = $3; next }
+    { print }
+    /^\[totals\]/ { exit }
+    END { print "include_deps =", (include_deps == "true" && workspace_only != "true") ? "true" : "false" }
+  ' "$1"
 }
 
 tool_version() {
