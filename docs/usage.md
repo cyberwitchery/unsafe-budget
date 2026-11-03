@@ -115,6 +115,7 @@ tool_version = "0.3.0"
 analyzer_id = "rustc_unsafe_lint"
 
 [scope]
+workspace_only = false
 include_deps = true
 
 [totals]

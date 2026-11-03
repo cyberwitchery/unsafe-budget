@@ -575,6 +575,7 @@ mod tests {
                 "analyzer_id": "test",
                 "language": "rust",
                 "scope": {
+                    "workspace_only": false,
                     "include_deps": true,
                     "features": [],
                     "all_features": false,

@@ -267,6 +267,7 @@ cat <<EOF
   "analyzer_id": "example",
   "language": "example",
   "scope": {
+    "workspace_only": false,
     "include_deps": true,
     "features": [],
     "all_targets": false,

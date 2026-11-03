@@ -338,6 +338,7 @@ line = 7
 analyzer_id = "rustc_unsafe_lint"
 
 [scope]
+workspace_only = false
 include_deps = true
 features = []
 all_features = false

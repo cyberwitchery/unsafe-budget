@@ -56,7 +56,7 @@ impl ScanOpts {
 /// records what options were used for a scan so baselines can be compared
 /// with matching scopes.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(from = "StoredScope")]
+#[serde(from = "StoredScope", into = "StoredScope")]
 pub struct Scope {
     pub include_deps: bool,
     pub features: Vec<String>,
@@ -66,12 +66,11 @@ pub struct Scope {
     pub no_default_features: bool,
     pub all_targets: bool,
     pub targets: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub manifest_path: Option<PathBuf>,
 }
 
-/// a stored [`Scope`]; `workspace_only = true` from older locks and plugins means `include_deps = false`.
-#[derive(Deserialize)]
+/// a stored [`Scope`]: `workspace_only` is written as `!include_deps`, and `true` reads as `include_deps = false`.
+#[derive(Serialize, Deserialize)]
 struct StoredScope {
     #[serde(default)]
     workspace_only: bool,
@@ -83,6 +82,7 @@ struct StoredScope {
     no_default_features: bool,
     all_targets: bool,
     targets: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     manifest_path: Option<PathBuf>,
 }
 
@@ -96,6 +96,21 @@ impl From<StoredScope> for Scope {
             all_targets: stored.all_targets,
             targets: stored.targets,
             manifest_path: stored.manifest_path,
+        }
+    }
+}
+
+impl From<Scope> for StoredScope {
+    fn from(scope: Scope) -> Self {
+        StoredScope {
+            workspace_only: !scope.include_deps,
+            include_deps: scope.include_deps,
+            features: scope.features,
+            all_features: scope.all_features,
+            no_default_features: scope.no_default_features,
+            all_targets: scope.all_targets,
+            targets: scope.targets,
+            manifest_path: scope.manifest_path,
         }
     }
 }
@@ -473,7 +488,7 @@ mod tests {
     }
 
     #[test]
-    fn test_scope_reads_workspace_only_as_excluded_deps() {
+    fn test_scope_reads_workspace_only_as_excluded_deps_and_writes_it_back() {
         // (workspace_only, include_deps) as an older lock records them -> include_deps
         let cases = [
             ((true, true), false),
@@ -488,6 +503,12 @@ mod tests {
             );
             let scope: Scope = toml::from_str(&stored).unwrap();
             assert_eq!(scope.include_deps, expected, "{stored}");
+            let written = toml::to_string(&scope).unwrap();
+            let fields = format!(
+                "workspace_only = {}\ninclude_deps = {expected}\n",
+                !expected
+            );
+            assert!(written.starts_with(&fields), "{written}");
         }
     }
 
