@@ -16,7 +16,6 @@ options:
 |------|-------------|
 | `--format <text\|json\|sarif>` | output format (default: text) |
 | `--analyzer <id>` | analyzer to use (default: auto) |
-| `--workspace-only` | skip dependencies |
 | `--include-deps` | include dependencies (default) |
 | `--no-deps` | exclude dependencies |
 | `--details` | show line-level occurrences in text output |
@@ -76,9 +75,6 @@ mode = "ratchet"
 # include dependencies in scan
 include_deps = true
 
-# only scan workspace crates
-workspace_only = false
-
 # units to ignore in budget checks
 ignore_units = ["test_helpers", "benches"]
 
@@ -119,7 +115,6 @@ tool_version = "0.3.0"
 analyzer_id = "rustc_unsafe_lint"
 
 [scope]
-workspace_only = false
 include_deps = true
 
 [totals]

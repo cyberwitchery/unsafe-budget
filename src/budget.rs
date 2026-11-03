@@ -218,7 +218,6 @@ mod tests {
             analyzer_id: "test".into(),
             language: "rust".into(),
             scope: Scope {
-                workspace_only: false,
                 include_deps: true,
                 features: vec![],
                 all_features: false,
@@ -244,7 +243,6 @@ mod tests {
             tool_version: "0.1.0".into(),
             analyzer_id: "test".into(),
             scope: Scope {
-                workspace_only: false,
                 include_deps: true,
                 features: vec![],
                 all_features: false,

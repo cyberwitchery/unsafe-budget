@@ -16,15 +16,12 @@ use std::path::PathBuf;
 /// use unsafe_budget::model::ScanOpts;
 ///
 /// let opts = ScanOpts {
-///     workspace_only: true,
 ///     include_deps: false,
 ///     ..Default::default()
 /// };
 /// ```
 #[derive(Debug, Clone, Default)]
 pub struct ScanOpts {
-    /// only scan workspace crates, not dependencies.
-    pub workspace_only: bool,
     /// include dependencies in scan results.
     pub include_deps: bool,
     /// cargo features to enable.
@@ -47,25 +44,60 @@ pub struct ScanOpts {
     pub analyzer_timeout_secs: Option<u64>,
 }
 
+impl ScanOpts {
+    /// whether units of `kind` are counted: workspace units always, dependencies with `include_deps`.
+    pub(crate) fn includes(&self, kind: UnitKind) -> bool {
+        self.include_deps || kind == UnitKind::Workspace
+    }
+}
+
 /// scope captured in results for reproducibility.
 ///
 /// records what options were used for a scan so baselines can be compared
 /// with matching scopes.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(from = "StoredScope")]
 pub struct Scope {
-    pub workspace_only: bool,
     pub include_deps: bool,
     pub features: Vec<String>,
     /// whether `--all-features` was passed.
-    #[serde(default)]
     pub all_features: bool,
     /// whether `--no-default-features` was passed.
-    #[serde(default)]
     pub no_default_features: bool,
     pub all_targets: bool,
     pub targets: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub manifest_path: Option<PathBuf>,
+}
+
+/// a stored [`Scope`]; `workspace_only = true` from older locks and plugins means `include_deps = false`.
+#[derive(Deserialize)]
+struct StoredScope {
+    #[serde(default)]
+    workspace_only: bool,
+    include_deps: bool,
+    features: Vec<String>,
+    #[serde(default)]
+    all_features: bool,
+    #[serde(default)]
+    no_default_features: bool,
+    all_targets: bool,
+    targets: Vec<String>,
+    manifest_path: Option<PathBuf>,
+}
+
+impl From<StoredScope> for Scope {
+    fn from(stored: StoredScope) -> Self {
+        Scope {
+            include_deps: stored.include_deps && !stored.workspace_only,
+            features: stored.features,
+            all_features: stored.all_features,
+            no_default_features: stored.no_default_features,
+            all_targets: stored.all_targets,
+            targets: stored.targets,
+            manifest_path: stored.manifest_path,
+        }
+    }
 }
 
 impl Scope {
@@ -75,12 +107,6 @@ impl Scope {
     pub fn diff_fields(&self, other: &Scope) -> Vec<String> {
         let mut diffs = Vec::new();
 
-        if self.workspace_only != other.workspace_only {
-            diffs.push(format!(
-                "workspace_only: baseline={}, current={}",
-                self.workspace_only, other.workspace_only
-            ));
-        }
         if self.include_deps != other.include_deps {
             diffs.push(format!(
                 "include_deps: baseline={}, current={}",
@@ -131,7 +157,6 @@ impl Scope {
 impl From<&ScanOpts> for Scope {
     fn from(opts: &ScanOpts) -> Self {
         Scope {
-            workspace_only: opts.workspace_only,
             include_deps: opts.include_deps,
             features: opts.features.clone(),
             all_features: opts.all_features,
@@ -249,7 +274,6 @@ impl Totals {
 ///     analyzer_id: "rustc_unsafe_lint".into(),
 ///     language: "rust".into(),
 ///     scope: Scope {
-///         workspace_only: false,
 ///         include_deps: true,
 ///         features: vec![],
 ///         all_features: false,
@@ -424,7 +448,6 @@ mod tests {
     #[test]
     fn test_scope_from_scan_opts() {
         let opts = ScanOpts {
-            workspace_only: true,
             include_deps: false,
             features: vec!["feature1".into(), "feature2".into()],
             all_features: true,
@@ -437,7 +460,6 @@ mod tests {
 
         let scope = Scope::from(&opts);
 
-        assert!(scope.workspace_only);
         assert!(!scope.include_deps);
         assert_eq!(scope.features, vec!["feature1", "feature2"]);
         assert!(scope.all_features);
@@ -451,9 +473,27 @@ mod tests {
     }
 
     #[test]
+    fn test_scope_reads_workspace_only_as_excluded_deps() {
+        // (workspace_only, include_deps) as an older lock records them -> include_deps
+        let cases = [
+            ((true, true), false),
+            ((true, false), false),
+            ((false, false), false),
+            ((false, true), true),
+        ];
+        for ((workspace_only, include_deps), expected) in cases {
+            let stored = format!(
+                "workspace_only = {workspace_only}\ninclude_deps = {include_deps}\n\
+                 features = []\nall_targets = false\ntargets = []\n"
+            );
+            let scope: Scope = toml::from_str(&stored).unwrap();
+            assert_eq!(scope.include_deps, expected, "{stored}");
+        }
+    }
+
+    #[test]
     fn test_scope_diff_fields_equal() {
         let a = Scope {
-            workspace_only: false,
             include_deps: true,
             features: vec!["f1".into()],
             all_features: false,
@@ -468,7 +508,6 @@ mod tests {
     #[test]
     fn test_scope_diff_fields_all_different() {
         let baseline = Scope {
-            workspace_only: false,
             include_deps: true,
             features: vec!["f1".into()],
             all_features: false,
@@ -478,7 +517,6 @@ mod tests {
             manifest_path: None,
         };
         let current = Scope {
-            workspace_only: true,
             include_deps: false,
             features: vec!["f1".into(), "f2".into()],
             all_features: true,
@@ -488,21 +526,19 @@ mod tests {
             manifest_path: Some(PathBuf::from("Cargo.toml")),
         };
         let diffs = baseline.diff_fields(&current);
-        assert_eq!(diffs.len(), 8);
-        assert!(diffs[0].contains("workspace_only"));
-        assert!(diffs[1].contains("include_deps"));
-        assert!(diffs[2].contains("features"));
-        assert!(diffs[3].contains("all_features"));
-        assert!(diffs[4].contains("no_default_features"));
-        assert!(diffs[5].contains("all_targets"));
-        assert!(diffs[6].contains("targets"));
-        assert!(diffs[7].contains("manifest_path"));
+        assert_eq!(diffs.len(), 7);
+        assert!(diffs[0].contains("include_deps"));
+        assert!(diffs[1].contains("features"));
+        assert!(diffs[2].contains("all_features"));
+        assert!(diffs[3].contains("no_default_features"));
+        assert!(diffs[4].contains("all_targets"));
+        assert!(diffs[5].contains("targets"));
+        assert!(diffs[6].contains("manifest_path"));
     }
 
     #[test]
     fn test_scope_diff_fields_single_change() {
         let baseline = Scope {
-            workspace_only: false,
             include_deps: true,
             features: vec!["f1".into()],
             all_features: false,

@@ -170,19 +170,17 @@ pub(crate) fn add_unit_count(
 /// aggregate pre-collected unit counts and occurrences into sorted, filtered
 /// results.
 ///
-/// filters out dependency units when `opts.workspace_only` is set or
-/// `opts.include_deps` is false, converts the count map into sorted [`Unit`]
-/// values, and sorts the detail occurrences for deterministic output.
+/// filters out dependency units unless `opts.include_deps` is set, converts
+/// the count map into sorted [`Unit`] values, and sorts the detail occurrences
+/// for deterministic output.
 pub(crate) fn aggregate_units(
     counts: HashMap<String, (UnitKind, u64)>,
     details: Vec<Occurrence>,
     opts: &ScanOpts,
 ) -> (Vec<Unit>, Vec<Occurrence>) {
-    let exclude_deps = opts.workspace_only || !opts.include_deps;
-
     let mut units: Vec<Unit> = counts
         .into_iter()
-        .filter(|(_, (kind, _))| !exclude_deps || *kind != UnitKind::Dep)
+        .filter(|(_, (kind, _))| opts.includes(*kind))
         .map(|(name, (kind, count))| Unit {
             name,
             kind,
@@ -192,7 +190,7 @@ pub(crate) fn aggregate_units(
 
     units.sort_by(|a, b| a.name.cmp(&b.name));
 
-    let mut details = if exclude_deps && !details.is_empty() {
+    let mut details = if !opts.include_deps && !details.is_empty() {
         let retained: HashSet<&str> = units.iter().map(|u| u.name.as_str()).collect();
         details
             .into_iter()
@@ -269,7 +267,7 @@ mod tests {
     }
 
     #[test]
-    fn test_aggregate_units_filters_deps_workspace_only() {
+    fn test_aggregate_units_filters_deps_include_deps_false() {
         let mut counts = HashMap::new();
         counts.insert("my_crate".to_string(), (UnitKind::Workspace, 2));
         counts.insert("libc".to_string(), (UnitKind::Dep, 10));
@@ -292,8 +290,7 @@ mod tests {
         ];
 
         let opts = ScanOpts {
-            workspace_only: true,
-            include_deps: true,
+            include_deps: false,
             ..Default::default()
         };
 
@@ -303,23 +300,6 @@ mod tests {
         assert_eq!(units[0].name, "my_crate");
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].unit, "my_crate");
-    }
-
-    #[test]
-    fn test_aggregate_units_filters_deps_include_deps_false() {
-        let mut counts = HashMap::new();
-        counts.insert("my_crate".to_string(), (UnitKind::Workspace, 2));
-        counts.insert("libc".to_string(), (UnitKind::Dep, 10));
-
-        let opts = ScanOpts {
-            include_deps: false,
-            ..Default::default()
-        };
-
-        let (units, _) = aggregate_units(counts, vec![], &opts);
-
-        assert_eq!(units.len(), 1);
-        assert_eq!(units[0].name, "my_crate");
     }
 
     #[test]

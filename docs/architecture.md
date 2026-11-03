@@ -32,7 +32,6 @@ options passed from cli to analyzer:
 
 ```rust
 pub struct ScanOpts {
-    pub workspace_only: bool,
     pub include_deps: bool,
     pub features: Vec<String>,
     pub manifest_path: Option<PathBuf>,

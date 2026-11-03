@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- fix: `--no-deps` or `include_deps = false` alone leaves dependencies out: replace `--workspace-only` with `--no-deps` and a config's `workspace_only = true` with `include_deps = false`; a config that still sets `workspace_only` fails to load. previously `--include-deps --workspace-only` left dependencies out, and `check --no-deps` against a lock from `update --workspace-only` warned that the scan scope differs. existing locks need no `update`.
 - fix: every command, `plugins` included, rejects a config with `mode = "caps"` and no `[caps]` section, or with a `warnings.threshold` outside 0.0 to 1.0, when it loads it. previously only `check` rejected one, after scanning, so `scan` and `update` accepted it and `update` wrote a lock that `check` then refused.
 - fix: sarif output lists results in the same order as the json and text details: unit by unit, then by path (`src/foo/bar.rs` before `src/foo.rs`), line and column. occurrences at the same position now sort by message in every format instead of keeping the analyzer's order.
 - fix: `scripts/accept-unsafe.sh` accepts a lock written by a newer unsafe-budget and shows the tool version change. previously the first violation after upgrading the action was refused.

@@ -42,14 +42,14 @@ fn test_scan_sample_workspace() {
 
 #[test]
 #[ignore = "runs cargo"]
-fn test_workspace_only_scans_sibling_members() {
-    // `--workspace-only` compiles every workspace member, not just the root
+fn test_no_deps_scans_sibling_members() {
+    // `--no-deps` compiles every workspace member, not just the root
     // package; a sibling crate's unsafe code must be counted.
     let output = Command::new(env!("CARGO_BIN_EXE_unsafe-budget"))
         .arg("scan")
         .arg("--manifest-path")
         .arg(multi_member_fixture_path().join("Cargo.toml"))
-        .arg("--workspace-only")
+        .arg("--no-deps")
         .arg("--format")
         .arg("json")
         .output()
@@ -250,26 +250,20 @@ fn test_rev_bump_passes_check_with_empty_encoded_rustflags() {
 
 #[test]
 #[ignore = "runs cargo and git"]
-fn test_workspace_only_and_no_deps_exclude_dependency_units() {
+fn test_no_deps_excludes_dependency_units() {
     let tmp = tempfile::tempdir().unwrap();
     let manifest = write_capped_dependency_fixture(tmp.path());
 
-    for flag in ["--workspace-only", "--no-deps"] {
-        let result = scan_fixture(tmp.path(), &manifest, &[flag]);
-        assert_eq!(
-            unit_counts(&result),
-            vec![("app".to_string(), "workspace".to_string(), 2)],
-            "{flag}"
-        );
-        assert_eq!(result["totals"]["deps_unsafe"], 0, "{flag}");
-        let details = result["details"]
-            .as_array()
-            .expect("details should be array");
-        assert!(
-            details.iter().all(|d| d["unit"] == "app"),
-            "{flag}: {details:?}"
-        );
-    }
+    let result = scan_fixture(tmp.path(), &manifest, &["--no-deps"]);
+    assert_eq!(
+        unit_counts(&result),
+        vec![("app".to_string(), "workspace".to_string(), 2)]
+    );
+    assert_eq!(result["totals"]["deps_unsafe"], 0);
+    let details = result["details"]
+        .as_array()
+        .expect("details should be array");
+    assert!(details.iter().all(|d| d["unit"] == "app"), "{details:?}");
 }
 
 #[test]
@@ -519,7 +513,7 @@ fn test_cargo_geiger_scans_each_member_and_counts_shared_dependencies_once() {
         "{log}"
     );
 
-    let stdout = run_ok(&mut geiger(&["--workspace-only"]));
+    let stdout = run_ok(&mut geiger(&["--no-deps"]));
     let result: serde_json::Value = serde_json::from_slice(&stdout).unwrap();
     assert_eq!(
         unit_counts(&result),
@@ -611,7 +605,7 @@ fn test_cargo_geiger_subtracts_a_nested_member_and_warns_about_generated_unsafe_
             "cargo_geiger",
             "--format",
             "json",
-            "--workspace-only",
+            "--no-deps",
         ],
     );
     cmd.env("PATH", &path)
@@ -719,7 +713,7 @@ fn test_go_geiger_counts_each_package_of_its_tables_once() {
         unsafe_budget(
             &root,
             &project.join("go.mod"),
-            &["scan", "--analyzer", "go_geiger", "--workspace-only"],
+            &["scan", "--analyzer", "go_geiger", "--no-deps"],
         )
         .env("PATH", &path),
     );

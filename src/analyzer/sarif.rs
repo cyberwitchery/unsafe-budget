@@ -173,11 +173,10 @@ fn accumulate_recorded(
     occurrences: Vec<(Occurrence, UnitKind)>,
     opts: &ScanOpts,
 ) {
-    let exclude_deps = opts.workspace_only || !opts.include_deps;
     let mut excluded = HashSet::new();
 
     for unit in units {
-        let count = if exclude_deps && unit.kind == UnitKind::Dep {
+        let count = if !opts.includes(unit.kind) {
             excluded.insert(unit.name.clone());
             0
         } else {
@@ -199,10 +198,8 @@ fn accumulate_derived(
     occurrences: Vec<(Occurrence, UnitKind)>,
     opts: &ScanOpts,
 ) {
-    let exclude_deps = opts.workspace_only || !opts.include_deps;
-
     for (occ, kind) in occurrences {
-        if exclude_deps && kind == UnitKind::Dep {
+        if !opts.includes(kind) {
             continue;
         }
         super::add_unit_count(counts, occ.unit.clone(), kind, 1);
@@ -864,7 +861,7 @@ mod tests {
     }
 
     #[test]
-    fn test_convert_sarif_workspace_only_filters_deps() {
+    fn test_convert_sarif_no_deps_filters_deps() {
         // one workspace occurrence and one dependency-cache occurrence.
         let sarif_log = make_sarif(vec![
             make_sarif_result("crate_a/src/lib.rs", 10, 1, "workspace unsafe"),
@@ -889,8 +886,7 @@ mod tests {
         ]);
 
         let opts = ScanOpts {
-            workspace_only: true,
-            include_deps: true,
+            include_deps: false,
             ..Default::default()
         };
         let result = convert_sarif(&sarif_log, &opts).unwrap();
@@ -939,15 +935,6 @@ mod tests {
                     ..Default::default()
                 },
                 vec!["dependency", "member"],
-            ),
-            (
-                "workspace only",
-                ScanOpts {
-                    workspace_only: true,
-                    include_deps: true,
-                    ..Default::default()
-                },
-                vec!["member"],
             ),
             ("no deps", ScanOpts::default(), vec!["member"]),
         ];
@@ -1527,11 +1514,10 @@ mod tests {
     }
 
     #[test]
-    fn test_round_trip_honours_workspace_only() {
+    fn test_round_trip_honours_no_deps() {
         let scan = round_trip_fixture();
         let opts = ScanOpts {
-            workspace_only: true,
-            include_deps: true,
+            include_deps: false,
             ..Default::default()
         };
         let back = reread(&crate::sarif::scan_to_sarif(&scan), &opts);
@@ -1676,7 +1662,7 @@ mod tests {
             ];
             let run = with_bases(make_run("CodeQL", results), &[("%SRCROOT%", base)]);
             let opts = ScanOpts {
-                workspace_only: true,
+                include_deps: false,
                 ..Default::default()
             };
             let back = convert_sarif(&make_multi_run_sarif(vec![run]), &opts).unwrap();

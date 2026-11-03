@@ -172,14 +172,11 @@ fn build_scan_opts(args: &ScanArgs, config: &Config) -> ScanOpts {
         config.include_deps
     };
 
-    let workspace_only = args.workspace_only || config.workspace_only;
-
     // the general timeout bounds the built-in external analyzers and, unless a
     // plugin-specific override is set, plugins too
     let general_timeout = args.timeout.or(config.timeout_secs);
 
     ScanOpts {
-        workspace_only,
         include_deps,
         features: args.features.clone(),
         all_features: args.all_features,
@@ -251,7 +248,6 @@ mod tests {
 
     fn make_scope() -> Scope {
         Scope {
-            workspace_only: false,
             include_deps: true,
             features: vec![],
             all_features: false,

@@ -425,7 +425,6 @@ fn convert_reports(
     dirs: &PackageDirs,
     opts: &ScanOpts,
 ) -> (Vec<Unit>, Vec<ParseWarning>) {
-    let exclude_deps = opts.workspace_only || !opts.include_deps;
     let member_ids: HashSet<(&str, &str)> = members
         .iter()
         .map(|m| (m.name.as_str(), m.version.as_str()))
@@ -454,7 +453,7 @@ fn convert_reports(
                     (id.name.as_str(), id.version.as_str())
                         == (member.name.as_str(), member.version.as_str())
                 }
-                UnitKind::Dep => first && !exclude_deps,
+                UnitKind::Dep => first && opts.include_deps,
             };
             if !counted {
                 continue;
@@ -468,7 +467,7 @@ fn convert_reports(
         .iter()
         .flat_map(|r| &r.packages_without_metrics)
         .filter(|id| !scanned.contains(id))
-        .filter(|id| !exclude_deps || kind_of(id) == UnitKind::Workspace)
+        .filter(|id| opts.includes(kind_of(id)))
         .collect();
     let warnings = unscanned
         .into_iter()
@@ -689,29 +688,20 @@ mod tests {
     }
 
     #[test]
-    fn test_convert_reports_keeps_only_members_when_workspace_only() {
+    fn test_convert_reports_keeps_only_members_without_deps() {
         let reports = [report(ALPHA_REPORT), report(BETA_REPORT)];
-        for opts in [
-            ScanOpts {
-                workspace_only: true,
-                include_deps: true,
-                ..Default::default()
-            },
-            ScanOpts {
-                include_deps: false,
-                ..Default::default()
-            },
-        ] {
-            let (units, _) =
-                convert_reports(&reports, &fixture_members(), &PackageDirs::new(), &opts);
-            assert_eq!(
-                unit_rows(&units),
-                [
-                    ("alpha", UnitKind::Workspace, 8),
-                    ("beta", UnitKind::Workspace, 4),
-                ]
-            );
-        }
+        let opts = ScanOpts {
+            include_deps: false,
+            ..Default::default()
+        };
+        let (units, _) = convert_reports(&reports, &fixture_members(), &PackageDirs::new(), &opts);
+        assert_eq!(
+            unit_rows(&units),
+            [
+                ("alpha", UnitKind::Workspace, 8),
+                ("beta", UnitKind::Workspace, 4),
+            ]
+        );
     }
 
     #[test]
@@ -737,7 +727,7 @@ mod tests {
         let reports = [report(BETA_REPORT)];
         let members = [member("beta", "0.2.0"), member("itoa", "1.0.18")];
         let opts = ScanOpts {
-            workspace_only: true,
+            include_deps: false,
             ..Default::default()
         };
         let (units, _) = convert_reports(&reports, &members, &PackageDirs::new(), &opts);
@@ -758,11 +748,11 @@ mod tests {
         let (units, _) = convert_reports(&reports, &members, &PackageDirs::new(), &include_deps);
         assert_eq!(unit_rows(&units)[1], ("itoa", UnitKind::Workspace, 150));
 
-        let workspace_only = ScanOpts {
-            workspace_only: true,
+        let no_deps = ScanOpts {
+            include_deps: false,
             ..Default::default()
         };
-        let (units, _) = convert_reports(&reports, &members, &PackageDirs::new(), &workspace_only);
+        let (units, _) = convert_reports(&reports, &members, &PackageDirs::new(), &no_deps);
         assert_eq!(unit_rows(&units), [("itoa", UnitKind::Workspace, 4)]);
     }
 
@@ -855,7 +845,7 @@ mod tests {
             ),
         ]);
         let opts = ScanOpts {
-            workspace_only: true,
+            include_deps: false,
             ..Default::default()
         };
         let (units, _) = convert_reports(&reports, &members, &dirs, &opts);
@@ -1083,16 +1073,12 @@ mod tests {
             }]
         );
 
-        let workspace_only = ScanOpts {
-            workspace_only: true,
+        let no_deps = ScanOpts {
+            include_deps: false,
             ..Default::default()
         };
-        let (_, warnings) = convert_reports(
-            &reports,
-            &fixture_members(),
-            &PackageDirs::new(),
-            &workspace_only,
-        );
+        let (_, warnings) =
+            convert_reports(&reports, &fixture_members(), &PackageDirs::new(), &no_deps);
         assert!(warnings.is_empty());
     }
 

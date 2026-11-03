@@ -36,10 +36,6 @@ pub struct ScanArgs {
     #[arg(long, default_value = "auto")]
     pub analyzer: String,
 
-    /// only scan workspace crates (exclude dependencies)
-    #[arg(long)]
-    pub workspace_only: bool,
-
     /// include dependencies in scan (default: from config or true)
     #[arg(long, conflicts_with = "no_deps")]
     pub include_deps: bool,
@@ -119,18 +115,25 @@ mod tests {
 
     #[test]
     fn include_deps_and_no_deps_flags() {
-        // flags -> Some((include_deps, no_deps)), or None for a conflict
-        type Case<'a> = (&'a [&'a str], Option<(bool, bool)>);
-        let cases: [Case; 3] = [
-            (&["--include-deps", "--no-deps"], None),
-            (&["--include-deps"], Some((true, false))),
-            (&["--no-deps"], Some((false, true))),
+        // flags -> Ok((include_deps, no_deps)), or the parse error
+        type Case<'a> = (&'a [&'a str], Result<(bool, bool), ErrorKind>);
+        let cases: [Case; 4] = [
+            (
+                &["--include-deps", "--no-deps"],
+                Err(ErrorKind::ArgumentConflict),
+            ),
+            (&["--include-deps"], Ok((true, false))),
+            (&["--no-deps"], Ok((false, true))),
+            (
+                &["--include-deps", "--workspace-only"],
+                Err(ErrorKind::UnknownArgument),
+            ),
         ];
         for (flags, expected) in cases {
             let argv = ["unsafe-budget", "scan"].iter().chain(flags);
             match (Cli::try_parse_from(argv), expected) {
-                (Err(e), None) => assert_eq!(e.kind(), ErrorKind::ArgumentConflict, "{flags:?}"),
-                (Ok(cli), Some(expected)) => match cli.command {
+                (Err(e), Err(kind)) => assert_eq!(e.kind(), kind, "{flags:?}"),
+                (Ok(cli), Ok(expected)) => match cli.command {
                     Command::Scan(args) => {
                         assert_eq!((args.include_deps, args.no_deps), expected, "{flags:?}")
                     }

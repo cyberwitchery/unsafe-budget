@@ -72,7 +72,7 @@ example with extra flags:
   with:
     mode: check
     version: v0.5.2
-    args: --analyzer cargo_geiger --workspace-only
+    args: --analyzer cargo_geiger --no-deps
 ```
 
 the `cargo_geiger` analyzer runs `cargo geiger`, so install cargo-geiger in an
@@ -276,4 +276,4 @@ use the sarif analyzer to apply budget logic to output from any sarif-producing 
 - commit `unsafe-budget.lock` to your repository
 - run `unsafe-budget update` locally before first ci run
 - use `--format json` for machine-readable output
-- use `--workspace-only` to ignore dependencies
+- use `--no-deps` to ignore dependencies

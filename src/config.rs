@@ -68,8 +68,6 @@ pub struct Config {
     #[serde(default = "default_true")]
     pub include_deps: bool,
     #[serde(default)]
-    pub workspace_only: bool,
-    #[serde(default)]
     pub ignore_units: Vec<String>,
     /// specific occurrences to exclude from counts.
     ///
@@ -107,7 +105,6 @@ impl Default for Config {
         Config {
             mode: Mode::default(),
             include_deps: true,
-            workspace_only: false,
             ignore_units: Vec::new(),
             ignore: Vec::new(),
             caps: None,
@@ -125,6 +122,11 @@ impl Config {
             return Ok(Config::default());
         }
         let content = fs::read_to_string(path)?;
+        if toml::from_str::<toml::Table>(&content).is_ok_and(|t| t.contains_key("workspace_only")) {
+            return Err(Error::Config(
+                "`workspace_only` is no longer supported: use `include_deps = false` to exclude dependencies".into(),
+            ));
+        }
         let config: Config = toml::from_str(&content)?;
         config.validate()?;
         Ok(config)
@@ -232,7 +234,6 @@ mod tests {
         let config = Config::default();
         assert_eq!(config.mode, Mode::Ratchet);
         assert!(config.include_deps);
-        assert!(!config.workspace_only);
         assert!(config.ignore_units.is_empty());
     }
 
@@ -241,7 +242,6 @@ mod tests {
         let toml = r#"
 mode = "caps"
 include_deps = false
-workspace_only = true
 ignore_units = ["foo", "bar"]
 
 [caps]
@@ -259,7 +259,6 @@ threshold = 0.8
         let config: Config = toml::from_str(toml).unwrap();
         assert_eq!(config.mode, Mode::Caps);
         assert!(!config.include_deps);
-        assert!(config.workspace_only);
         assert_eq!(config.ignore_units, vec!["foo", "bar"]);
 
         let caps = config.caps.as_ref().unwrap();
@@ -305,7 +304,6 @@ line = 7
             tool_version: "0.1.0".into(),
             analyzer_id: "rustc_unsafe_lint".into(),
             scope: Scope {
-                workspace_only: false,
                 include_deps: true,
                 features: vec![],
                 all_features: false,
@@ -340,7 +338,6 @@ line = 7
 analyzer_id = "rustc_unsafe_lint"
 
 [scope]
-workspace_only = false
 include_deps = true
 features = []
 all_features = false
@@ -422,7 +419,6 @@ unsafe_count = 20
         let toml = r#"
 mode = "ratchet"
 include_deps = true
-workspace_only = false
 ignore_units = ["test_crate"]
 plugin_timeout_secs = 30
 timeout_secs = 300
@@ -461,6 +457,10 @@ threshold = 0.8
         let cases = [
             ("unknown_key = 1", Some("unknown field `unknown_key`")),
             (
+                "workspace_only = true",
+                Some("use `include_deps = false` to exclude dependencies"),
+            ),
+            (
                 "mode = \"caps\"",
                 Some("caps mode requires [caps] section in config"),
             ),
@@ -498,7 +498,6 @@ threshold = 0.8
             tool_version: "0.1.0".into(),
             analyzer_id: "test".into(),
             scope: Scope {
-                workspace_only: false,
                 include_deps: true,
                 features: vec![],
                 all_features: false,
