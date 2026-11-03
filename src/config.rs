@@ -67,6 +67,9 @@ pub struct Config {
     pub mode: Mode,
     #[serde(default = "default_true")]
     pub include_deps: bool,
+    /// no longer supported: `false` is ignored and `true` fails [`Config::validate`].
+    #[serde(default, skip_serializing)]
+    pub workspace_only: Option<bool>,
     #[serde(default)]
     pub ignore_units: Vec<String>,
     /// specific occurrences to exclude from counts.
@@ -105,6 +108,7 @@ impl Default for Config {
         Config {
             mode: Mode::default(),
             include_deps: true,
+            workspace_only: None,
             ignore_units: Vec::new(),
             ignore: Vec::new(),
             caps: None,
@@ -122,18 +126,19 @@ impl Config {
             return Ok(Config::default());
         }
         let content = fs::read_to_string(path)?;
-        if toml::from_str::<toml::Table>(&content).is_ok_and(|t| t.contains_key("workspace_only")) {
-            return Err(Error::Config(
-                "`workspace_only` is no longer supported: use `include_deps = false` to exclude dependencies".into(),
-            ));
-        }
         let config: Config = toml::from_str(&content)?;
         config.validate()?;
         Ok(config)
     }
 
-    /// reject caps mode without a `[caps]` section and a `warnings.threshold` outside 0.0..=1.0.
+    /// reject `workspace_only = true`, caps mode without a `[caps]` section and a
+    /// `warnings.threshold` outside 0.0..=1.0.
     pub fn validate(&self) -> Result<()> {
+        if self.workspace_only == Some(true) {
+            return Err(Error::Config(
+                "`workspace_only = true` is no longer supported: use `include_deps = false` to exclude dependencies".into(),
+            ));
+        }
         if self.mode == Mode::Caps && self.caps.is_none() {
             return Err(Error::Config(
                 "caps mode requires [caps] section in config".into(),
@@ -420,6 +425,7 @@ unsafe_count = 20
         let toml = r#"
 mode = "ratchet"
 include_deps = true
+workspace_only = false
 ignore_units = ["test_crate"]
 plugin_timeout_secs = 30
 timeout_secs = 300
@@ -461,6 +467,7 @@ threshold = 0.8
                 "workspace_only = true",
                 Some("use `include_deps = false` to exclude dependencies"),
             ),
+            ("workspace_only = false", None),
             (
                 "mode = \"caps\"",
                 Some("caps mode requires [caps] section in config"),
