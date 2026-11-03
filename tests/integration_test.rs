@@ -819,3 +819,30 @@ fn test_sarif_output_leaves_out_an_unknown_line_or_column() {
         "{text}"
     );
 }
+
+#[test]
+fn test_update_fails_on_an_invalid_config_without_writing_the_lock() {
+    let tmp = tempfile::tempdir().unwrap();
+    let input = tmp.path().join("in.sarif");
+    fs::write(
+        &input,
+        r#"{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"other"}},"results":[]}]}"#,
+    )
+    .unwrap();
+    fs::write(
+        tmp.path().join("unsafe-budget.toml"),
+        "[warnings]\nthreshold = 5.0\n",
+    )
+    .unwrap();
+
+    let output = unsafe_budget(tmp.path(), &input, &["update", "--analyzer", "sarif"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("warnings.threshold must be between 0.0 and 1.0, got 5"),
+        "{output:?}"
+    );
+    assert!(!tmp.path().join("unsafe-budget.lock").exists());
+}

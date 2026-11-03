@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- fix: every command, `plugins` included, rejects a config with `mode = "caps"` and no `[caps]` section, or with a `warnings.threshold` outside 0.0 to 1.0, when it loads it. previously only `check` rejected one, after scanning, so `scan` and `update` accepted it and `update` wrote a lock that `check` then refused.
 - fix: sarif output lists results in the same order as the json and text details: unit by unit, then by path (`src/foo/bar.rs` before `src/foo.rs`), line and column. occurrences at the same position now sort by message in every format instead of keeping the analyzer's order.
 - fix: `scripts/accept-unsafe.sh` accepts a lock written by a newer unsafe-budget and shows the tool version change. previously the first violation after upgrading the action was refused.
 - fix: the `rustc_unsafe_lint` analyzer fails the scan when `cargo check` fails, for example on a compile error or on a warning under `RUSTFLAGS="-D warnings"`. the error shows cargo's stderr, which names the crate that failed to compile but not the compiler's error. previously the scan reported the count of whatever cargo checked before it stopped, so a crate depending on the one that failed counted as 0, `check` passed and `update` wrote that count as the baseline.

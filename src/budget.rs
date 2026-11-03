@@ -9,6 +9,7 @@ pub fn check(
     baseline: Option<&Baseline>,
     config: &Config,
 ) -> Result<CheckResult> {
+    config.validate()?;
     let unit_map = baseline.map(|b| b.unit_map());
 
     let violations = match config.mode {
@@ -26,7 +27,7 @@ pub fn check(
         }
     };
 
-    let warnings = compute_warnings(scan, unit_map.as_ref(), config, &violations)?;
+    let warnings = compute_warnings(scan, unit_map.as_ref(), config, &violations);
 
     let passed = violations.is_empty();
     Ok(CheckResult {
@@ -42,18 +43,11 @@ fn compute_warnings(
     baseline_map: Option<&HashMap<&str, u64>>,
     config: &Config,
     violations: &[Violation],
-) -> Result<Vec<Warning>> {
+) -> Vec<Warning> {
     let threshold = match &config.warnings {
         Some(w) => w.threshold,
-        None => return Ok(Vec::new()),
+        None => return Vec::new(),
     };
-
-    if !(0.0..=1.0).contains(&threshold) {
-        return Err(Error::Config(format!(
-            "warnings.threshold must be between 0.0 and 1.0, got {}",
-            threshold
-        )));
-    }
 
     let violating_units: HashSet<&str> = violations.iter().map(|v| v.unit.as_str()).collect();
     let mut warnings = Vec::new();
@@ -93,7 +87,7 @@ fn compute_warnings(
             .then_with(|| a.unit.cmp(&b.unit))
     });
 
-    Ok(warnings)
+    warnings
 }
 
 fn budget_for_unit(

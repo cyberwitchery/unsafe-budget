@@ -119,14 +119,33 @@ impl Default for Config {
 }
 
 impl Config {
-    /// load config from file, or return defaults if not found.
+    /// load and validate config from file, or return defaults if not found.
     pub fn load(path: &Path) -> Result<Self> {
         if !path.exists() {
             return Ok(Config::default());
         }
         let content = fs::read_to_string(path)?;
         let config: Config = toml::from_str(&content)?;
+        config.validate()?;
         Ok(config)
+    }
+
+    /// reject caps mode without a `[caps]` section and a `warnings.threshold` outside 0.0..=1.0.
+    pub fn validate(&self) -> Result<()> {
+        if self.mode == Mode::Caps && self.caps.is_none() {
+            return Err(Error::Config(
+                "caps mode requires [caps] section in config".into(),
+            ));
+        }
+        if let Some(warnings) = &self.warnings {
+            if !(0.0..=1.0).contains(&warnings.threshold) {
+                return Err(Error::Config(format!(
+                    "warnings.threshold must be between 0.0 and 1.0, got {}",
+                    warnings.threshold
+                )));
+            }
+        }
+        Ok(())
     }
 
     /// load config from the standard location in a directory.
@@ -434,12 +453,43 @@ threshold = 0.8
     }
 
     #[test]
-    fn test_config_load_rejects_unknown_key() {
+    fn test_config_load_validates() {
         use tempfile::TempDir;
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("unsafe-budget.toml");
-        std::fs::write(&path, "include_deps = true\nunknown_key = 1\n").unwrap();
-        assert!(Config::load(&path).is_err());
+        // file -> load error, or None when it loads
+        let cases = [
+            ("unknown_key = 1", Some("unknown field `unknown_key`")),
+            (
+                "mode = \"caps\"",
+                Some("caps mode requires [caps] section in config"),
+            ),
+            (
+                "warnings.threshold = 5.0",
+                Some("between 0.0 and 1.0, got 5"),
+            ),
+            (
+                "warnings.threshold = -0.1",
+                Some("between 0.0 and 1.0, got -0.1"),
+            ),
+            (
+                "warnings.threshold = nan",
+                Some("between 0.0 and 1.0, got NaN"),
+            ),
+            ("warnings.threshold = 0.0", None),
+            ("warnings.threshold = 1.0", None),
+        ];
+        for (toml, expected) in cases {
+            std::fs::write(&path, toml).unwrap();
+            let err = Config::load(&path).err().map(|e| e.to_string());
+            match expected {
+                Some(msg) => assert!(
+                    err.as_ref().is_some_and(|e| e.contains(msg)),
+                    "{toml}: {err:?}"
+                ),
+                None => assert_eq!(err, None, "{toml}"),
+            }
+        }
     }
 
     #[test]
