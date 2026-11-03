@@ -41,7 +41,7 @@ pub struct ScanArgs {
     pub include_deps: bool,
 
     /// exclude dependencies from scan
-    #[arg(long)]
+    #[arg(long, alias = "workspace-only", overrides_with = "no_deps")]
     pub no_deps: bool,
 
     /// Cargo features to enable
@@ -117,7 +117,7 @@ mod tests {
     fn include_deps_and_no_deps_flags() {
         // flags -> Ok((include_deps, no_deps)), or the parse error
         type Case<'a> = (&'a [&'a str], Result<(bool, bool), ErrorKind>);
-        let cases: [Case; 4] = [
+        let cases: [Case; 6] = [
             (
                 &["--include-deps", "--no-deps"],
                 Err(ErrorKind::ArgumentConflict),
@@ -126,8 +126,10 @@ mod tests {
             (&["--no-deps"], Ok((false, true))),
             (
                 &["--include-deps", "--workspace-only"],
-                Err(ErrorKind::UnknownArgument),
+                Err(ErrorKind::ArgumentConflict),
             ),
+            (&["--workspace-only"], Ok((false, true))),
+            (&["--no-deps", "--workspace-only"], Ok((false, true))),
         ];
         for (flags, expected) in cases {
             let argv = ["unsafe-budget", "scan"].iter().chain(flags);
