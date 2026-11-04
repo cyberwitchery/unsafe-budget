@@ -119,7 +119,7 @@ fn build_plugin_cmd(path: &Path, opts: &ScanOpts) -> Command {
 
     cmd.env(
         "UNSAFE_BUDGET_WORKSPACE_ONLY",
-        opts.workspace_only.to_string(),
+        (!opts.include_deps).to_string(),
     );
     cmd.env("UNSAFE_BUDGET_INCLUDE_DEPS", opts.include_deps.to_string());
     cmd.env("UNSAFE_BUDGET_ALL_FEATURES", opts.all_features.to_string());
@@ -196,10 +196,9 @@ fn parse_plugin_output(
 /// are recomputed from the surviving units. `tool_version`, `language`, and
 /// findings are kept as the plugin reported them.
 fn sanitize_plugin_result(id: &str, opts: &ScanOpts, result: ScanResult) -> ScanResult {
-    let exclude_deps = opts.workspace_only || !opts.include_deps;
     let mut counts: HashMap<String, (UnitKind, u64)> = HashMap::new();
     for unit in result.units {
-        if exclude_deps && unit.kind == UnitKind::Dep {
+        if !opts.includes(unit.kind) {
             continue;
         }
         add_unit_count(&mut counts, unit.name, unit.kind, unit.unsafe_count);
@@ -506,7 +505,6 @@ mod tests {
 
     fn host_scope() -> Scope {
         Scope {
-            workspace_only: false,
             include_deps: true,
             features: vec![],
             all_features: false,
@@ -596,8 +594,8 @@ mod tests {
             include_deps: true,
             ..Default::default()
         };
-        let workspace_only = ScanOpts {
-            workspace_only: true,
+        let no_deps = ScanOpts {
+            include_deps: false,
             ..Default::default()
         };
         let cases = [
@@ -620,20 +618,20 @@ mod tests {
                 vec![("app", UnitKind::Workspace, 7)],
             ),
             (
-                "workspace then dep, workspace only",
-                &workspace_only,
+                "workspace then dep, no deps",
+                &no_deps,
                 vec![("app", UnitKind::Workspace, 5), ("app", UnitKind::Dep, 2)],
                 vec![("app", UnitKind::Workspace, 5)],
             ),
             (
-                "dep then workspace, workspace only",
-                &workspace_only,
+                "dep then workspace, no deps",
+                &no_deps,
                 vec![("app", UnitKind::Dep, 2), ("app", UnitKind::Workspace, 5)],
                 vec![("app", UnitKind::Workspace, 5)],
             ),
             (
-                "dep rows, workspace only",
-                &workspace_only,
+                "dep rows, no deps",
+                &no_deps,
                 vec![("lodash", UnitKind::Dep, 5), ("lodash", UnitKind::Dep, 2)],
                 vec![],
             ),
@@ -702,8 +700,7 @@ mod tests {
             ..Default::default()
         };
         let wrong = Scope {
-            workspace_only: true,
-            include_deps: false,
+            include_deps: true,
             features: vec!["pluginfeat".into()],
             all_features: true,
             no_default_features: true,
@@ -718,8 +715,33 @@ mod tests {
         );
 
         assert_eq!(out.scope, Scope::from(&opts));
-        assert!(!out.scope.workspace_only);
+        assert!(!out.scope.include_deps);
         assert_eq!(out.scope.features, vec!["hostfeat"]);
+    }
+
+    #[test]
+    fn plugin_env_sets_both_dependency_variables_from_include_deps() {
+        for include_deps in [true, false] {
+            let opts = ScanOpts {
+                include_deps,
+                ..Default::default()
+            };
+            let cmd = build_plugin_cmd(Path::new("plugin"), &opts);
+            let var = |name: &str| {
+                cmd.get_envs()
+                    .find(|&(key, _)| key == name)
+                    .and_then(|(_, value)| value)
+                    .map(|value| value.to_string_lossy().into_owned())
+            };
+            assert_eq!(
+                var("UNSAFE_BUDGET_INCLUDE_DEPS"),
+                Some(include_deps.to_string())
+            );
+            assert_eq!(
+                var("UNSAFE_BUDGET_WORKSPACE_ONLY"),
+                Some((!include_deps).to_string())
+            );
+        }
     }
 
     #[test]

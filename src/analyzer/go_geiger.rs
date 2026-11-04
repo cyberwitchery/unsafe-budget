@@ -378,24 +378,17 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_geiger_output_leaves_out_dependencies_when_workspace_only_or_without_deps() {
-        let workspace_only = ScanOpts {
-            workspace_only: true,
-            include_deps: true,
-            ..Default::default()
-        };
-        for opts in [workspace_only, ScanOpts::default()] {
-            let (units, _) = parse(MULTI_PACKAGE, MP_WORKSPACE, &opts);
-            let names: Vec<_> = units.iter().map(|u| u.name.as_str()).collect();
-            assert_eq!(
-                names,
-                [
-                    "example.com/mp",
-                    "example.com/mp/clean",
-                    "example.com/mp/inner"
-                ]
-            );
-        }
+    fn test_parse_geiger_output_leaves_out_dependencies_without_deps() {
+        let (units, _) = parse(MULTI_PACKAGE, MP_WORKSPACE, &ScanOpts::default());
+        let names: Vec<_> = units.iter().map(|u| u.name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "example.com/mp",
+                "example.com/mp/clean",
+                "example.com/mp/inner"
+            ]
+        );
     }
 
     #[test]

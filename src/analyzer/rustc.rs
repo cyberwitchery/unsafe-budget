@@ -99,7 +99,7 @@ fn build_cargo_check_command(opts: &ScanOpts, lint: &LintFlags) -> Command {
     // always compile the whole workspace so every member emits diagnostics.
     // omitting `--workspace` would build only the current package, leaving
     // sibling members unseen and silently counted as zero. dependency exclusion
-    // (for `workspace_only`) happens later in aggregation, not by narrowing the
+    // (for `--no-deps`) happens later in aggregation, not by narrowing the
     // compile set.
     cmd.arg("--workspace");
 
@@ -416,11 +416,10 @@ fn aggregate_occurrences(
 ) -> (Vec<Unit>, Vec<Occurrence>) {
     let mut counts: HashMap<String, (UnitKind, u64)> = HashMap::new();
     let mut details = Vec::new();
-    let exclude_deps = opts.workspace_only || !opts.include_deps;
 
     for (occ, kind) in occurrences {
         // units are keyed by name, so a dependency may share a member's unit.
-        if exclude_deps && kind == UnitKind::Dep {
+        if !opts.includes(kind) {
             continue;
         }
         super::add_unit_count(&mut counts, occ.unit.clone(), kind, 1);
@@ -428,7 +427,7 @@ fn aggregate_occurrences(
     }
 
     // ensure workspace members appear with 0 count when deps are excluded
-    if opts.workspace_only || !opts.include_deps {
+    if !opts.includes(UnitKind::Dep) {
         for member in workspace_members {
             counts
                 .entry(member.clone())
@@ -614,53 +613,38 @@ mod tests {
     #[test]
     fn test_aggregate_occurrences_drops_deps() {
         let workspace_members: HashSet<String> = ["my_crate".to_string()].into_iter().collect();
-        let cases = [
+        let opts = ScanOpts {
+            include_deps: false,
+            ..Default::default()
+        };
+        let occurrences = vec![
             (
-                "workspace_only",
-                ScanOpts {
-                    workspace_only: true,
-                    include_deps: true,
-                    ..Default::default()
+                Occurrence {
+                    unit: "my_crate".into(),
+                    file: "src/lib.rs".into(),
+                    line: 10,
+                    col: 5,
+                    message: None,
                 },
+                UnitKind::Workspace,
             ),
             (
-                "no deps",
-                ScanOpts {
-                    include_deps: false,
-                    ..Default::default()
+                Occurrence {
+                    unit: "libc".into(),
+                    file: "src/lib.rs".into(),
+                    line: 100,
+                    col: 1,
+                    message: None,
                 },
+                UnitKind::Dep,
             ),
         ];
-        for (name, opts) in cases {
-            let occurrences = vec![
-                (
-                    Occurrence {
-                        unit: "my_crate".into(),
-                        file: "src/lib.rs".into(),
-                        line: 10,
-                        col: 5,
-                        message: None,
-                    },
-                    UnitKind::Workspace,
-                ),
-                (
-                    Occurrence {
-                        unit: "libc".into(),
-                        file: "src/lib.rs".into(),
-                        line: 100,
-                        col: 1,
-                        message: None,
-                    },
-                    UnitKind::Dep,
-                ),
-            ];
 
-            let (units, details) = aggregate_occurrences(occurrences, &workspace_members, &opts);
+        let (units, details) = aggregate_occurrences(occurrences, &workspace_members, &opts);
 
-            assert_eq!(units.len(), 1, "{name}");
-            assert_eq!(units[0].name, "my_crate", "{name}");
-            assert_eq!(details.len(), 1, "{name}");
-        }
+        assert_eq!(units.len(), 1);
+        assert_eq!(units[0].name, "my_crate");
+        assert_eq!(details.len(), 1);
     }
 
     #[test]
@@ -792,8 +776,8 @@ mod tests {
             include_deps: true,
             ..Default::default()
         };
-        let workspace_only = ScanOpts {
-            workspace_only: true,
+        let no_deps = ScanOpts {
+            include_deps: false,
             ..all.clone()
         };
 
@@ -807,24 +791,23 @@ mod tests {
         let (units, details) = aggregate_occurrences(
             vec![dep.clone(), member.clone()],
             &workspace_members,
-            &workspace_only,
+            &no_deps,
         );
         assert_eq!(units, [app2(UnitKind::Workspace, 1)]);
         assert_eq!(details, [member.0]);
 
-        let (units, details) =
-            aggregate_occurrences(vec![dep], &workspace_members, &workspace_only);
+        let (units, details) = aggregate_occurrences(vec![dep], &workspace_members, &no_deps);
         assert_eq!(units, [app2(UnitKind::Workspace, 0)]);
         assert!(details.is_empty(), "{details:?}");
     }
 
     #[test]
     fn test_cargo_check_command_always_scans_whole_workspace() {
-        // `--workspace` is added regardless of `--workspace-only`; narrowing
+        // `--workspace` is added regardless of `--no-deps`; narrowing
         // the compile set would leave sibling members counted as zero.
-        for workspace_only in [false, true] {
+        for include_deps in [false, true] {
             let opts = ScanOpts {
-                workspace_only,
+                include_deps,
                 ..Default::default()
             };
             let cmd = build_cargo_check_command(&opts, &LintFlags::default());
@@ -834,7 +817,7 @@ mod tests {
                 .collect();
             assert!(
                 args.contains(&"--workspace".to_string()),
-                "cargo check must pass --workspace (workspace_only={workspace_only}), got {args:?}"
+                "cargo check must pass --workspace (include_deps={include_deps}), got {args:?}"
             );
         }
     }

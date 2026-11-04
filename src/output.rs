@@ -435,7 +435,6 @@ mod tests {
             analyzer_id: "test".into(),
             language: "rust".into(),
             scope: Scope {
-                workspace_only: false,
                 include_deps: true,
                 features: vec![],
                 all_features: false,

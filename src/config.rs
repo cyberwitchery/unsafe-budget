@@ -67,8 +67,9 @@ pub struct Config {
     pub mode: Mode,
     #[serde(default = "default_true")]
     pub include_deps: bool,
-    #[serde(default)]
-    pub workspace_only: bool,
+    /// no longer supported: `false` is ignored and `true` fails [`Config::validate`].
+    #[serde(default, skip_serializing)]
+    pub workspace_only: Option<bool>,
     #[serde(default)]
     pub ignore_units: Vec<String>,
     /// specific occurrences to exclude from counts.
@@ -107,7 +108,7 @@ impl Default for Config {
         Config {
             mode: Mode::default(),
             include_deps: true,
-            workspace_only: false,
+            workspace_only: None,
             ignore_units: Vec::new(),
             ignore: Vec::new(),
             caps: None,
@@ -130,8 +131,14 @@ impl Config {
         Ok(config)
     }
 
-    /// reject caps mode without a `[caps]` section and a `warnings.threshold` outside 0.0..=1.0.
+    /// reject `workspace_only = true`, caps mode without a `[caps]` section and a
+    /// `warnings.threshold` outside 0.0..=1.0.
     pub fn validate(&self) -> Result<()> {
+        if self.workspace_only == Some(true) {
+            return Err(Error::Config(
+                "`workspace_only = true` is no longer supported: use `include_deps = false` to exclude dependencies".into(),
+            ));
+        }
         if self.mode == Mode::Caps && self.caps.is_none() {
             return Err(Error::Config(
                 "caps mode requires [caps] section in config".into(),
@@ -232,7 +239,6 @@ mod tests {
         let config = Config::default();
         assert_eq!(config.mode, Mode::Ratchet);
         assert!(config.include_deps);
-        assert!(!config.workspace_only);
         assert!(config.ignore_units.is_empty());
     }
 
@@ -241,7 +247,6 @@ mod tests {
         let toml = r#"
 mode = "caps"
 include_deps = false
-workspace_only = true
 ignore_units = ["foo", "bar"]
 
 [caps]
@@ -259,7 +264,6 @@ threshold = 0.8
         let config: Config = toml::from_str(toml).unwrap();
         assert_eq!(config.mode, Mode::Caps);
         assert!(!config.include_deps);
-        assert!(config.workspace_only);
         assert_eq!(config.ignore_units, vec!["foo", "bar"]);
 
         let caps = config.caps.as_ref().unwrap();
@@ -305,7 +309,6 @@ line = 7
             tool_version: "0.1.0".into(),
             analyzer_id: "rustc_unsafe_lint".into(),
             scope: Scope {
-                workspace_only: false,
                 include_deps: true,
                 features: vec![],
                 all_features: false,
@@ -461,6 +464,11 @@ threshold = 0.8
         let cases = [
             ("unknown_key = 1", Some("unknown field `unknown_key`")),
             (
+                "workspace_only = true",
+                Some("use `include_deps = false` to exclude dependencies"),
+            ),
+            ("workspace_only = false", None),
+            (
                 "mode = \"caps\"",
                 Some("caps mode requires [caps] section in config"),
             ),
@@ -498,7 +506,6 @@ threshold = 0.8
             tool_version: "0.1.0".into(),
             analyzer_id: "test".into(),
             scope: Scope {
-                workspace_only: false,
                 include_deps: true,
                 features: vec![],
                 all_features: false,

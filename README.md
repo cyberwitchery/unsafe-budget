@@ -74,7 +74,7 @@ cargo unsafe-budget update
 unsafe-budget scan --format json          # json output
 unsafe-budget scan --format sarif         # sarif output for code scanning
 unsafe-budget scan --analyzer cargo_geiger # explicit analyzer
-unsafe-budget scan --workspace-only       # skip dependencies
+unsafe-budget scan --no-deps              # skip dependencies
 unsafe-budget scan --details              # show line-level occurrences
 unsafe-budget scan --timeout 300          # bound external analyzer/plugin subprocesses (seconds)
 ```

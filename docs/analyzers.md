@@ -77,7 +77,7 @@ unsafe-budget scan
 unsafe-budget scan --analyzer go_geiger
 
 # skip dependencies
-unsafe-budget scan --analyzer go_geiger --workspace-only
+unsafe-budget scan --analyzer go_geiger --no-deps
 ```
 
 **example output**:
@@ -178,10 +178,9 @@ paths `[[ignore]]` entries match. a path relative to a `uriBaseId` stays
 relative; the base is resolved through `run.originalUriBaseIds` only to tell
 dependency files from workspace files and to name dependency units.
 
-what a round-trip does not carry: `--workspace-only`, `--no-deps` and the
-other scope flags of the re-read apply to the recorded units, and the
-recovered result's `analyzer_id` is `sarif` rather than the analyzer that
-produced the file.
+what a round-trip does not carry: `--no-deps` and the other scope flags of the
+re-read apply to the recorded units, and the recovered result's `analyzer_id`
+is `sarif` rather than the analyzer that produced the file.
 
 **language inference**: SARIF written by unsafe-budget records the language in
 `run.properties`, and that value is used directly. otherwise the language is
@@ -208,8 +207,8 @@ plugins receive options via environment variables:
 
 | variable | description |
 |----------|-------------|
-| `UNSAFE_BUDGET_WORKSPACE_ONLY` | "true" or "false" |
 | `UNSAFE_BUDGET_INCLUDE_DEPS` | "true" or "false" |
+| `UNSAFE_BUDGET_WORKSPACE_ONLY` | the opposite of `UNSAFE_BUDGET_INCLUDE_DEPS` |
 | `UNSAFE_BUDGET_FEATURES` | comma-separated features |
 | `UNSAFE_BUDGET_ALL_FEATURES` | "true" or "false" |
 | `UNSAFE_BUDGET_NO_DEFAULT_FEATURES` | "true" or "false" |
@@ -232,9 +231,9 @@ plugins output json to stdout:
 ```
 
 the host sanitizes this output: `analyzer_id` and `scope` are overwritten with
-its own values, units whose `kind` is `dep` are filtered out under
-`--workspace-only`/`--no-deps`, and `totals` are recomputed from the surviving
-units. `tool_version`, `language`, `units`, and `details` are kept as reported.
+its own values, units whose `kind` is `dep` are filtered out under `--no-deps`,
+and `totals` are recomputed from the surviving units. `tool_version`,
+`language`, `units`, and `details` are kept as reported.
 rows in `units` that name the same unit are added together, and a `workspace`
 row makes that unit workspace code. `scope`, `analyzer_id`, and `totals` must
 still be present for the JSON to parse.
