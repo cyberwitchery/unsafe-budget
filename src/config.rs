@@ -171,7 +171,7 @@ pub struct Baseline {
     pub units: Vec<BaselineUnit>,
 }
 
-/// unit entry in baseline file (uses string kind for TOML compatibility).
+/// unit entry in the baseline file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BaselineUnit {
     pub name: String,

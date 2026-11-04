@@ -132,9 +132,10 @@ fn make_run(
         PROP_LANGUAGE.to_string(),
         serde_json::Value::String(language.to_string()),
     );
-    if let Ok(units) = serde_json::to_value(units) {
-        fields.insert(PROP_UNITS.to_string(), units);
-    }
+    fields.insert(
+        PROP_UNITS.to_string(),
+        serde_json::to_value(units).expect("a unit list always serializes to JSON"),
+    );
     let mut properties = BTreeMap::new();
     properties.insert(
         PROP_NAMESPACE.to_string(),

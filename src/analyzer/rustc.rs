@@ -426,13 +426,11 @@ fn aggregate_occurrences(
         details.push(occ);
     }
 
-    // ensure workspace members appear with 0 count when deps are excluded
-    if !opts.includes(UnitKind::Dep) {
-        for member in workspace_members {
-            counts
-                .entry(member.clone())
-                .or_insert((UnitKind::Workspace, 0));
-        }
+    // a member without unsafe code still gets a row, at 0
+    for member in workspace_members {
+        counts
+            .entry(member.clone())
+            .or_insert((UnitKind::Workspace, 0));
     }
 
     super::aggregate_units(counts, details, opts)

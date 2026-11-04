@@ -1,5 +1,11 @@
 # changelog
 
+## Unreleased
+
+- fix: `plugins` rejects `--format sarif`. previously it printed the json list.
+- fix: the sarif analyzer fails, naming the file, when a run in unsafe-budget's own SARIF has an `unsafe-budget.units` property that is not a list of units. previously it ignored the property and derived the units from the results' paths, so the SARIF of a `cargo_geiger` or `go_geiger` scan, which has counts but no occurrences, read as 0 unsafe.
+- fix: the `rustc_unsafe_lint` analyzer lists a workspace member without unsafe code at 0 when dependencies are included, as it already did under `--no-deps`. existing locks need no `update`: `check` reads a unit missing from the lock as 0.
+
 ## [0.5.5] - 2026-11-04
 
 - **breaking:** `--no-deps` and `include_deps = false` are the one setting that leaves dependencies out, and `--workspace-only` is a hidden alias of `--no-deps`. `--include-deps --workspace-only` is a usage error and a config with `workspace_only = true` fails to load, naming `include_deps = false`; both left dependencies out even with `--include-deps`. a config's `workspace_only = false` is ignored. `check --no-deps` against a lock from `update --workspace-only` no longer warns that the scan scope differs, and existing locks need no `update`. locks record `workspace_only` as the opposite of `include_deps`: 0.5.x reads them, but against a lock that leaves dependencies out its `check` warns that the scan scope differs unless it passes both `--no-deps` and `--workspace-only`. `scope.workspace_only` in `--format json` output and the `UNSAFE_BUDGET_WORKSPACE_ONLY` plugin variable are `true` under `--no-deps` or `include_deps = false`, where they were `false`, and `scope.include_deps` and `UNSAFE_BUDGET_INCLUDE_DEPS` are `false` under `--workspace-only`, where they were `true`. `scripts/accept-unsafe.sh` compares the scope a lock reads as, so it accepts a lock this version writes against a 0.5.x lock with the same scope; a copy of the script from 0.5.4 or earlier refuses the pair when the committed lock leaves dependencies out, unless it was written with both flags.
