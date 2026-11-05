@@ -1,5 +1,8 @@
+mod app;
+mod cli;
+
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
-    unsafe_budget::app::run_cli()
+    app::run_cli()
 }

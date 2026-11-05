@@ -1,6 +1,6 @@
-use crate::output::{Format, PluginsFormat};
 use clap::{Args, Parser, Subcommand};
 use std::path::PathBuf;
+use unsafe_budget::output::{Format, PluginsFormat};
 
 #[derive(Parser)]
 #[command(name = "unsafe-budget")]

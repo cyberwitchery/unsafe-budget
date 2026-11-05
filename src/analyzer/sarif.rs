@@ -1481,6 +1481,7 @@ mod tests {
                 budget: 2,
                 actual: 2,
             }],
+            deltas: None,
             passed: false,
             scan: scan.clone(),
         };

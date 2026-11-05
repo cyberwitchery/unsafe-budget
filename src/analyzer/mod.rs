@@ -51,21 +51,16 @@ pub fn get_analyzer(id: &str, timeout: Option<u64>) -> Result<Box<dyn Analyzer>>
             let plugins = plugin::discover_plugins(timeout);
             if let Some(info) = plugins.iter().find(|p| p.id == id) {
                 if let Some(ref path) = info.path {
-                    return Ok(Box::new(plugin::PluginAnalyzer {
-                        id: info.id.clone(),
-                        language: info.language.clone(),
-                        path: path.clone(),
-                    }));
+                    return Ok(Box::new(plugin::PluginAnalyzer::new(
+                        info.id.clone(),
+                        info.language.clone(),
+                        path.clone(),
+                    )));
                 }
             }
             Err(Error::analyzer(id, format!("unknown analyzer: {}", id)))
         }
     }
-}
-
-/// get the default analyzer (rustc unsafe lint).
-pub fn default_analyzer() -> Box<dyn Analyzer> {
-    Box::new(rustc::RustcAnalyzer)
 }
 
 /// auto-detect analyzer based on project files.
@@ -560,13 +555,6 @@ mod tests {
                 overall_unsafe: 2,
             }
         );
-    }
-
-    #[test]
-    fn test_default_analyzer() {
-        let analyzer = default_analyzer();
-        assert_eq!(analyzer.id(), "rustc_unsafe_lint");
-        assert_eq!(analyzer.language(), "rust");
     }
 
     #[test]

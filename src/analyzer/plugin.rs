@@ -10,9 +10,29 @@ const PLUGIN_PREFIX: &str = "unsafe-budget-plugin-";
 
 /// external plugin analyzer.
 pub struct PluginAnalyzer {
-    pub id: String,
-    pub language: String,
-    pub path: PathBuf,
+    id: String,
+    language: String,
+    path: PathBuf,
+}
+
+impl PluginAnalyzer {
+    /// the plugin executable at `path`, reporting as analyzer `id` for `language`.
+    pub fn new(
+        id: impl Into<String>,
+        language: impl Into<String>,
+        path: impl Into<PathBuf>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            language: language.into(),
+            path: path.into(),
+        }
+    }
+
+    /// the plugin executable.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
 }
 
 impl Analyzer for PluginAnalyzer {
