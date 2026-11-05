@@ -572,6 +572,7 @@ mod tests {
                 delta: 1,
             }],
             warnings: vec![],
+            deltas: None,
             passed: false,
         };
 
@@ -625,6 +626,7 @@ mod tests {
             scan,
             violations: vec![],
             warnings: vec![],
+            deltas: None,
             passed: true,
         };
 
@@ -660,6 +662,7 @@ mod tests {
                 budget: 5,
                 actual: 4,
             }],
+            deltas: None,
             passed: true,
         };
 
@@ -717,6 +720,7 @@ mod tests {
                 budget: 5,
                 actual: 4,
             }],
+            deltas: None,
             passed: false,
         };
 
@@ -799,6 +803,7 @@ mod tests {
                 delta: 4,
             }],
             warnings: vec![],
+            deltas: None,
             passed: false,
         };
         let expected = [
@@ -878,6 +883,7 @@ mod tests {
                 delta: 2,
             }],
             warnings: vec![],
+            deltas: None,
             passed: false,
         };
 
@@ -930,6 +936,7 @@ mod tests {
                 delta: 1,
             }],
             warnings: vec![],
+            deltas: None,
             passed: false,
         };
 
@@ -989,6 +996,7 @@ mod tests {
                 delta: 1,
             }],
             warnings: vec![],
+            deltas: None,
             passed: false,
         };
 
@@ -1038,6 +1046,7 @@ mod tests {
                 delta: 2,
             }],
             warnings: vec![],
+            deltas: None,
             passed: false,
         };
 
@@ -1108,6 +1117,7 @@ mod tests {
             scan,
             violations: vec![],
             warnings: vec![],
+            deltas: None,
             passed: true,
         };
 

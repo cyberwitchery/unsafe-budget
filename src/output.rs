@@ -1,5 +1,4 @@
 use crate::analyzer::AnalyzerInfo;
-use crate::config::Baseline;
 use crate::model::{CheckResult, Occurrence, ParseWarning, ScanResult, Unit, Violation, Warning};
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, HashMap};
@@ -47,41 +46,38 @@ impl std::str::FromStr for PluginsFormat {
     }
 }
 
-/// print scan result.
-pub fn print_scan(result: &ScanResult, format: Format) -> io::Result<()> {
-    let mut out = io::stdout().lock();
+/// write a scan result to `out`.
+pub fn write_scan(out: &mut impl Write, result: &ScanResult, format: Format) -> io::Result<()> {
     match format {
-        Format::Text => print_scan_text(&mut out, result),
-        Format::Json => print_json(&mut out, result),
+        Format::Text => print_scan_text(out, result),
+        Format::Json => print_json(out, result),
         Format::Sarif => {
             let sarif = crate::sarif::scan_to_sarif(result);
-            print_json(&mut out, &sarif)
+            print_json(out, &sarif)
         }
     }
 }
 
-/// print check result.
-pub fn print_check(
-    result: &CheckResult,
-    baseline: Option<&Baseline>,
-    format: Format,
-) -> io::Result<()> {
-    let mut out = io::stdout().lock();
+/// write a check result to `out`.
+pub fn write_check(out: &mut impl Write, result: &CheckResult, format: Format) -> io::Result<()> {
     match format {
-        Format::Text => print_check_text(&mut out, result, baseline),
-        Format::Json => print_json(&mut out, result),
+        Format::Text => print_check_text(out, result),
+        Format::Json => print_json(out, result),
         Format::Sarif => {
             let sarif = crate::sarif::check_to_sarif(result);
-            print_json(&mut out, &sarif)
+            print_json(out, &sarif)
         }
     }
 }
 
-/// print plugin list.
-pub fn print_plugins(plugins: &[AnalyzerInfo], format: PluginsFormat) -> io::Result<()> {
-    let mut out = io::stdout().lock();
+/// write the analyzer list to `out`.
+pub fn write_plugins(
+    out: &mut impl Write,
+    plugins: &[AnalyzerInfo],
+    format: PluginsFormat,
+) -> io::Result<()> {
     match format {
-        PluginsFormat::Text => print_plugins_text(&mut out, plugins),
+        PluginsFormat::Text => print_plugins_text(out, plugins),
         PluginsFormat::Json => {
             let list: Vec<_> = plugins
                 .iter()
@@ -94,7 +90,7 @@ pub fn print_plugins(plugins: &[AnalyzerInfo], format: PluginsFormat) -> io::Res
                     })
                 })
                 .collect();
-            print_json(&mut out, &list)
+            print_json(out, &list)
         }
     }
 }
@@ -150,11 +146,7 @@ fn print_scan_text(out: &mut impl Write, result: &ScanResult) -> io::Result<()> 
     Ok(())
 }
 
-fn print_check_text(
-    out: &mut impl Write,
-    result: &CheckResult,
-    baseline: Option<&Baseline>,
-) -> io::Result<()> {
+fn print_check_text(out: &mut impl Write, result: &CheckResult) -> io::Result<()> {
     writeln!(out, "unsafe-budget check")?;
     writeln!(out, "===================")?;
     writeln!(out, "Analyzer: {}", result.scan.analyzer_id)?;
@@ -181,11 +173,6 @@ fn print_check_text(
         result.scan.totals.overall_unsafe
     )?;
     writeln!(out)?;
-
-    // build delta map if baseline available
-    let deltas: HashMap<String, i64> = baseline
-        .map(|b| crate::budget::compute_deltas(&result.scan, b))
-        .unwrap_or_default();
 
     // build violation set for quick lookup
     let violation_set: HashMap<&str, &Violation> = result
@@ -216,7 +203,7 @@ fn print_check_text(
     });
 
     writeln!(out, "Per-unit breakdown:")?;
-    if baseline.is_some() {
+    if result.deltas.is_some() {
         writeln!(
             out,
             "  {:<30} {:<10} {:>8} {:>8} {:>8}",
@@ -243,7 +230,7 @@ fn print_check_text(
             "ok"
         };
 
-        if baseline.is_some() {
+        if let Some(deltas) = &result.deltas {
             let delta = deltas.get(&unit.name).copied().unwrap_or(0);
             let delta_str = format_delta(delta);
             writeln!(
@@ -518,10 +505,11 @@ mod tests {
                 scan,
                 violations: vec![],
                 warnings: vec![],
+                deltas: None,
                 passed: true,
             };
             let mut check_buf = Vec::new();
-            print_check_text(&mut check_buf, &check, None).unwrap();
+            print_check_text(&mut check_buf, &check).unwrap();
 
             for buf in [scan_buf, check_buf] {
                 let output = String::from_utf8(buf).unwrap();
@@ -549,10 +537,11 @@ mod tests {
             scan,
             violations: vec![],
             warnings: vec![],
+            deltas: None,
             passed: true,
         };
         let mut check_buf = Vec::new();
-        print_check_text(&mut check_buf, &check, None).unwrap();
+        print_check_text(&mut check_buf, &check).unwrap();
 
         let cases = [
             (
@@ -623,11 +612,12 @@ mod tests {
             scan,
             violations: vec![],
             warnings: vec![],
+            deltas: None,
             passed: true,
         };
 
         let mut buf = Vec::new();
-        print_check_text(&mut buf, &check, None).unwrap();
+        print_check_text(&mut buf, &check).unwrap();
         let output = String::from_utf8(buf).unwrap();
 
         assert!(output.contains("Status: PASSED"));
@@ -648,11 +638,12 @@ mod tests {
                 delta: 5,
             }],
             warnings: vec![],
+            deltas: None,
             passed: false,
         };
 
         let mut buf = Vec::new();
-        print_check_text(&mut buf, &check, None).unwrap();
+        print_check_text(&mut buf, &check).unwrap();
         let output = String::from_utf8(buf).unwrap();
 
         assert!(output.contains("Status: FAILED"));
@@ -672,11 +663,12 @@ mod tests {
                 budget: 12,
                 actual: 10,
             }],
+            deltas: None,
             passed: true,
         };
 
         let mut buf = Vec::new();
-        print_check_text(&mut buf, &check, None).unwrap();
+        print_check_text(&mut buf, &check).unwrap();
         let output = String::from_utf8(buf).unwrap();
 
         assert!(output.contains("Status: PASSED"));
@@ -818,11 +810,12 @@ mod tests {
                 delta: 5,
             }],
             warnings: vec![],
+            deltas: None,
             passed: false,
         };
 
         let mut buf = Vec::new();
-        print_check_text(&mut buf, &check, None).unwrap();
+        print_check_text(&mut buf, &check).unwrap();
         let output = String::from_utf8(buf).unwrap();
 
         // should have violations AND details
@@ -839,11 +832,12 @@ mod tests {
             scan,
             violations: vec![],
             warnings: vec![],
+            deltas: None,
             passed: true,
         };
 
         let mut buf = Vec::new();
-        print_check_text(&mut buf, &check, None).unwrap();
+        print_check_text(&mut buf, &check).unwrap();
         let output = String::from_utf8(buf).unwrap();
 
         assert!(!output.contains("Details:"));

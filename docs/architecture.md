@@ -2,27 +2,37 @@
 
 ## overview
 
-unsafe-budget is a single binary that orchestrates unsafe code analysis across multiple languages and tools.
+unsafe-budget is a library with two thin binaries, `unsafe-budget` and `cargo-unsafe-budget`, that orchestrate unsafe code analysis across multiple languages and tools.
 
 ```
-┌─────────────┐     ┌──────────────┐     ┌─────────────┐
-│   cli.rs    │────▶│   analyzer   │────▶│   budget    │
-│  (commands) │     │   (trait)    │     │  (engine)   │
-└─────────────┘     └──────────────┘     └─────────────┘
-                           │                    │
-                           ▼                    ▼
-                  rustc · cargo geiger     ┌─────────┐
-                  go geiger · sarif        │ config  │
-                  external plugins         │baseline │
-                                           └─────────┘
+┌─────────────┐     ┌──────────────┐     ┌──────────────┐     ┌─────────────┐
+│   cli.rs    │────▶│   app.rs     │────▶│   pipeline   │────▶│   analyzer  │
+│   (argv)    │     │ (exit codes) │     │ (commands)   │     │   (trait)   │
+└─────────────┘     └──────────────┘     └──────────────┘     └─────────────┘
+                           │                    │                    │
+                           ▼                    ▼                    ▼
+                    ┌─────────────┐      ┌─────────────┐   rustc · cargo geiger
+                    │   output    │      │   budget    │   go geiger · sarif
+                    │ (renderers) │      │  (engine)   │   external plugins
+                    └─────────────┘      └─────────────┘
+                                                │
+                                                ▼
+                                         ┌─────────────┐
+                                         │   config    │
+                                         │  baseline   │
+                                         └─────────────┘
 ```
+
+`cli.rs` and `app.rs` belong to the binaries: `src/main.rs` and `src/cargo_unsafe_budget.rs` each declare them as their own modules, so they are not part of the library's api.
 
 ## data flow
 
-1. **cli** parses arguments into `ScanOpts`
-2. **analyzer** runs external tools and normalizes output to `ScanResult`
-3. **budget** compares `ScanResult` against baseline/caps
-4. **output** renders results as text, json, or sarif
+1. **cli** parses arguments; **app** loads the config and builds `ScanOpts`
+2. **pipeline** runs the command (`scan`, `check` or `update`)
+3. **analyzer** runs external tools and normalizes output to `ScanResult`
+4. **budget** subtracts `[[ignore]]` entries and compares the `ScanResult` against baseline/caps
+5. **output** renders results as text, json, or sarif to any writer
+6. **app** prints scope differences, the rendered result and the exit code
 
 ## core types
 
@@ -103,6 +113,8 @@ compares each unit against its baseline count. fails if any unit increased.
 ### caps
 
 compares against explicit limits in config. fails if any unit exceeds its cap.
+
+`[[ignore]]` entries are subtracted before either comparison, and checking against a baseline written by another analyzer is an error.
 
 ## plugin discovery
 

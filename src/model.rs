@@ -4,6 +4,7 @@
 //! and the budget engine consumes.
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 /// scan options passed from cli to analyzers.
@@ -417,6 +418,9 @@ pub struct CheckResult {
     /// list of threshold warnings (empty if none configured or triggered).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<Warning>,
+    /// each unit's count minus its baseline count; `None` when checked without a baseline.
+    #[serde(skip)]
+    pub deltas: Option<HashMap<String, i64>>,
     /// whether the check passed (no violations).
     pub passed: bool,
 }

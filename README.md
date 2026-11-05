@@ -128,17 +128,26 @@ threshold = 0.8
 ## library usage
 
 ```rust
-use unsafe_budget::analyzer::{detect_analyzer, scan};
+use std::path::Path;
+use unsafe_budget::analyzer::detect_analyzer;
+use unsafe_budget::config::Config;
 use unsafe_budget::model::ScanOpts;
+use unsafe_budget::output::{write_check, Format};
+use unsafe_budget::pipeline;
 
-let opts = ScanOpts::default();
+let dir = Path::new(".");
+let config = Config::load_from_dir(dir)?;
+let opts = ScanOpts {
+    include_deps: config.include_deps,
+    ..ScanOpts::default()
+};
 let analyzer = detect_analyzer(&opts)?;
-let result = scan(analyzer.as_ref(), &opts)?;
 
-println!("total unsafe: {}", result.totals.overall_unsafe);
+let outcome = pipeline::check(analyzer.as_ref(), &opts, &config, dir)?;
+write_check(&mut std::io::stdout(), &outcome.result, Format::Text)?;
 ```
 
-`scan` applies the CLI's post-run step to any `Analyzer`, your own included: the analyzer's id and the scan's scope, dependency units left out unless included, repeated units added together and totals recomputed.
+`pipeline::scan`, `pipeline::check` and `pipeline::update` are the CLI's `scan`, `check` and `update`: for the same analyzer, options, config and lock they give the CLI's result and verdict, `[[ignore]]` entries included. `check` returns how the scan's scope differs from the lock's instead of printing it, and `budget::check` judges a `ScanResult` you already have. Every scan goes through `analyzer::scan`, which applies the CLI's post-run step to any `Analyzer`, your own included: the analyzer's id and the scan's scope, dependency units left out unless included, repeated units added together and totals recomputed. The `output` renderers write text, json or sarif to any `io::Write`.
 
 ## documentation
 

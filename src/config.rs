@@ -1,5 +1,5 @@
 use crate::error::{Error, Result};
-use crate::model::{Scope, Totals, Unit, UnitKind};
+use crate::model::{ScanResult, Scope, Totals, Unit, UnitKind};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -191,6 +191,17 @@ impl From<&Unit> for BaselineUnit {
 }
 
 impl Baseline {
+    /// the lock `unsafe-budget update` writes for `result`.
+    pub fn from_scan(result: &ScanResult) -> Self {
+        Baseline {
+            tool_version: env!("CARGO_PKG_VERSION").into(),
+            analyzer_id: result.analyzer_id.clone(),
+            scope: result.scope.clone(),
+            totals: result.totals.clone(),
+            units: result.units.iter().map(BaselineUnit::from).collect(),
+        }
+    }
+
     /// load baseline from file.
     pub fn load(path: &Path) -> Result<Self> {
         if !path.exists() {
