@@ -8,12 +8,12 @@
 //! ## quick example
 //!
 //! ```no_run
-//! use unsafe_budget::analyzer::detect_analyzer;
+//! use unsafe_budget::analyzer::{detect_analyzer, scan};
 //! use unsafe_budget::model::ScanOpts;
 //!
 //! let opts = ScanOpts::default();
 //! let analyzer = detect_analyzer(&opts).unwrap();
-//! let result = analyzer.run(&opts).unwrap();
+//! let result = scan(analyzer.as_ref(), &opts).unwrap();
 //!
 //! println!("total unsafe: {}", result.totals.overall_unsafe);
 //! for unit in &result.units {

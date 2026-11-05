@@ -1,8 +1,7 @@
 use crate::analyzer::process::{self, Run};
-use crate::analyzer::{add_unit_count, aggregate_units, Analyzer, AnalyzerInfo};
+use crate::analyzer::{normalize, Analyzer, AnalyzerInfo};
 use crate::error::{Error, Result};
-use crate::model::{ScanOpts, ScanResult, Scope, Totals, UnitKind};
-use std::collections::HashMap;
+use crate::model::{ScanOpts, ScanResult};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -145,84 +144,19 @@ fn build_plugin_cmd(path: &Path, opts: &ScanOpts) -> Command {
 /// run an external plugin, parse its output, and enforce the host contract.
 pub fn run_plugin(id: &str, path: &Path, opts: &ScanOpts) -> Result<ScanResult> {
     let mut cmd = build_plugin_cmd(path, opts);
-    let timeout_secs = opts.plugin_timeout_secs;
-
-    match process::run_process(&mut cmd, timeout_secs.map(Duration::from_secs))? {
-        Run::Completed(out) => {
-            parse_plugin_output(id, path, out.status, &out.stdout, &out.stderr, opts)
-        }
-        Run::TimedOut => Err(Error::Plugin(format!(
-            "plugin {} timed out after {}s",
-            path.display(),
-            timeout_secs.unwrap_or_default()
-        ))),
-    }
-}
-
-/// parse a completed plugin's output into a sanitized [`ScanResult`].
-fn parse_plugin_output(
-    id: &str,
-    path: &std::path::Path,
-    status: std::process::ExitStatus,
-    stdout: &[u8],
-    stderr: &[u8],
-    opts: &ScanOpts,
-) -> Result<ScanResult> {
-    if !status.success() {
-        let stderr_str = String::from_utf8_lossy(stderr);
-        return Err(Error::Plugin(format!(
-            "plugin {} exited with {}: {}",
-            path.display(),
-            status,
-            stderr_str
-        )));
-    }
-
-    let result: ScanResult = serde_json::from_slice(stdout).map_err(|e| {
-        Error::Plugin(format!(
-            "failed to parse plugin output from {}: {}",
-            path.display(),
-            e
-        ))
+    let command = path.display().to_string();
+    let output = process::run_tool(id, &command, &mut cmd, opts.plugin_timeout_secs)?;
+    let result: ScanResult = serde_json::from_slice(&output.stdout).map_err(|e| {
+        Error::analyzer(id, format!("failed to parse the output of {command}: {e}"))
     })?;
-
-    Ok(sanitize_plugin_result(id, opts, result))
-}
-
-/// overwrite the host-authoritative fields of a plugin's self-reported result.
-///
-/// `analyzer_id` and `scope` are set to the host's values, dependency units are
-/// filtered per `opts`, units reported more than once are summed, and `totals`
-/// are recomputed from the surviving units. `tool_version`, `language`, and
-/// findings are kept as the plugin reported them.
-fn sanitize_plugin_result(id: &str, opts: &ScanOpts, result: ScanResult) -> ScanResult {
-    let mut counts: HashMap<String, (UnitKind, u64)> = HashMap::new();
-    for unit in result.units {
-        if !opts.includes(unit.kind) {
-            continue;
-        }
-        add_unit_count(&mut counts, unit.name, unit.kind, unit.unsafe_count);
-    }
-    let (units, details) = aggregate_units(counts, result.details, opts);
-    let totals = Totals::from_units(&units);
-
-    ScanResult {
-        tool_version: result.tool_version,
-        analyzer_id: id.to_string(),
-        language: result.language,
-        scope: Scope::from(opts),
-        units,
-        totals,
-        details,
-        parse_warnings: result.parse_warnings,
-    }
+    Ok(normalize(id, opts, result))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::analyzer::test_spawn_guard;
-    use crate::model::{Occurrence, Unit};
+    use crate::model::Scope;
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
     use tempfile::TempDir;
@@ -501,224 +435,6 @@ mod tests {
         );
     }
 
-    // --- sanitize_plugin_result ---
-
-    fn host_scope() -> Scope {
-        Scope {
-            include_deps: true,
-            features: vec![],
-            all_features: false,
-            no_default_features: false,
-            all_targets: false,
-            targets: vec![],
-            manifest_path: None,
-        }
-    }
-
-    fn plugin_scan_result(
-        scope: Scope,
-        units: Vec<Unit>,
-        totals: Totals,
-        details: Vec<Occurrence>,
-    ) -> ScanResult {
-        ScanResult {
-            tool_version: "9.9.9".into(),
-            analyzer_id: "plugin-self-reported".into(),
-            language: "cpp".into(),
-            scope,
-            units,
-            totals,
-            details,
-            parse_warnings: vec![],
-        }
-    }
-
-    #[test]
-    fn sanitize_drops_dep_units_when_deps_excluded() {
-        let opts = ScanOpts {
-            include_deps: false,
-            ..Default::default()
-        };
-        let units = vec![
-            Unit {
-                name: "app".into(),
-                kind: UnitKind::Workspace,
-                unsafe_count: 3,
-            },
-            Unit {
-                name: "libc".into(),
-                kind: UnitKind::Dep,
-                unsafe_count: 10,
-            },
-        ];
-        let details = vec![
-            Occurrence {
-                unit: "app".into(),
-                file: "src/lib.rs".into(),
-                line: 1,
-                col: 1,
-                message: None,
-            },
-            Occurrence {
-                unit: "libc".into(),
-                file: "libc/lib.rs".into(),
-                line: 2,
-                col: 1,
-                message: None,
-            },
-        ];
-        let totals = Totals {
-            workspace_unsafe: 3,
-            deps_unsafe: 10,
-            overall_unsafe: 13,
-        };
-        let out = sanitize_plugin_result(
-            "plug",
-            &opts,
-            plugin_scan_result(host_scope(), units, totals, details),
-        );
-
-        assert_eq!(out.units.len(), 1);
-        assert_eq!(out.units[0].name, "app");
-        assert_eq!(out.totals.deps_unsafe, 0);
-        assert_eq!(out.totals.overall_unsafe, 3);
-        assert!(
-            out.details.iter().all(|d| d.unit == "app"),
-            "dependency occurrences must be dropped"
-        );
-    }
-
-    #[test]
-    fn sanitize_sums_repeated_units_and_workspace_wins() {
-        let with_deps = ScanOpts {
-            include_deps: true,
-            ..Default::default()
-        };
-        let no_deps = ScanOpts {
-            include_deps: false,
-            ..Default::default()
-        };
-        let cases = [
-            (
-                "dep rows",
-                &with_deps,
-                vec![("lodash", UnitKind::Dep, 5), ("lodash", UnitKind::Dep, 2)],
-                vec![("lodash", UnitKind::Dep, 7)],
-            ),
-            (
-                "workspace then dep",
-                &with_deps,
-                vec![("app", UnitKind::Workspace, 5), ("app", UnitKind::Dep, 2)],
-                vec![("app", UnitKind::Workspace, 7)],
-            ),
-            (
-                "dep then workspace",
-                &with_deps,
-                vec![("app", UnitKind::Dep, 2), ("app", UnitKind::Workspace, 5)],
-                vec![("app", UnitKind::Workspace, 7)],
-            ),
-            (
-                "workspace then dep, no deps",
-                &no_deps,
-                vec![("app", UnitKind::Workspace, 5), ("app", UnitKind::Dep, 2)],
-                vec![("app", UnitKind::Workspace, 5)],
-            ),
-            (
-                "dep then workspace, no deps",
-                &no_deps,
-                vec![("app", UnitKind::Dep, 2), ("app", UnitKind::Workspace, 5)],
-                vec![("app", UnitKind::Workspace, 5)],
-            ),
-            (
-                "dep rows, no deps",
-                &no_deps,
-                vec![("lodash", UnitKind::Dep, 5), ("lodash", UnitKind::Dep, 2)],
-                vec![],
-            ),
-        ];
-        for (case, opts, rows, expected) in cases {
-            let units = rows
-                .into_iter()
-                .map(|(name, kind, unsafe_count)| Unit {
-                    name: name.into(),
-                    kind,
-                    unsafe_count,
-                })
-                .collect();
-            let out = sanitize_plugin_result(
-                "plug",
-                opts,
-                plugin_scan_result(host_scope(), units, Totals::default(), vec![]),
-            );
-            let got: Vec<_> = out
-                .units
-                .iter()
-                .map(|u| (u.name.as_str(), u.kind, u.unsafe_count))
-                .collect();
-            assert_eq!(got, expected, "{case}");
-        }
-    }
-
-    #[test]
-    fn sanitize_recomputes_totals_from_units() {
-        let opts = ScanOpts {
-            include_deps: true,
-            ..Default::default()
-        };
-        let units = vec![
-            Unit {
-                name: "app".into(),
-                kind: UnitKind::Workspace,
-                unsafe_count: 4,
-            },
-            Unit {
-                name: "dep".into(),
-                kind: UnitKind::Dep,
-                unsafe_count: 6,
-            },
-        ];
-        let totals = Totals {
-            workspace_unsafe: 999,
-            deps_unsafe: 999,
-            overall_unsafe: 999,
-        };
-        let out = sanitize_plugin_result(
-            "plug",
-            &opts,
-            plugin_scan_result(host_scope(), units, totals, vec![]),
-        );
-
-        assert_eq!(out.totals.workspace_unsafe, 4);
-        assert_eq!(out.totals.deps_unsafe, 6);
-        assert_eq!(out.totals.overall_unsafe, 10);
-    }
-
-    #[test]
-    fn sanitize_overrides_scope_with_host_scope() {
-        let opts = ScanOpts {
-            features: vec!["hostfeat".into()],
-            ..Default::default()
-        };
-        let wrong = Scope {
-            include_deps: true,
-            features: vec!["pluginfeat".into()],
-            all_features: true,
-            no_default_features: true,
-            all_targets: true,
-            targets: vec!["wrong-target".into()],
-            manifest_path: Some("/wrong/Cargo.toml".into()),
-        };
-        let out = sanitize_plugin_result(
-            "plug",
-            &opts,
-            plugin_scan_result(wrong, vec![], Totals::default(), vec![]),
-        );
-
-        assert_eq!(out.scope, Scope::from(&opts));
-        assert!(!out.scope.include_deps);
-        assert_eq!(out.scope.features, vec!["hostfeat"]);
-    }
-
     #[test]
     fn plugin_env_sets_both_dependency_variables_from_include_deps() {
         for include_deps in [true, false] {
@@ -742,29 +458,6 @@ mod tests {
                 Some((!include_deps).to_string())
             );
         }
-    }
-
-    #[test]
-    fn sanitize_overrides_analyzer_id_with_host_id() {
-        let opts = ScanOpts::default();
-        let out = sanitize_plugin_result(
-            "plug",
-            &opts,
-            plugin_scan_result(host_scope(), vec![], Totals::default(), vec![]),
-        );
-        assert_eq!(out.analyzer_id, "plug");
-    }
-
-    #[test]
-    fn sanitize_preserves_plugin_tool_version_and_language() {
-        let opts = ScanOpts::default();
-        let out = sanitize_plugin_result(
-            "plug",
-            &opts,
-            plugin_scan_result(host_scope(), vec![], Totals::default(), vec![]),
-        );
-        assert_eq!(out.tool_version, "9.9.9");
-        assert_eq!(out.language, "cpp");
     }
 
     #[test]

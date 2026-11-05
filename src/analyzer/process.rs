@@ -3,6 +3,7 @@
 //! centralizes the spawn + pipe-drain + optional-timeout logic for the
 //! built-in analyzers and the plugin system.
 
+use crate::error::{Error, Result};
 use std::io;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::Duration;
@@ -17,9 +18,8 @@ pub(crate) struct Output {
 
 /// outcome of [`run_process`].
 ///
-/// a timeout is not an [`io::Error`]: it is an expected control-flow result
-/// that each caller renders into its own analyzer/plugin error, so it gets its
-/// own variant rather than being smuggled through the `Err` channel.
+/// a timeout is not an [`io::Error`]: it is an expected control-flow result, so
+/// it gets its own variant rather than being smuggled through the `Err` channel.
 pub(crate) enum Run {
     /// the child exited on its own; carries its status and captured streams.
     Completed(Output),
@@ -40,6 +40,55 @@ pub(crate) fn run_process(cmd: &mut Command, timeout: Option<Duration>) -> io::R
         None => run_blocking(cmd),
         Some(timeout) => run_with_timeout(cmd, timeout),
     }
+}
+
+/// run `cmd`, the `command` of the analyzer `analyzer`, and require a zero exit.
+///
+/// failing to start, outliving `timeout_secs` or exiting non-zero is an [`Error::Analyzer`] naming `command`.
+pub(crate) fn run_tool(
+    analyzer: &str,
+    command: &str,
+    cmd: &mut Command,
+    timeout_secs: Option<u64>,
+) -> Result<Output> {
+    run_to_exit(analyzer, command, cmd, timeout_secs)
+        .and_then(|output| succeeded(analyzer, command, output))
+}
+
+/// [`run_tool`], leaving a non-zero exit to the caller.
+pub(crate) fn run_to_exit(
+    analyzer: &str,
+    command: &str,
+    cmd: &mut Command,
+    timeout_secs: Option<u64>,
+) -> Result<Output> {
+    match run_process(cmd, timeout_secs.map(Duration::from_secs)) {
+        Ok(Run::Completed(output)) => Ok(output),
+        Ok(Run::TimedOut) => Err(Error::analyzer(
+            analyzer,
+            format!(
+                "{command} timed out after {}s",
+                timeout_secs.unwrap_or_default()
+            ),
+        )),
+        Err(e) => Err(Error::analyzer(
+            analyzer,
+            format!("cannot run {command}: {e}"),
+        )),
+    }
+}
+
+/// `output` if `command` exited zero, else an [`Error::Analyzer`] carrying its stderr.
+pub(crate) fn succeeded(analyzer: &str, command: &str, output: Output) -> Result<Output> {
+    if output.status.success() {
+        return Ok(output);
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let message = match stderr.trim_end() {
+        "" => format!("{command} failed ({})", output.status),
+        stderr => format!("{command} failed ({}): {stderr}", output.status),
+    };
+    Err(Error::analyzer(analyzer, message))
 }
 
 /// run to completion with no timeout. `Command::output` drains both pipes for
@@ -206,6 +255,73 @@ mod tests {
                     "pipe died mid-stream",
                 )),
                 n => Ok(n),
+            }
+        }
+    }
+
+    #[test]
+    fn run_tool_errors_name_the_analyzer_and_command() {
+        let _lock = test_spawn_guard();
+        let command = |program: &str, args: &[&str]| {
+            let mut cmd = Command::new(program);
+            cmd.args(args);
+            cmd
+        };
+        let sh = |script: &str| command("/bin/sh", &["-c", script]);
+        let cases = [
+            (
+                ("rustc_unsafe_lint", "cargo check"),
+                sh("echo out; echo 'warning: unused' >&2"),
+                None,
+                Ok("out\n"),
+            ),
+            (
+                ("rustc_unsafe_lint", "cargo check"),
+                sh("echo 'error: could not compile `app`' >&2; exit 101"),
+                None,
+                Err("cargo check failed (exit status: 101): error: could not compile `app`"),
+            ),
+            (
+                ("cargo_geiger", "cargo geiger"),
+                sh("exit 1"),
+                None,
+                Err("cargo geiger failed (exit status: 1)"),
+            ),
+            (
+                ("go_geiger", "go-geiger"),
+                sh("echo out; kill -9 $$"),
+                None,
+                Err("go-geiger failed (signal: 9 (SIGKILL))"),
+            ),
+            (
+                ("go_geiger", "go list -m"),
+                command("sleep", &["60"]),
+                Some(1),
+                Err("go list -m timed out after 1s"),
+            ),
+            (
+                ("plug", "/no/such/unsafe-budget-plugin-plug"),
+                command("/no/such/unsafe-budget-plugin-plug", &[]),
+                None,
+                Err("cannot run /no/such/unsafe-budget-plugin-plug: No such file or directory (os error 2)"),
+            ),
+        ];
+        for ((analyzer, name), mut cmd, timeout, expected) in cases {
+            match (run_tool(analyzer, name, &mut cmd, timeout), expected) {
+                (Ok(output), Ok(stdout)) => assert_eq!(output.stdout, stdout.as_bytes()),
+                (
+                    Err(Error::Analyzer {
+                        analyzer: id,
+                        message,
+                    }),
+                    Err(expected),
+                ) => {
+                    assert_eq!((id.as_str(), message.as_str()), (analyzer, expected));
+                }
+                (got, expected) => panic!(
+                    "{name}: got {:?}, expected {expected:?}",
+                    got.map(|output| output.stdout)
+                ),
             }
         }
     }

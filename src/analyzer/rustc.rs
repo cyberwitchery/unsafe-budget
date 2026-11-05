@@ -1,5 +1,4 @@
-use crate::analyzer::process::{self, Run};
-use crate::analyzer::Analyzer;
+use crate::analyzer::{manifest, process, Analyzer, RUSTC_UNSAFE_LINT};
 use crate::error::{Error, Result};
 use crate::model::{Occurrence, ScanOpts, ScanResult, Unit, UnitKind};
 use cargo_metadata::{Message, MetadataCommand, Package, PackageId};
@@ -7,13 +6,12 @@ use std::collections::{HashMap, HashSet};
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::Duration;
 
 pub struct RustcAnalyzer;
 
 impl Analyzer for RustcAnalyzer {
     fn id(&self) -> &str {
-        "rustc_unsafe_lint"
+        RUSTC_UNSAFE_LINT
     }
 
     fn language(&self) -> &str {
@@ -51,7 +49,9 @@ fn get_workspace_members(opts: &ScanOpts) -> Result<(WorkspaceMembers, PathBuf)>
         cmd.manifest_path(manifest_path);
     }
 
-    let metadata = cmd.exec()?;
+    let metadata = cmd
+        .exec()
+        .map_err(|e| Error::cargo_metadata(manifest(opts), e))?;
 
     // pre-build an id -> package lookup so member resolution is linear rather
     // than O(members x packages) via a nested `.find()`.
@@ -183,14 +183,17 @@ fn targets_ignoring_build_rustflags<'a>(
         opts.targets.iter().map(|t| Some(t.as_str())).collect()
     };
     let made_target_dir = !target_dir.exists();
-    let dir = create_probe_dir(target_dir).map_err(|e| Error::Analyzer {
-        analyzer: "rustc_unsafe_lint".into(),
-        message: format!(
-            "cannot create a probe crate in {}: {e}",
-            target_dir.display()
-        ),
-    })?;
-    let ignoring = write_probe_crate(&dir).and_then(|()| {
+    let probe_error = |e| {
+        Error::analyzer(
+            RUSTC_UNSAFE_LINT,
+            format!(
+                "cannot create a probe crate in {}: {e}",
+                target_dir.display()
+            ),
+        )
+    };
+    let dir = create_probe_dir(target_dir).map_err(probe_error)?;
+    let ignoring = write_probe_crate(&dir).map_err(probe_error).and_then(|()| {
         let mut ignoring = Vec::new();
         for target in targets {
             if !probe_gets_build_rustflags(&dir, target, opts)? {
@@ -225,7 +228,7 @@ fn create_probe_dir(parent: &Path) -> std::io::Result<PathBuf> {
     }
 }
 
-fn write_probe_crate(dir: &Path) -> Result<()> {
+fn write_probe_crate(dir: &Path) -> std::io::Result<()> {
     std::fs::create_dir(dir.join("src"))?;
     std::fs::write(
         dir.join("Cargo.toml"),
@@ -258,57 +261,33 @@ fn probe_gets_build_rustflags(dir: &Path, target: Option<&str>, opts: &ScanOpts)
     let (var, flags) = appended("CARGO_BUILD_RUSTFLAGS", &format!("--cfg {PROBE_CFG}"));
     cmd.env(var, flags);
 
-    let output = run_cargo(&mut cmd, opts)?;
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    if output.status.success() {
-        Ok(true)
-    } else if stderr
+    let command = "cargo check of unsafe-budget's rustflags probe crate";
+    let output = process::run_to_exit(
+        RUSTC_UNSAFE_LINT,
+        command,
+        &mut cmd,
+        opts.analyzer_timeout_secs,
+    )?;
+    let flags_missing = String::from_utf8_lossy(&output.stderr)
         .lines()
-        .any(|line| line == format!("error: {PROBE_CFG}"))
-    {
-        Ok(false)
-    } else {
-        Err(Error::Cargo {
-            message: "cargo check failed on unsafe-budget's rustflags probe crate".into(),
-            stderr: stderr.into_owned(),
-        })
+        .any(|line| line == format!("error: {PROBE_CFG}"));
+    if !output.status.success() && flags_missing {
+        return Ok(false);
     }
+    process::succeeded(RUSTC_UNSAFE_LINT, command, output).map(|_| true)
 }
 
-/// run a cargo command under the analyzer timeout.
-fn run_cargo(cmd: &mut Command, opts: &ScanOpts) -> Result<process::Output> {
-    let timeout_secs = opts.analyzer_timeout_secs;
-    match process::run_process(cmd, timeout_secs.map(Duration::from_secs))? {
-        Run::Completed(output) => Ok(output),
-        Run::TimedOut => Err(Error::Cargo {
-            message: format!(
-                "cargo check timed out after {}s",
-                timeout_secs.unwrap_or_default()
-            ),
-            stderr: String::new(),
-        }),
-    }
-}
-
-/// run cargo check and capture output.
+/// run cargo check and capture output; a failed check left crates unchecked, so it is an error.
 fn run_cargo_check(opts: &ScanOpts, target_dir: &Path) -> Result<(Vec<u8>, String)> {
     let lint = unsafe_lint_flags(opts, target_dir)?;
-    let output = run_cargo(&mut build_cargo_check_command(opts, &lint), opts)?;
-
-    check_cargo_output(&output)?;
+    let output = process::run_tool(
+        RUSTC_UNSAFE_LINT,
+        "cargo check",
+        &mut build_cargo_check_command(opts, &lint),
+        opts.analyzer_timeout_secs,
+    )?;
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     Ok((output.stdout, stderr))
-}
-
-/// a failed cargo check left crates unchecked, so its diagnostics are an incomplete count.
-fn check_cargo_output(output: &process::Output) -> Result<()> {
-    if !output.status.success() {
-        return Err(Error::Cargo {
-            message: "cargo check failed".into(),
-            stderr: String::from_utf8_lossy(&output.stderr).to_string(),
-        });
-    }
-    Ok(())
 }
 
 /// parse cargo JSON messages and extract unsafe_code diagnostics.
@@ -320,7 +299,12 @@ fn parse_diagnostics(
     let mut seen: HashSet<(String, PathBuf, u32, u32)> = HashSet::new();
 
     for line in stdout.lines() {
-        let line = line?;
+        let line = line.map_err(|e| {
+            Error::analyzer(
+                RUSTC_UNSAFE_LINT,
+                format!("cannot read cargo check output: {e}"),
+            )
+        })?;
         if line.is_empty() {
             continue;
         }
@@ -439,76 +423,6 @@ fn aggregate_occurrences(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[cfg(unix)]
-    mod cargo_output_checks {
-        use super::*;
-        use std::os::unix::process::ExitStatusExt;
-
-        fn exit_success() -> std::process::ExitStatus {
-            std::process::ExitStatus::from_raw(0)
-        }
-
-        fn exit_failure() -> std::process::ExitStatus {
-            // waitpid raw status: exit code in bits 8-15
-            std::process::ExitStatus::from_raw(101 << 8)
-        }
-
-        #[test]
-        fn failed_cargo_check_is_an_error_carrying_stderr() {
-            let cases: [(_, &[u8], &str, bool); 8] = [
-                (exit_success(), b"output", "", true),
-                (
-                    exit_success(),
-                    b"{\"reason\":\"compiler-message\"}",
-                    "warning: unused variable",
-                    true,
-                ),
-                (
-                    exit_failure(),
-                    b"{\"reason\":\"compiler-message\"}\n{\"reason\":\"build-finished\",\"success\":false}",
-                    "error: could not compile `app` (lib) due to 1 previous error",
-                    false,
-                ),
-                (
-                    exit_failure(),
-                    b"",
-                    "error: no such command: 'check'",
-                    false,
-                ),
-                (exit_failure(), b"", "", false),
-                (exit_failure(), b"", "error: linker `cc` not found", false),
-                // rustup exits 1, and a killed cargo has no exit code at all.
-                (
-                    std::process::ExitStatus::from_raw(1 << 8),
-                    b"",
-                    "error: toolchain 'nightly' is not installed",
-                    false,
-                ),
-                (
-                    std::process::ExitStatus::from_raw(9),
-                    b"{\"reason\":\"compiler-message\"}",
-                    "",
-                    false,
-                ),
-            ];
-            for (status, stdout, stderr, ok) in cases {
-                let output = process::Output {
-                    status,
-                    stdout: stdout.to_vec(),
-                    stderr: stderr.as_bytes().to_vec(),
-                };
-                match check_cargo_output(&output) {
-                    Ok(()) => assert!(ok, "{stderr:?}"),
-                    Err(Error::Cargo { stderr: got, .. }) => {
-                        assert!(!ok, "{stderr:?}");
-                        assert_eq!(got, stderr);
-                    }
-                    Err(e) => panic!("unexpected error: {e}"),
-                }
-            }
-        }
-    }
 
     #[test]
     fn test_extract_package_name() {

@@ -4,7 +4,7 @@
 //! ScanResult format. this allows unsafe-budget to apply budget logic
 //! to output from any SARIF-producing static analysis tool.
 
-use crate::analyzer::{go_geiger, Analyzer};
+use crate::analyzer::{go_geiger, Analyzer, SARIF};
 use crate::error::{Error, Result};
 use crate::model::{Occurrence, ParseWarning, ScanOpts, ScanResult, Unit, UnitKind};
 use crate::sarif::{
@@ -19,7 +19,7 @@ pub struct SarifAnalyzer;
 
 impl Analyzer for SarifAnalyzer {
     fn id(&self) -> &str {
-        "sarif"
+        SARIF
     }
 
     fn language(&self) -> &str {
@@ -27,13 +27,16 @@ impl Analyzer for SarifAnalyzer {
     }
 
     fn run(&self, opts: &ScanOpts) -> Result<ScanResult> {
-        let path = opts.manifest_path.as_ref().ok_or_else(|| Error::Analyzer {
-            analyzer: "sarif".into(),
-            message: "sarif analyzer requires --manifest-path pointing to a .sarif file".into(),
+        let path = opts.manifest_path.as_ref().ok_or_else(|| {
+            Error::analyzer(
+                SARIF,
+                "sarif analyzer requires --manifest-path pointing to a .sarif file",
+            )
         })?;
 
-        let content = std::fs::read_to_string(path)?;
-        let sarif: Sarif = serde_json::from_str(&content)?;
+        let content = std::fs::read_to_string(path).map_err(|e| Error::io(path.display(), e))?;
+        let sarif: Sarif =
+            serde_json::from_str(&content).map_err(|e| Error::json(path.display(), e))?;
 
         convert_sarif(&sarif, opts)
     }
@@ -41,10 +44,7 @@ impl Analyzer for SarifAnalyzer {
 
 fn convert_sarif(sarif: &Sarif, opts: &ScanOpts) -> Result<ScanResult> {
     if sarif.runs.is_empty() {
-        return Err(Error::Analyzer {
-            analyzer: "sarif".into(),
-            message: "SARIF file contains no runs".into(),
-        });
+        return Err(Error::analyzer(SARIF, "SARIF file contains no runs"));
     }
 
     // language is resolved per run. runs from unrecognized tools contribute no
@@ -69,12 +69,14 @@ fn convert_sarif(sarif: &Sarif, opts: &ScanOpts) -> Result<ScanResult> {
     for run in &sarif.runs {
         let own_run = is_own_run(run);
         let recorded = if own_run {
-            recorded_units(run).map_err(|e| Error::Analyzer {
-                analyzer: "sarif".into(),
-                message: format!(
-                    "{}: property `{PROP_NAMESPACE}.{PROP_UNITS}` is not a unit list: {e}",
-                    opts.manifest_path.clone().unwrap_or_default().display()
-                ),
+            recorded_units(run).map_err(|e| {
+                Error::analyzer(
+                    SARIF,
+                    format!(
+                        "{}: property `{PROP_NAMESPACE}.{PROP_UNITS}` is not a unit list: {e}",
+                        opts.manifest_path.clone().unwrap_or_default().display()
+                    ),
+                )
             })?
         } else {
             None
@@ -169,7 +171,7 @@ fn convert_sarif(sarif: &Sarif, opts: &ScanOpts) -> Result<ScanResult> {
 
     let (units, details) = super::aggregate_units(counts, occurrences, opts);
 
-    let mut scan = ScanResult::from_parts("sarif", language, opts, units, details);
+    let mut scan = ScanResult::from_parts(SARIF, language, opts, units, details);
     scan.parse_warnings = parse_warnings;
     Ok(scan)
 }
