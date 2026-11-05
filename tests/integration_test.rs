@@ -42,31 +42,32 @@ fn test_scan_sample_workspace() {
 
 #[test]
 #[ignore = "runs cargo"]
-fn test_no_deps_scans_sibling_members() {
-    // `--no-deps` compiles every workspace member, not just the root
-    // package; a sibling crate's unsafe code must be counted.
-    let output = Command::new(env!("CARGO_BIN_EXE_unsafe-budget"))
-        .arg("scan")
-        .arg("--manifest-path")
-        .arg(multi_member_fixture_path().join("Cargo.toml"))
-        .arg("--no-deps")
-        .arg("--format")
-        .arg("json")
-        .output()
-        .expect("failed to run unsafe-budget");
+fn test_each_scope_scans_and_lists_every_member() {
+    for scope in ["--no-deps", "--include-deps"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_unsafe-budget"))
+            .arg("scan")
+            .arg("--manifest-path")
+            .arg(multi_member_fixture_path().join("Cargo.toml"))
+            .arg(scope)
+            .arg("--format")
+            .arg("json")
+            .output()
+            .expect("failed to run unsafe-budget");
 
-    assert!(output.status.success(), "scan failed: {:?}", output);
+        assert!(output.status.success(), "scan failed: {:?}", output);
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let result: serde_json::Value = serde_json::from_str(&stdout).expect("invalid json output");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let result: serde_json::Value = serde_json::from_str(&stdout).expect("invalid json output");
 
-    assert_eq!(
-        unit_counts(&result),
-        [
-            ("rootpkg".to_string(), "workspace".to_string(), 0),
-            ("sibling".to_string(), "workspace".to_string(), 2),
-        ]
-    );
+        assert_eq!(
+            unit_counts(&result),
+            [
+                ("rootpkg".to_string(), "workspace".to_string(), 0),
+                ("sibling".to_string(), "workspace".to_string(), 2),
+            ],
+            "{scope}"
+        );
+    }
 }
 
 fn git(dir: &Path, args: &[&str]) -> String {

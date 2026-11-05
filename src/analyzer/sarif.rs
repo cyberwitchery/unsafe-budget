@@ -68,7 +68,17 @@ fn convert_sarif(sarif: &Sarif, opts: &ScanOpts) -> Result<ScanResult> {
 
     for run in &sarif.runs {
         let own_run = is_own_run(run);
-        let recorded = own_run.then(|| recorded_units(run)).flatten();
+        let recorded = if own_run {
+            recorded_units(run).map_err(|e| Error::Analyzer {
+                analyzer: "sarif".into(),
+                message: format!(
+                    "{}: property `{PROP_NAMESPACE}.{PROP_UNITS}` is not a unit list: {e}",
+                    opts.manifest_path.clone().unwrap_or_default().display()
+                ),
+            })?
+        } else {
+            None
+        };
         let results = run.results.as_deref().unwrap_or(&[]);
         let mut run_occurrences: Vec<(Occurrence, UnitKind)> = Vec::new();
 
@@ -388,14 +398,13 @@ fn is_own_run(run: &sarif::Run) -> bool {
 ///
 /// `None` when the run records none, leaving the caller to derive units from
 /// its occurrences.
-fn recorded_units(run: &sarif::Run) -> Option<Vec<Unit>> {
-    let value = run
-        .properties
-        .as_ref()?
-        .additional_properties
-        .get(PROP_NAMESPACE)?
-        .get(PROP_UNITS)?;
-    serde_json::from_value(value.clone()).ok()
+fn recorded_units(run: &sarif::Run) -> serde_json::Result<Option<Vec<Unit>>> {
+    run.properties
+        .as_ref()
+        .and_then(|props| props.additional_properties.get(PROP_NAMESPACE))
+        .and_then(|fields| fields.get(PROP_UNITS))
+        .map(|units| serde_json::from_value(units.clone()))
+        .transpose()
 }
 
 /// the unit a location names, valid only for runs [`is_own_run`] accepts.
@@ -1547,6 +1556,33 @@ mod tests {
         assert_eq!(back.units.len(), 1);
         assert_eq!(back.units[0].kind, UnitKind::Dep);
         assert_eq!(back.units[0].unsafe_count, 1);
+    }
+
+    #[test]
+    fn test_own_run_with_malformed_recorded_units_is_an_error() {
+        let opts = ScanOpts {
+            manifest_path: Some("in.sarif".into()),
+            ..round_trip_opts()
+        };
+        for units in [
+            serde_json::json!({"app": 1}),
+            serde_json::json!([{"name": "app", "kind": "workspace"}]),
+        ] {
+            let mut run = make_run(
+                "unsafe-budget",
+                vec![own_sarif_result("src/lib.rs", 7, 1, "unsafe")],
+            );
+            let mut props = property_bag("rust");
+            props.additional_properties.get_mut(PROP_NAMESPACE).unwrap()[PROP_UNITS] = units;
+            run.properties = Some(props);
+
+            let err = convert_sarif(&make_multi_run_sarif(vec![run]), &opts).unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains("in.sarif: property `unsafe-budget.units` is not a unit list"),
+                "{err}"
+            );
+        }
     }
 
     #[test]

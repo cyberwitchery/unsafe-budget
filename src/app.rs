@@ -112,7 +112,7 @@ fn cmd_update(args: ScanArgs) -> Result<ExitCode> {
     let result = analyzer.run(&opts)?;
     let result = apply_ignore_filter(result, &config.ignore);
 
-    let baseline = build_baseline(&result, analyzer.as_ref());
+    let baseline = build_baseline(&result);
     let dir = get_project_dir(&args)?;
     baseline.save_to_dir(&dir)?;
 
@@ -230,10 +230,10 @@ fn apply_ignore_filter(mut result: ScanResult, ignores: &[IgnoreEntry]) -> ScanR
     result
 }
 
-fn build_baseline(result: &ScanResult, analyzer: &dyn Analyzer) -> Baseline {
+fn build_baseline(result: &ScanResult) -> Baseline {
     Baseline {
         tool_version: env!("CARGO_PKG_VERSION").into(),
-        analyzer_id: analyzer.id().into(),
+        analyzer_id: result.analyzer_id.clone(),
         scope: result.scope.clone(),
         totals: result.totals.clone(),
         units: result.units.iter().map(BaselineUnit::from).collect(),

@@ -1,4 +1,4 @@
-use crate::output::Format;
+use crate::output::{Format, PluginsFormat};
 use clap::{Args, Parser, Subcommand};
 use std::path::PathBuf;
 
@@ -89,9 +89,9 @@ pub struct ScanArgs {
 
 #[derive(Args)]
 pub struct PluginsArgs {
-    /// output format
+    /// output format (text or json)
     #[arg(long, default_value = "text")]
-    pub format: Format,
+    pub format: PluginsFormat,
 }
 
 /// parse CLI, handling both standalone and cargo plugin invocation.
@@ -143,6 +143,19 @@ mod tests {
                 },
                 (result, _) => panic!("{flags:?}: unexpected {:?}", result.map(|_| ())),
             }
+        }
+    }
+
+    #[test]
+    fn plugins_format_has_no_sarif() {
+        for (format, expected) in [
+            ("text", Ok(())),
+            ("JSON", Ok(())),
+            ("sarif", Err(ErrorKind::ValueValidation)),
+        ] {
+            let argv = ["unsafe-budget", "plugins", "--format", format];
+            let parsed = Cli::try_parse_from(argv).map(|_| ()).map_err(|e| e.kind());
+            assert_eq!(parsed, expected, "{format}");
         }
     }
 }

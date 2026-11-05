@@ -27,6 +27,26 @@ impl std::str::FromStr for Format {
     }
 }
 
+/// output format of the `plugins` list, which has no SARIF form.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum PluginsFormat {
+    #[default]
+    Text,
+    Json,
+}
+
+impl std::str::FromStr for PluginsFormat {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.parse()? {
+            Format::Text => Ok(PluginsFormat::Text),
+            Format::Json => Ok(PluginsFormat::Json),
+            Format::Sarif => Err("the plugin list has no sarif form; use text or json".into()),
+        }
+    }
+}
+
 /// print scan result.
 pub fn print_scan(result: &ScanResult, format: Format) -> io::Result<()> {
     let mut out = io::stdout().lock();
@@ -58,11 +78,11 @@ pub fn print_check(
 }
 
 /// print plugin list.
-pub fn print_plugins(plugins: &[AnalyzerInfo], format: Format) -> io::Result<()> {
+pub fn print_plugins(plugins: &[AnalyzerInfo], format: PluginsFormat) -> io::Result<()> {
     let mut out = io::stdout().lock();
     match format {
-        Format::Text => print_plugins_text(&mut out, plugins),
-        Format::Json | Format::Sarif => {
+        PluginsFormat::Text => print_plugins_text(&mut out, plugins),
+        PluginsFormat::Json => {
             let list: Vec<_> = plugins
                 .iter()
                 .map(|p| {
