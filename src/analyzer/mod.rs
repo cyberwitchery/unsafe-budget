@@ -6,7 +6,7 @@ pub mod rustc;
 pub mod sarif;
 
 use crate::error::{Error, Result};
-use crate::model::{Occurrence, ScanOpts, ScanResult, Unit, UnitKind};
+use crate::model::{Occurrence, ScanOpts, ScanResult, Scope, Totals, Unit, UnitKind};
 use std::collections::{HashMap, HashSet};
 use std::process::Command;
 
@@ -58,10 +58,7 @@ pub fn get_analyzer(id: &str, timeout: Option<u64>) -> Result<Box<dyn Analyzer>>
                     }));
                 }
             }
-            Err(Error::Analyzer {
-                analyzer: id.into(),
-                message: format!("unknown analyzer: {}", id),
-            })
+            Err(Error::analyzer(id, format!("unknown analyzer: {}", id)))
         }
     }
 }
@@ -75,7 +72,7 @@ pub fn default_analyzer() -> Box<dyn Analyzer> {
 pub fn detect_analyzer(opts: &ScanOpts) -> Result<Box<dyn Analyzer>> {
     let dir = match opts.manifest_path.as_ref().and_then(|p| p.parent()) {
         Some(p) => p.to_path_buf(),
-        None => std::env::current_dir()?,
+        None => std::env::current_dir().map_err(|e| Error::io("current directory", e))?,
     };
 
     if dir.join("go.mod").exists() || dir.join("go.sum").exists() {
@@ -124,6 +121,42 @@ pub fn list_analyzers(timeout: Option<u64>) -> Vec<AnalyzerInfo> {
 
     analyzers.extend(plugin::discover_plugins(timeout));
     analyzers
+}
+
+/// run `analyzer` and apply [`normalize`] to its result, as the CLI does.
+pub fn scan(analyzer: &dyn Analyzer, opts: &ScanOpts) -> Result<ScanResult> {
+    Ok(normalize(analyzer.id(), opts, analyzer.run(opts)?))
+}
+
+/// the host's post-run step: analyzer `id` and the scope of `opts`, dependency units dropped unless
+/// `opts` includes them, repeated units summed, units and details sorted, and totals recomputed.
+pub fn normalize(id: &str, opts: &ScanOpts, result: ScanResult) -> ScanResult {
+    let mut counts: HashMap<String, (UnitKind, u64)> = HashMap::new();
+    for unit in result.units {
+        if opts.includes(unit.kind) {
+            add_unit_count(&mut counts, unit.name, unit.kind, unit.unsafe_count);
+        }
+    }
+    let (units, details) = aggregate_units(counts, result.details, opts);
+
+    ScanResult {
+        tool_version: result.tool_version,
+        analyzer_id: id.to_string(),
+        language: result.language,
+        scope: Scope::from(opts),
+        totals: Totals::from_units(&units),
+        units,
+        details,
+        parse_warnings: result.parse_warnings,
+    }
+}
+
+/// the manifest a cargo command reads for `opts`, as its errors name it.
+pub(crate) fn manifest(opts: &ScanOpts) -> std::path::Display<'_> {
+    opts.manifest_path
+        .as_deref()
+        .unwrap_or(std::path::Path::new("Cargo.toml"))
+        .display()
 }
 
 /// apply common cargo CLI flags from `ScanOpts` to a command.
@@ -236,6 +269,297 @@ mod tests {
             Err(e) => panic!("unexpected error: {e}"),
             Ok(_) => panic!("expected an error"),
         }
+    }
+
+    fn host_scope() -> Scope {
+        Scope {
+            include_deps: true,
+            features: vec![],
+            all_features: false,
+            no_default_features: false,
+            all_targets: false,
+            targets: vec![],
+            manifest_path: None,
+        }
+    }
+
+    fn reported(
+        scope: Scope,
+        units: Vec<Unit>,
+        totals: Totals,
+        details: Vec<Occurrence>,
+    ) -> ScanResult {
+        ScanResult {
+            tool_version: "9.9.9".into(),
+            analyzer_id: "self-reported".into(),
+            language: "cpp".into(),
+            scope,
+            units,
+            totals,
+            details,
+            parse_warnings: vec![],
+        }
+    }
+
+    #[test]
+    fn normalize_drops_dep_units_when_deps_excluded() {
+        let opts = ScanOpts {
+            include_deps: false,
+            ..Default::default()
+        };
+        let units = vec![
+            Unit {
+                name: "app".into(),
+                kind: UnitKind::Workspace,
+                unsafe_count: 3,
+            },
+            Unit {
+                name: "libc".into(),
+                kind: UnitKind::Dep,
+                unsafe_count: 10,
+            },
+        ];
+        let details = vec![
+            Occurrence {
+                unit: "app".into(),
+                file: "src/lib.rs".into(),
+                line: 1,
+                col: 1,
+                message: None,
+            },
+            Occurrence {
+                unit: "libc".into(),
+                file: "libc/lib.rs".into(),
+                line: 2,
+                col: 1,
+                message: None,
+            },
+        ];
+        let totals = Totals {
+            workspace_unsafe: 3,
+            deps_unsafe: 10,
+            overall_unsafe: 13,
+        };
+        let out = normalize(
+            "host",
+            &opts,
+            reported(host_scope(), units, totals, details),
+        );
+
+        assert_eq!(out.units.len(), 1);
+        assert_eq!(out.units[0].name, "app");
+        assert_eq!(out.totals.deps_unsafe, 0);
+        assert_eq!(out.totals.overall_unsafe, 3);
+        assert!(
+            out.details.iter().all(|d| d.unit == "app"),
+            "dependency occurrences must be dropped"
+        );
+    }
+
+    #[test]
+    fn normalize_sums_repeated_units_and_workspace_wins() {
+        let with_deps = ScanOpts {
+            include_deps: true,
+            ..Default::default()
+        };
+        let no_deps = ScanOpts {
+            include_deps: false,
+            ..Default::default()
+        };
+        let cases = [
+            (
+                "dep rows",
+                &with_deps,
+                vec![("lodash", UnitKind::Dep, 5), ("lodash", UnitKind::Dep, 2)],
+                vec![("lodash", UnitKind::Dep, 7)],
+            ),
+            (
+                "workspace then dep",
+                &with_deps,
+                vec![("app", UnitKind::Workspace, 5), ("app", UnitKind::Dep, 2)],
+                vec![("app", UnitKind::Workspace, 7)],
+            ),
+            (
+                "dep then workspace",
+                &with_deps,
+                vec![("app", UnitKind::Dep, 2), ("app", UnitKind::Workspace, 5)],
+                vec![("app", UnitKind::Workspace, 7)],
+            ),
+            (
+                "workspace then dep, no deps",
+                &no_deps,
+                vec![("app", UnitKind::Workspace, 5), ("app", UnitKind::Dep, 2)],
+                vec![("app", UnitKind::Workspace, 5)],
+            ),
+            (
+                "dep then workspace, no deps",
+                &no_deps,
+                vec![("app", UnitKind::Dep, 2), ("app", UnitKind::Workspace, 5)],
+                vec![("app", UnitKind::Workspace, 5)],
+            ),
+            (
+                "dep rows, no deps",
+                &no_deps,
+                vec![("lodash", UnitKind::Dep, 5), ("lodash", UnitKind::Dep, 2)],
+                vec![],
+            ),
+        ];
+        for (case, opts, rows, expected) in cases {
+            let units = rows
+                .into_iter()
+                .map(|(name, kind, unsafe_count)| Unit {
+                    name: name.into(),
+                    kind,
+                    unsafe_count,
+                })
+                .collect();
+            let out = normalize(
+                "host",
+                opts,
+                reported(host_scope(), units, Totals::default(), vec![]),
+            );
+            let got: Vec<_> = out
+                .units
+                .iter()
+                .map(|u| (u.name.as_str(), u.kind, u.unsafe_count))
+                .collect();
+            assert_eq!(got, expected, "{case}");
+        }
+    }
+
+    #[test]
+    fn normalize_recomputes_totals_from_units() {
+        let opts = ScanOpts {
+            include_deps: true,
+            ..Default::default()
+        };
+        let units = vec![
+            Unit {
+                name: "app".into(),
+                kind: UnitKind::Workspace,
+                unsafe_count: 4,
+            },
+            Unit {
+                name: "dep".into(),
+                kind: UnitKind::Dep,
+                unsafe_count: 6,
+            },
+        ];
+        let totals = Totals {
+            workspace_unsafe: 999,
+            deps_unsafe: 999,
+            overall_unsafe: 999,
+        };
+        let out = normalize("host", &opts, reported(host_scope(), units, totals, vec![]));
+
+        assert_eq!(out.totals.workspace_unsafe, 4);
+        assert_eq!(out.totals.deps_unsafe, 6);
+        assert_eq!(out.totals.overall_unsafe, 10);
+    }
+
+    #[test]
+    fn normalize_overrides_scope_with_host_scope() {
+        let opts = ScanOpts {
+            features: vec!["hostfeat".into()],
+            ..Default::default()
+        };
+        let wrong = Scope {
+            include_deps: true,
+            features: vec!["pluginfeat".into()],
+            all_features: true,
+            no_default_features: true,
+            all_targets: true,
+            targets: vec!["wrong-target".into()],
+            manifest_path: Some("/wrong/Cargo.toml".into()),
+        };
+        let out = normalize(
+            "host",
+            &opts,
+            reported(wrong, vec![], Totals::default(), vec![]),
+        );
+
+        assert_eq!(out.scope, Scope::from(&opts));
+        assert!(!out.scope.include_deps);
+        assert_eq!(out.scope.features, vec!["hostfeat"]);
+    }
+
+    #[test]
+    fn normalize_overrides_analyzer_id_with_host_id() {
+        let opts = ScanOpts::default();
+        let out = normalize(
+            "host",
+            &opts,
+            reported(host_scope(), vec![], Totals::default(), vec![]),
+        );
+        assert_eq!(out.analyzer_id, "host");
+    }
+
+    #[test]
+    fn normalize_preserves_reported_tool_version_and_language() {
+        let opts = ScanOpts::default();
+        let out = normalize(
+            "host",
+            &opts,
+            reported(host_scope(), vec![], Totals::default(), vec![]),
+        );
+        assert_eq!(out.tool_version, "9.9.9");
+        assert_eq!(out.language, "cpp");
+    }
+
+    #[test]
+    fn scan_normalizes_a_library_analyzer() {
+        struct Library;
+        impl Analyzer for Library {
+            fn id(&self) -> &str {
+                "library"
+            }
+            fn language(&self) -> &str {
+                "c"
+            }
+            fn run(&self, _: &ScanOpts) -> Result<ScanResult> {
+                let units = vec![
+                    Unit {
+                        name: "app".into(),
+                        kind: UnitKind::Workspace,
+                        unsafe_count: 2,
+                    },
+                    Unit {
+                        name: "libc".into(),
+                        kind: UnitKind::Dep,
+                        unsafe_count: 5,
+                    },
+                ];
+                let totals = Totals {
+                    workspace_unsafe: 9,
+                    deps_unsafe: 9,
+                    overall_unsafe: 9,
+                };
+                Ok(reported(host_scope(), units, totals, vec![]))
+            }
+        }
+
+        let opts = ScanOpts {
+            include_deps: false,
+            ..Default::default()
+        };
+        let out = scan(&Library, &opts).unwrap();
+
+        assert_eq!(out.analyzer_id, "library");
+        assert_eq!(out.scope, Scope::from(&opts));
+        let units: Vec<_> = out
+            .units
+            .iter()
+            .map(|u| (u.name.as_str(), u.kind, u.unsafe_count))
+            .collect();
+        assert_eq!(units, [("app", UnitKind::Workspace, 2)]);
+        assert_eq!(
+            out.totals,
+            Totals {
+                workspace_unsafe: 2,
+                deps_unsafe: 0,
+                overall_unsafe: 2,
+            }
+        );
     }
 
     #[test]

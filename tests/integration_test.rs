@@ -765,6 +765,48 @@ fn test_go_geiger_fails_when_go_list_m_fails() {
 }
 
 #[test]
+fn test_unusable_files_are_named_in_the_error() {
+    let sarif = r#"{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"other"}},"results":[]}]}"#;
+    let cases = [
+        (
+            "scan",
+            "unsafe-budget.toml",
+            Some("mode = [\n"),
+            "toml parse error",
+        ),
+        ("scan", "unsafe-budget.toml", None, "io error"),
+        (
+            "scan",
+            "in.sarif",
+            Some(r#"{"version":"2.1.0","runs":["#),
+            "json error",
+        ),
+        ("check", "unsafe-budget.lock", None, "io error"),
+        ("update", "unsafe-budget.lock", None, "io error"),
+    ];
+    for (command, file, contents, kind) in cases {
+        let tmp = tempfile::tempdir().unwrap();
+        let input = tmp.path().join("in.sarif");
+        fs::write(&input, sarif).unwrap();
+        let path = tmp.path().join(file);
+        match contents {
+            Some(contents) => fs::write(&path, contents).unwrap(),
+            None => fs::create_dir(&path).unwrap(),
+        }
+
+        let output = unsafe_budget(tmp.path(), &input, &[command, "--analyzer", "sarif"])
+            .output()
+            .unwrap();
+        assert!(!output.status.success(), "{command} {file}: {output:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr)
+                .contains(&format!("error: {kind}: {}: ", path.display())),
+            "{command} {file}: {output:?}"
+        );
+    }
+}
+
+#[test]
 fn test_sarif_output_leaves_out_an_unknown_line_or_column() {
     let tmp = tempfile::tempdir().unwrap();
     let input = tmp.path().join("in.sarif");

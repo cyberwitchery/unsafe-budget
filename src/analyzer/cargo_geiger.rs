@@ -1,5 +1,4 @@
-use crate::analyzer::process::{self, Run};
-use crate::analyzer::Analyzer;
+use crate::analyzer::{manifest, process, Analyzer, CARGO_GEIGER};
 use crate::error::{Error, Result};
 use crate::model::{ParseWarning, ScanOpts, ScanResult, Unit, UnitKind};
 use cargo_metadata::{CargoOpt, Metadata, MetadataCommand, Package};
@@ -7,13 +6,12 @@ use serde::Deserialize;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::Duration;
 
 pub struct CargoGeigerAnalyzer;
 
 impl Analyzer for CargoGeigerAnalyzer {
     fn id(&self) -> &str {
-        "cargo_geiger"
+        CARGO_GEIGER
     }
 
     fn language(&self) -> &str {
@@ -60,7 +58,8 @@ fn get_metadata(opts: &ScanOpts) -> Result<Metadata> {
         cmd.manifest_path(manifest_path);
     }
 
-    Ok(cmd.exec()?)
+    cmd.exec()
+        .map_err(|e| Error::cargo_metadata(manifest(opts), e))
 }
 
 /// get the workspace member packages, each with the requested features that apply to it.
@@ -91,10 +90,10 @@ fn get_workspace_members(metadata: &Metadata, opts: &ScanOpts) -> Result<Vec<Mem
         .iter()
         .find(|f| !members.iter().any(|m| m.features.iter().any(|x| x == *f)))
     {
-        return Err(Error::Analyzer {
-            analyzer: "cargo_geiger".into(),
-            message: format!("no workspace member has the feature `{feature}`"),
-        });
+        return Err(Error::analyzer(
+            CARGO_GEIGER,
+            format!("no workspace member has the feature `{feature}`"),
+        ));
     }
 
     Ok(members)
@@ -269,13 +268,13 @@ fn build_cargo_geiger_command(opts: &ScanOpts, member: &Member) -> Result<Comman
             cmd.arg("--target").arg(target);
         }
         targets => {
-            return Err(Error::Analyzer {
-                analyzer: "cargo_geiger".into(),
-                message: format!(
+            return Err(Error::analyzer(
+                CARGO_GEIGER,
+                format!(
                     "cargo geiger scans one target at a time, got {}",
                     targets.join(", ")
                 ),
-            })
+            ))
         }
     }
 
@@ -284,28 +283,12 @@ fn build_cargo_geiger_command(opts: &ScanOpts, member: &Member) -> Result<Comman
 }
 
 fn run_cargo_geiger(cmd: &mut Command, opts: &ScanOpts) -> Result<Vec<u8>> {
-    let timeout_secs = opts.analyzer_timeout_secs;
-    let output = match process::run_process(cmd, timeout_secs.map(Duration::from_secs))? {
-        Run::Completed(output) => output,
-        Run::TimedOut => {
-            return Err(Error::Analyzer {
-                analyzer: "cargo_geiger".into(),
-                message: format!(
-                    "cargo geiger timed out after {}s",
-                    timeout_secs.unwrap_or_default()
-                ),
-            })
-        }
-    };
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(Error::Analyzer {
-            analyzer: "cargo_geiger".into(),
-            message: format!("cargo geiger failed: {}", stderr),
-        });
-    }
-
+    let output = process::run_tool(
+        CARGO_GEIGER,
+        "cargo geiger",
+        cmd,
+        opts.analyzer_timeout_secs,
+    )?;
     Ok(output.stdout)
 }
 
@@ -372,9 +355,11 @@ impl UnsafeCount {
 }
 
 fn parse_geiger_output(output: &[u8]) -> Result<GeigerReport> {
-    serde_json::from_slice(output).map_err(|e| Error::Analyzer {
-        analyzer: "cargo_geiger".into(),
-        message: format!("failed to parse cargo-geiger output: {}", e),
+    serde_json::from_slice(output).map_err(|e| {
+        Error::analyzer(
+            CARGO_GEIGER,
+            format!("failed to parse cargo-geiger output: {}", e),
+        )
     })
 }
 

@@ -1,11 +1,9 @@
-use crate::analyzer::process::{self, Run};
-use crate::analyzer::Analyzer;
-use crate::error::{Error, Result};
+use crate::analyzer::{process, Analyzer, GO_GEIGER};
+use crate::error::Result;
 use crate::model::{ParseWarning, ScanOpts, ScanResult, Unit, UnitKind};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::process::Command;
-use std::time::Duration;
 
 /// deeper than any import chain, so go-geiger lists every package.
 const MAX_DEPTH: &str = "1000000";
@@ -32,7 +30,7 @@ pub struct GoGeigerAnalyzer;
 
 impl Analyzer for GoGeigerAnalyzer {
     fn id(&self) -> &str {
-        "go_geiger"
+        GO_GEIGER
     }
 
     fn language(&self) -> &str {
@@ -89,29 +87,7 @@ fn run_tool(cmd: &mut Command, dir: Option<&Path>, name: &str, opts: &ScanOpts) 
     if let Some(dir) = dir {
         cmd.current_dir(dir);
     }
-
-    let timeout_secs = opts.analyzer_timeout_secs;
-    let output = match process::run_process(cmd, timeout_secs.map(Duration::from_secs))? {
-        Run::Completed(output) => output,
-        Run::TimedOut => {
-            return Err(Error::Analyzer {
-                analyzer: "go_geiger".into(),
-                message: format!(
-                    "{name} timed out after {}s",
-                    timeout_secs.unwrap_or_default()
-                ),
-            })
-        }
-    };
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(Error::Analyzer {
-            analyzer: "go_geiger".into(),
-            message: format!("{name} failed: {stderr}"),
-        });
-    }
-
+    let output = process::run_tool(GO_GEIGER, name, cmd, opts.analyzer_timeout_secs)?;
     Ok(output.stdout)
 }
 

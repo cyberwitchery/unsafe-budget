@@ -128,15 +128,17 @@ threshold = 0.8
 ## library usage
 
 ```rust
-use unsafe_budget::analyzer::detect_analyzer;
+use unsafe_budget::analyzer::{detect_analyzer, scan};
 use unsafe_budget::model::ScanOpts;
 
 let opts = ScanOpts::default();
 let analyzer = detect_analyzer(&opts)?;
-let result = analyzer.run(&opts)?;
+let result = scan(analyzer.as_ref(), &opts)?;
 
 println!("total unsafe: {}", result.totals.overall_unsafe);
 ```
+
+`scan` applies the CLI's post-run step to any `Analyzer`, your own included: the analyzer's id and the scan's scope, dependency units left out unless included, repeated units added together and totals recomputed.
 
 ## documentation
 

@@ -1,3 +1,4 @@
+use std::fmt::Display;
 use std::path::PathBuf;
 use thiserror::Error;
 
@@ -15,26 +16,81 @@ pub enum Error {
     #[error("analyzer '{analyzer}' failed: {message}")]
     Analyzer { analyzer: String, message: String },
 
-    #[error("cargo execution failed: {message}\nstderr: {stderr}")]
-    Cargo { message: String, stderr: String },
+    #[error("io error: {context}: {source}")]
+    Io {
+        context: String,
+        source: std::io::Error,
+    },
 
-    #[error("plugin error: {0}")]
-    Plugin(String),
+    #[error("json error: {context}: {source}")]
+    Json {
+        context: String,
+        source: serde_json::Error,
+    },
 
-    #[error("io error: {0}")]
-    Io(#[from] std::io::Error),
+    #[error("toml parse error: {context}: {source}")]
+    TomlParse {
+        context: String,
+        source: toml::de::Error,
+    },
 
-    #[error("json error: {0}")]
-    Json(#[from] serde_json::Error),
+    #[error("toml serialize error: {context}: {source}")]
+    TomlSerialize {
+        context: String,
+        source: toml::ser::Error,
+    },
 
-    #[error("toml parse error: {0}")]
-    TomlParse(#[from] toml::de::Error),
+    #[error("cargo metadata error: {context}: {source}")]
+    CargoMetadata {
+        context: String,
+        source: cargo_metadata::Error,
+    },
+}
 
-    #[error("toml serialize error: {0}")]
-    TomlSerialize(#[from] toml::ser::Error),
+/// constructors whose `context` names the file or command the error concerns.
+impl Error {
+    /// an [`Error::Analyzer`] of the analyzer with the id `analyzer`.
+    pub fn analyzer(analyzer: &str, message: impl Into<String>) -> Self {
+        Self::Analyzer {
+            analyzer: analyzer.into(),
+            message: message.into(),
+        }
+    }
 
-    #[error("cargo metadata error: {0}")]
-    CargoMetadata(#[from] cargo_metadata::Error),
+    pub fn io(context: impl Display, source: std::io::Error) -> Self {
+        Self::Io {
+            context: context.to_string(),
+            source,
+        }
+    }
+
+    pub fn json(context: impl Display, source: serde_json::Error) -> Self {
+        Self::Json {
+            context: context.to_string(),
+            source,
+        }
+    }
+
+    pub fn toml_parse(context: impl Display, source: toml::de::Error) -> Self {
+        Self::TomlParse {
+            context: context.to_string(),
+            source,
+        }
+    }
+
+    pub fn toml_serialize(context: impl Display, source: toml::ser::Error) -> Self {
+        Self::TomlSerialize {
+            context: context.to_string(),
+            source,
+        }
+    }
+
+    pub fn cargo_metadata(context: impl Display, source: cargo_metadata::Error) -> Self {
+        Self::CargoMetadata {
+            context: context.to_string(),
+            source,
+        }
+    }
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::process::ExitCode;
 
-use crate::analyzer::{detect_analyzer, get_analyzer, list_analyzers, Analyzer};
+use crate::analyzer::{detect_analyzer, get_analyzer, list_analyzers, scan, Analyzer};
 use crate::budget;
 use crate::cli::{self, Command, ScanArgs};
 use crate::config::{Baseline, BaselineUnit, Config, IgnoreEntry};
@@ -40,7 +40,7 @@ fn cmd_scan(args: ScanArgs) -> Result<ExitCode> {
     let opts = build_scan_opts(&args, &config);
     let analyzer = get_analyzer_for_args(&args, &opts)?;
 
-    let mut result = analyzer.run(&opts)?;
+    let mut result = scan(analyzer.as_ref(), &opts)?;
 
     result = apply_ignore_filter(result, &config.ignore);
 
@@ -48,7 +48,7 @@ fn cmd_scan(args: ScanArgs) -> Result<ExitCode> {
         result.details.clear();
     }
 
-    output::print_scan(&result, args.format)?;
+    output::print_scan(&result, args.format).map_err(stdout_error)?;
     Ok(ExitCode::SUCCESS)
 }
 
@@ -57,7 +57,7 @@ fn cmd_check(args: ScanArgs) -> Result<ExitCode> {
     let opts = build_scan_opts(&args, &config);
     let analyzer = get_analyzer_for_args(&args, &opts)?;
 
-    let result = analyzer.run(&opts)?;
+    let result = scan(analyzer.as_ref(), &opts)?;
     let result = apply_ignore_filter(result, &config.ignore);
 
     let baseline = match config.mode {
@@ -95,7 +95,7 @@ fn cmd_check(args: ScanArgs) -> Result<ExitCode> {
         check_result.scan.details.clear();
     }
 
-    output::print_check(&check_result, baseline.as_ref(), args.format)?;
+    output::print_check(&check_result, baseline.as_ref(), args.format).map_err(stdout_error)?;
 
     if check_result.passed {
         Ok(ExitCode::SUCCESS)
@@ -109,7 +109,7 @@ fn cmd_update(args: ScanArgs) -> Result<ExitCode> {
     let opts = build_scan_opts(&args, &config);
     let analyzer = get_analyzer_for_args(&args, &opts)?;
 
-    let result = analyzer.run(&opts)?;
+    let result = scan(analyzer.as_ref(), &opts)?;
     let result = apply_ignore_filter(result, &config.ignore);
 
     let baseline = build_baseline(&result);
@@ -122,7 +122,7 @@ fn cmd_update(args: ScanArgs) -> Result<ExitCode> {
             result.totals.workspace_unsafe, result.totals.deps_unsafe
         );
     } else {
-        output::print_scan(&result, args.format)?;
+        output::print_scan(&result, args.format).map_err(stdout_error)?;
     }
 
     Ok(ExitCode::SUCCESS)
@@ -131,11 +131,19 @@ fn cmd_update(args: ScanArgs) -> Result<ExitCode> {
 fn cmd_plugins(args: crate::cli::PluginsArgs) -> Result<ExitCode> {
     // a configured timeout also bounds the discovery probe, so a hung plugin's
     // `--info` cannot wedge the listing
-    let config = Config::load_from_dir(&std::env::current_dir()?)?;
+    let config = Config::load_from_dir(&current_dir()?)?;
     let timeout = config.plugin_timeout_secs.or(config.timeout_secs);
     let plugins = list_analyzers(timeout);
-    output::print_plugins(&plugins, args.format)?;
+    output::print_plugins(&plugins, args.format).map_err(stdout_error)?;
     Ok(ExitCode::SUCCESS)
+}
+
+fn stdout_error(e: std::io::Error) -> Error {
+    Error::io("stdout", e)
+}
+
+fn current_dir() -> Result<std::path::PathBuf> {
+    std::env::current_dir().map_err(|e| Error::io("current directory", e))
 }
 
 fn get_analyzer_for_args(args: &ScanArgs, opts: &ScanOpts) -> Result<Box<dyn Analyzer>> {
@@ -159,7 +167,7 @@ fn load_config(args: &ScanArgs) -> Result<Config> {
 fn get_project_dir(args: &ScanArgs) -> Result<std::path::PathBuf> {
     match args.manifest_path.as_ref().and_then(|p| p.parent()) {
         Some(p) => Ok(p.to_path_buf()),
-        None => Ok(std::env::current_dir()?),
+        None => current_dir(),
     }
 }
 
