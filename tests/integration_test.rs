@@ -902,6 +902,10 @@ exec sleep 30
     )
     .unwrap();
     fs::set_permissions(&plugin, fs::Permissions::from_mode(0o755)).unwrap();
+    // a stub that cannot run also lists as unknown, so a fast one shows the stubs run
+    let fast = bin.join("unsafe-budget-plugin-fast");
+    fs::write(&fast, "#!/bin/sh\necho '{\"language\":\"fast\"}'\n").unwrap();
+    fs::set_permissions(&fast, fs::Permissions::from_mode(0o755)).unwrap();
     let config = tmp.path().join("timeout.toml");
     fs::write(&config, "plugin_timeout_secs = 1\n").unwrap();
     let mut path = vec![bin];
@@ -915,6 +919,7 @@ exec sleep 30
             .env("PATH", std::env::join_paths(path).unwrap()),
     );
     let plugins: Vec<serde_json::Value> = serde_json::from_slice(&stdout).unwrap();
-    let slow = plugins.iter().find(|p| p["id"] == "slow").unwrap();
-    assert_eq!(slow["language"], "unknown", "{plugins:?}");
+    let language = |id: &str| plugins.iter().find(|p| p["id"] == id).unwrap()["language"].clone();
+    assert_eq!(language("fast"), "fast", "{plugins:?}");
+    assert_eq!(language("slow"), "unknown", "{plugins:?}");
 }
