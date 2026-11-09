@@ -20,7 +20,7 @@ impl Analyzer for RustcAnalyzer {
 
     fn run(&self, opts: &ScanOpts) -> Result<ScanResult> {
         let (members, target_dir) = get_workspace_members(opts)?;
-        let (stdout, _stderr) = run_cargo_check(opts, &target_dir)?;
+        let stdout = run_cargo_check(opts, &target_dir)?;
         let occurrences = parse_diagnostics(&stdout, &members.ids)?;
         let (units, details) = aggregate_occurrences(occurrences, &members.names, opts);
 
@@ -277,8 +277,8 @@ fn probe_gets_build_rustflags(dir: &Path, target: Option<&str>, opts: &ScanOpts)
     process::succeeded(RUSTC_UNSAFE_LINT, command, output).map(|_| true)
 }
 
-/// run cargo check and capture output; a failed check left crates unchecked, so it is an error.
-fn run_cargo_check(opts: &ScanOpts, target_dir: &Path) -> Result<(Vec<u8>, String)> {
+/// run cargo check and return its stdout; a failed check left crates unchecked, so it is an error.
+fn run_cargo_check(opts: &ScanOpts, target_dir: &Path) -> Result<Vec<u8>> {
     let lint = unsafe_lint_flags(opts, target_dir)?;
     let output = process::run_tool(
         RUSTC_UNSAFE_LINT,
@@ -286,8 +286,7 @@ fn run_cargo_check(opts: &ScanOpts, target_dir: &Path) -> Result<(Vec<u8>, Strin
         &mut build_cargo_check_command(opts, &lint),
         opts.analyzer_timeout_secs,
     )?;
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-    Ok((output.stdout, stderr))
+    Ok(output.stdout)
 }
 
 /// parse cargo JSON messages and extract unsafe_code diagnostics.
