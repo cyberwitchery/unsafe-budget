@@ -3,6 +3,7 @@
 ## Unreleased
 
 - fix: `plugins` rejects `--format sarif`. previously it printed the json list.
+- add: `plugins --config <path>` reads the plugins' `--info` probe timeout from that file.
 - fix: the sarif analyzer fails, naming the file, when a run in unsafe-budget's own SARIF has an `unsafe-budget.units` property that is not a list of units. previously it ignored the property and derived the units from the results' paths, so the SARIF of a `cargo_geiger` or `go_geiger` scan, which has counts but no occurrences, read as 0 unsafe.
 - fix: the `rustc_unsafe_lint` analyzer lists a workspace member without unsafe code at 0 when dependencies are included, as it already did under `--no-deps`. existing locks need no `update`: `check` reads a unit missing from the lock as 0.
 - fix: errors name the file or command they are about. a config or SARIF input that cannot be read or parsed, and a lock that cannot be read or written, is named by its path, and a command an analyzer runs that cannot start, times out or exits non-zero fails as that analyzer, naming the command and showing its stderr. previously a bad `unsafe-budget.toml` printed only `toml parse error: TOML parse error at line 1, column 9`, a truncated SARIF input `json error: EOF while parsing a list`, and a missing `go` `io error: No such file or directory (os error 2)`.

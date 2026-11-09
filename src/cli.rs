@@ -92,6 +92,10 @@ pub struct PluginsArgs {
     /// output format (text or json)
     #[arg(long, default_value = "text")]
     pub format: PluginsFormat,
+
+    /// path to config file (default: unsafe-budget.toml)
+    #[arg(long)]
+    pub config: Option<PathBuf>,
 }
 
 /// parse CLI, handling both standalone and cargo plugin invocation.
