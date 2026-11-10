@@ -1,4 +1,5 @@
 use std::io;
+use std::path::Path;
 use std::process::ExitCode;
 
 use unsafe_budget::analyzer::{detect_analyzer, get_analyzer, list_analyzers, Analyzer};
@@ -37,7 +38,7 @@ fn should_retain_details(details_flag: bool, format: Format) -> bool {
 }
 
 fn cmd_scan(args: ScanArgs) -> Result<ExitCode> {
-    let config = load_config(&args)?;
+    let config = load_config(args.config.as_deref(), &get_project_dir(&args)?)?;
     let opts = build_scan_opts(&args, &config);
     let analyzer = get_analyzer_for_args(&args, &opts)?;
 
@@ -52,7 +53,7 @@ fn cmd_scan(args: ScanArgs) -> Result<ExitCode> {
 }
 
 fn cmd_check(args: ScanArgs) -> Result<ExitCode> {
-    let config = load_config(&args)?;
+    let config = load_config(args.config.as_deref(), &get_project_dir(&args)?)?;
     let opts = build_scan_opts(&args, &config);
     let analyzer = get_analyzer_for_args(&args, &opts)?;
 
@@ -81,7 +82,7 @@ fn cmd_check(args: ScanArgs) -> Result<ExitCode> {
 }
 
 fn cmd_update(args: ScanArgs) -> Result<ExitCode> {
-    let config = load_config(&args)?;
+    let config = load_config(args.config.as_deref(), &get_project_dir(&args)?)?;
     let opts = build_scan_opts(&args, &config);
     let analyzer = get_analyzer_for_args(&args, &opts)?;
 
@@ -102,7 +103,7 @@ fn cmd_update(args: ScanArgs) -> Result<ExitCode> {
 fn cmd_plugins(args: cli::PluginsArgs) -> Result<ExitCode> {
     // a configured timeout also bounds the discovery probe, so a hung plugin's
     // `--info` cannot wedge the listing
-    let config = Config::load_from_dir(&current_dir()?)?;
+    let config = load_config(args.config.as_deref(), &current_dir()?)?;
     let timeout = config.plugin_timeout_secs.or(config.timeout_secs);
     let plugins = list_analyzers(timeout);
     output::write_plugins(&mut io::stdout().lock(), &plugins, args.format).map_err(stdout_error)?;
@@ -125,14 +126,11 @@ fn get_analyzer_for_args(args: &ScanArgs, opts: &ScanOpts) -> Result<Box<dyn Ana
     }
 }
 
-fn load_config(args: &ScanArgs) -> Result<Config> {
-    let dir = get_project_dir(args)?;
-    let config_path = args
-        .config
-        .clone()
-        .unwrap_or_else(|| dir.join("unsafe-budget.toml"));
-
-    Config::load(&config_path)
+fn load_config(config: Option<&Path>, dir: &Path) -> Result<Config> {
+    match config {
+        Some(path) => Config::load(path),
+        None => Config::load_from_dir(dir),
+    }
 }
 
 fn get_project_dir(args: &ScanArgs) -> Result<std::path::PathBuf> {

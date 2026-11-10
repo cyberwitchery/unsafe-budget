@@ -883,3 +883,43 @@ fn test_update_fails_on_an_invalid_config_without_writing_the_lock() {
     );
     assert!(!tmp.path().join("unsafe-budget.lock").exists());
 }
+
+#[cfg(unix)]
+#[test]
+fn test_plugins_config_timeout_bounds_the_info_probe() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let bin = tmp.path().join("bin");
+    fs::create_dir(&bin).unwrap();
+    let plugin = bin.join("unsafe-budget-plugin-slow");
+    fs::write(
+        &plugin,
+        r#"#!/bin/sh
+echo '{"language":"slow"}'
+exec sleep 30
+"#,
+    )
+    .unwrap();
+    fs::set_permissions(&plugin, fs::Permissions::from_mode(0o755)).unwrap();
+    // a stub that cannot run also lists as unknown, so a fast one shows the stubs run
+    let fast = bin.join("unsafe-budget-plugin-fast");
+    fs::write(&fast, "#!/bin/sh\necho '{\"language\":\"fast\"}'\n").unwrap();
+    fs::set_permissions(&fast, fs::Permissions::from_mode(0o755)).unwrap();
+    let config = tmp.path().join("timeout.toml");
+    fs::write(&config, "plugin_timeout_secs = 1\n").unwrap();
+    let mut path = vec![bin];
+    path.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
+
+    let stdout = run_ok(
+        Command::new(env!("CARGO_BIN_EXE_unsafe-budget"))
+            .args(["plugins", "--format", "json", "--config"])
+            .arg(&config)
+            .current_dir(tmp.path())
+            .env("PATH", std::env::join_paths(path).unwrap()),
+    );
+    let plugins: Vec<serde_json::Value> = serde_json::from_slice(&stdout).unwrap();
+    let language = |id: &str| plugins.iter().find(|p| p["id"] == id).unwrap()["language"].clone();
+    assert_eq!(language("fast"), "fast", "{plugins:?}");
+    assert_eq!(language("slow"), "unknown", "{plugins:?}");
+}

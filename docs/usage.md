@@ -61,7 +61,7 @@ creates or overwrites `unsafe-budget.lock`.
 list available analyzers:
 
 ```bash
-unsafe-budget plugins [--format json]
+unsafe-budget plugins [--format json] [--config <path>]
 ```
 
 ## configuration file
