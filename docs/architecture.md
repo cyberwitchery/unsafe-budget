@@ -118,4 +118,4 @@ compares against explicit limits in config. fails if any unit exceeds its cap.
 
 ## plugin discovery
 
-external plugins are executables named `unsafe-budget-plugin-*` on PATH. they receive options via environment variables and output json to stdout. the host overrides `analyzer_id` and `scope`, filters dependency units per scope, and recomputes `totals` from the surviving units.
+external plugins are executables named `unsafe-budget-plugin-*` in the directories of the search path the caller passes, in `PATH` syntax; the cli passes `PATH`. they receive options via environment variables and output json to stdout. the host overrides `analyzer_id` and `scope`, filters dependency units per scope, and recomputes `totals` from the surviving units.
