@@ -86,7 +86,7 @@ pub fn write_plugins(
                         "id": p.id,
                         "language": p.language,
                         "builtin": p.builtin,
-                        "path": p.path,
+                        "path": p.path.as_ref().map(|p| p.to_string_lossy()),
                     })
                 })
                 .collect();
@@ -712,6 +712,27 @@ mod tests {
         assert!(output.contains("custom"));
         assert!(output.contains("plugin"));
         assert!(output.contains("/usr/bin/custom"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_write_plugins_json_lists_a_path_that_is_not_utf8() {
+        use std::os::unix::ffi::OsStrExt;
+        let path = std::ffi::OsStr::from_bytes(b"/opt/bad\xff/unsafe-budget-plugin-beta");
+        let plugins = [AnalyzerInfo {
+            id: "beta".into(),
+            language: "beta-lang".into(),
+            builtin: false,
+            path: Some(path.into()),
+        }];
+        let mut buf = Vec::new();
+        write_plugins(&mut buf, &plugins, PluginsFormat::Json).unwrap();
+        let listed: serde_json::Value = serde_json::from_slice(&buf).unwrap();
+        let lossy = format!(
+            "/opt/bad{}/unsafe-budget-plugin-beta",
+            char::REPLACEMENT_CHARACTER
+        );
+        assert_eq!(listed[0]["path"], lossy.as_str());
     }
 
     #[test]
