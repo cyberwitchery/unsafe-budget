@@ -105,7 +105,7 @@ fn cmd_plugins(args: cli::PluginsArgs) -> Result<ExitCode> {
     // `--info` cannot wedge the listing
     let config = load_config(args.config.as_deref(), &current_dir()?)?;
     let timeout = config.plugin_timeout_secs.or(config.timeout_secs);
-    let plugins = list_analyzers(timeout);
+    let plugins = list_analyzers(std::env::var_os("PATH").as_deref(), timeout);
     output::write_plugins(&mut io::stdout().lock(), &plugins, args.format).map_err(stdout_error)?;
     Ok(ExitCode::SUCCESS)
 }
@@ -122,7 +122,11 @@ fn get_analyzer_for_args(args: &ScanArgs, opts: &ScanOpts) -> Result<Box<dyn Ana
     if args.analyzer == "auto" {
         detect_analyzer(opts)
     } else {
-        get_analyzer(&args.analyzer, opts.plugin_timeout_secs)
+        get_analyzer(
+            &args.analyzer,
+            std::env::var_os("PATH").as_deref(),
+            opts.plugin_timeout_secs,
+        )
     }
 }
 

@@ -2,6 +2,7 @@ use crate::analyzer::process::{self, Run};
 use crate::analyzer::{normalize, Analyzer, AnalyzerInfo};
 use crate::error::{Error, Result};
 use crate::model::{ScanOpts, ScanResult};
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -49,19 +50,21 @@ impl Analyzer for PluginAnalyzer {
     }
 }
 
-/// discover plugin executables on PATH.
+/// discover plugin executables in the directories of `search_path`, a list in
+/// `PATH` syntax; a plugin in several of them is the one in the earliest.
+/// `None` finds no plugins.
 ///
 /// `timeout` (seconds) bounds each plugin's `--info` probe; `None` leaves the
 /// probe unbounded.
-pub fn discover_plugins(timeout: Option<u64>) -> Vec<AnalyzerInfo> {
-    let path_var = match std::env::var("PATH") {
-        Ok(p) => p,
-        Err(_) => return Vec::new(),
+pub fn discover_plugins(search_path: Option<&OsStr>, timeout: Option<u64>) -> Vec<AnalyzerInfo> {
+    let search_path = match search_path {
+        Some(p) => p,
+        None => return Vec::new(),
     };
 
     let mut plugins = Vec::new();
 
-    for dir in std::env::split_paths(&path_var) {
+    for dir in std::env::split_paths(search_path) {
         if let Ok(entries) = std::fs::read_dir(&dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
@@ -288,7 +291,7 @@ mod tests {
     // --- discover_plugins ---
 
     #[test]
-    fn discover_finds_plugin_on_path() {
+    fn discover_finds_plugin_in_search_path() {
         let _lock = test_spawn_guard();
         let tmp = TempDir::new().unwrap();
         make_script(
@@ -297,16 +300,11 @@ mod tests {
             r#"echo '{"language":"demo-lang"}'"#,
         );
 
-        let old_path = std::env::var("PATH").unwrap_or_default();
-        std::env::set_var("PATH", format!("{}:{old_path}", tmp.path().display()));
+        let plugins = discover_plugins(Some(tmp.path().as_os_str()), None);
 
-        let plugins = discover_plugins(None);
-
-        std::env::set_var("PATH", &old_path);
-
-        let found = plugins.iter().find(|p| p.id == "demo");
-        assert!(found.is_some(), "plugin 'demo' should be discovered");
-        let info = found.unwrap();
+        assert_eq!(plugins.len(), 1);
+        let info = &plugins[0];
+        assert_eq!(info.id, "demo");
         assert_eq!(info.language, "demo-lang");
         assert!(!info.builtin);
         assert_eq!(
@@ -316,41 +314,19 @@ mod tests {
     }
 
     #[test]
-    fn discover_ignores_non_executable_plugin() {
-        let _lock = test_spawn_guard();
-        let tmp = TempDir::new().unwrap();
-        make_file(tmp.path(), "unsafe-budget-plugin-noexe", 0o644);
-
-        let old_path = std::env::var("PATH").unwrap_or_default();
-        std::env::set_var("PATH", format!("{}:{old_path}", tmp.path().display()));
-
-        let plugins = discover_plugins(None);
-
-        std::env::set_var("PATH", &old_path);
-
-        assert!(
-            plugins.iter().all(|p| p.id != "noexe"),
-            "non-executable file should not be discovered"
-        );
-    }
-
-    #[test]
-    fn discover_ignores_files_without_prefix() {
-        let _lock = test_spawn_guard();
-        let tmp = TempDir::new().unwrap();
-        make_script(tmp.path(), "some-other-tool", r#"echo '{}'"#);
-
-        let old_path = std::env::var("PATH").unwrap_or_default();
-        std::env::set_var("PATH", format!("{}:{old_path}", tmp.path().display()));
-
-        let plugins = discover_plugins(None);
-
-        std::env::set_var("PATH", &old_path);
-
-        assert!(
-            plugins.iter().all(|p| p.id != "some-other-tool"),
-            "files without the plugin prefix should be ignored"
-        );
+    fn discover_finds_nothing_without_a_plugin_to_run() {
+        let noexe = TempDir::new().unwrap();
+        make_file(noexe.path(), "unsafe-budget-plugin-noexe", 0o644);
+        let unprefixed = TempDir::new().unwrap();
+        make_script(unprefixed.path(), "some-other-tool", r#"echo '{}'"#);
+        let cases = [
+            ("no search path", None),
+            ("non-executable plugin", Some(noexe.path().as_os_str())),
+            ("no plugin prefix", Some(unprefixed.path().as_os_str())),
+        ];
+        for (name, search_path) in cases {
+            assert!(discover_plugins(search_path, None).is_empty(), "{name}");
+        }
     }
 
     #[test]
@@ -359,16 +335,11 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         make_script(tmp.path(), "unsafe-budget-plugin-bad", "exit 1");
 
-        let old_path = std::env::var("PATH").unwrap_or_default();
-        std::env::set_var("PATH", format!("{}:{old_path}", tmp.path().display()));
+        let plugins = discover_plugins(Some(tmp.path().as_os_str()), None);
 
-        let plugins = discover_plugins(None);
-
-        std::env::set_var("PATH", &old_path);
-
-        let found = plugins.iter().find(|p| p.id == "bad");
-        assert!(found.is_some());
-        assert_eq!(found.unwrap().language, "unknown");
+        assert_eq!(plugins.len(), 1);
+        assert_eq!(plugins[0].id, "bad");
+        assert_eq!(plugins[0].language, "unknown");
     }
 
     // --- run_plugin timeout ---
@@ -428,30 +399,21 @@ mod tests {
         make_script(tmp1.path(), "unsafe-budget-plugin-aaa", "exit 1");
         make_script(tmp2.path(), "unsafe-budget-plugin-aaa", "exit 1");
 
-        let old_path = std::env::var("PATH").unwrap_or_default();
-        std::env::set_var(
-            "PATH",
-            format!(
-                "{}:{}:{old_path}",
-                tmp1.path().display(),
-                tmp2.path().display()
-            ),
-        );
+        let search_path = std::env::join_paths([tmp1.path(), tmp2.path()]).unwrap();
 
-        let plugins = discover_plugins(None);
+        let plugins = discover_plugins(Some(&search_path), None);
 
-        std::env::set_var("PATH", &old_path);
-
-        let ours: Vec<_> = plugins
+        let found: Vec<_> = plugins
             .iter()
-            .filter(|p| p.id == "aaa" || p.id == "zzz")
+            .map(|p| (p.id.as_str(), p.path.clone().unwrap()))
             .collect();
-        let ids: Vec<&str> = ours.iter().map(|p| p.id.as_str()).collect();
-        assert_eq!(ids, ["aaa", "zzz"], "sorted by id, duplicates removed");
-        // the earlier PATH entry wins
         assert_eq!(
-            ours[0].path.as_deref(),
-            Some(tmp1.path().join("unsafe-budget-plugin-aaa").as_path())
+            found,
+            [
+                ("aaa", tmp1.path().join("unsafe-budget-plugin-aaa")),
+                ("zzz", tmp1.path().join("unsafe-budget-plugin-zzz")),
+            ],
+            "sorted by id, the earlier directory's duplicate kept"
         );
     }
 

@@ -1,5 +1,9 @@
 # changelog
 
+## Unreleased
+
+- the library's plugin discovery searches the directories its caller passes instead of reading `PATH`: `plugin::discover_plugins`, `analyzer::get_analyzer` and `analyzer::list_analyzers` take a search path in `PATH` syntax. the cli still searches `PATH`; a `PATH` that is not valid UTF-8 no longer hides every plugin.
+
 ## [0.6.0] - 2026-11-13
 
 - **breaking:** `--no-deps` and `include_deps = false` are the one setting that leaves dependencies out, and `--workspace-only` is a hidden alias of `--no-deps`. `--include-deps --workspace-only` is a usage error and a config with `workspace_only = true` fails to load, naming `include_deps = false`; both left dependencies out even with `--include-deps`. a config's `workspace_only = false` is ignored. `check --no-deps` against a lock from `update --workspace-only` no longer warns that the scan scope differs, and existing locks need no `update`. locks record `workspace_only` as the opposite of `include_deps`: 0.5.x reads them, but against a lock that leaves dependencies out its `check` warns that the scan scope differs unless it passes both `--no-deps` and `--workspace-only`. `scope.workspace_only` in `--format json` output and the `UNSAFE_BUDGET_WORKSPACE_ONLY` plugin variable are `true` under `--no-deps` or `include_deps = false`, where they were `false`, and `scope.include_deps` and `UNSAFE_BUDGET_INCLUDE_DEPS` are `false` under `--workspace-only`, where they were `true`. `scripts/accept-unsafe.sh` compares the scope a lock reads as, so it accepts a lock this version writes against a 0.5.x lock with the same scope; a copy of the script from 0.5.4 or earlier refuses the pair when the committed lock leaves dependencies out, unless it was written with both flags.

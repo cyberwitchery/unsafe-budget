@@ -8,6 +8,7 @@ pub mod sarif;
 use crate::error::{Error, Result};
 use crate::model::{Occurrence, ScanOpts, ScanResult, Scope, Totals, Unit, UnitKind};
 use std::collections::{HashMap, HashSet};
+use std::ffi::OsStr;
 use std::process::Command;
 
 /// trait for unsafe code analyzers.
@@ -39,16 +40,21 @@ pub const SARIF: &str = "sarif";
 
 /// get an analyzer by ID.
 ///
-/// `timeout` (seconds) bounds the plugin discovery probe when the requested ID
-/// is not a built-in analyzer; `None` leaves it unbounded.
-pub fn get_analyzer(id: &str, timeout: Option<u64>) -> Result<Box<dyn Analyzer>> {
+/// an ID that is not a built-in analyzer names a plugin in `search_path`, read
+/// as by [`plugin::discover_plugins`]. `timeout` (seconds) bounds the plugin
+/// discovery probe; `None` leaves it unbounded.
+pub fn get_analyzer(
+    id: &str,
+    search_path: Option<&OsStr>,
+    timeout: Option<u64>,
+) -> Result<Box<dyn Analyzer>> {
     match id {
         RUSTC_UNSAFE_LINT => Ok(Box::new(rustc::RustcAnalyzer)),
         CARGO_GEIGER => Ok(Box::new(cargo_geiger::CargoGeigerAnalyzer)),
         GO_GEIGER => Ok(Box::new(go_geiger::GoGeigerAnalyzer)),
         SARIF => Ok(Box::new(sarif::SarifAnalyzer)),
         _ => {
-            let plugins = plugin::discover_plugins(timeout);
+            let plugins = plugin::discover_plugins(search_path, timeout);
             if let Some(info) = plugins.iter().find(|p| p.id == id) {
                 if let Some(ref path) = info.path {
                     return Ok(Box::new(plugin::PluginAnalyzer::new(
@@ -82,11 +88,12 @@ pub fn detect_analyzer(opts: &ScanOpts) -> Result<Box<dyn Analyzer>> {
     Ok(Box::new(rustc::RustcAnalyzer))
 }
 
-/// list all available analyzers (built-in + discovered plugins).
+/// list all available analyzers: the built-in ones, then the plugins in
+/// `search_path`, read as by [`plugin::discover_plugins`].
 ///
 /// `timeout` (seconds) bounds each plugin's discovery probe; `None` leaves it
 /// unbounded.
-pub fn list_analyzers(timeout: Option<u64>) -> Vec<AnalyzerInfo> {
+pub fn list_analyzers(search_path: Option<&OsStr>, timeout: Option<u64>) -> Vec<AnalyzerInfo> {
     let mut analyzers = vec![
         AnalyzerInfo {
             id: RUSTC_UNSAFE_LINT.into(),
@@ -114,7 +121,7 @@ pub fn list_analyzers(timeout: Option<u64>) -> Vec<AnalyzerInfo> {
         },
     ];
 
-    analyzers.extend(plugin::discover_plugins(timeout));
+    analyzers.extend(plugin::discover_plugins(search_path, timeout));
     analyzers
 }
 
@@ -256,7 +263,7 @@ mod tests {
 
     #[test]
     fn test_get_analyzer_unknown() {
-        match get_analyzer("unknown_analyzer", None) {
+        match get_analyzer("unknown_analyzer", None, None) {
             Err(Error::Analyzer { analyzer, message }) => {
                 assert_eq!(analyzer, "unknown_analyzer");
                 assert_eq!(message, "unknown analyzer: unknown_analyzer");
@@ -691,7 +698,7 @@ mod tests {
             (SARIF, "sarif", "unknown"),
         ];
         for (id, expected_id, language) in cases {
-            let analyzer = get_analyzer(id, None).unwrap();
+            let analyzer = get_analyzer(id, None, None).unwrap();
             assert_eq!(
                 (analyzer.id(), analyzer.language()),
                 (expected_id, language)
@@ -701,7 +708,8 @@ mod tests {
 
     #[test]
     fn test_list_analyzers_includes_builtins() {
-        let analyzers = list_analyzers(None);
+        let analyzers = list_analyzers(None, None);
+        assert_eq!(analyzers.len(), 4);
         for (id, language) in [
             ("rustc_unsafe_lint", "rust"),
             ("cargo_geiger", "rust"),
@@ -716,6 +724,26 @@ mod tests {
             assert!(analyzer.builtin, "{id}");
             assert_eq!(analyzer.path, None, "{id}");
         }
+    }
+
+    #[test]
+    fn test_plugins_come_from_the_search_path() {
+        use std::os::unix::fs::PermissionsExt;
+        let _lock = test_spawn_guard();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let plugin = tmp.path().join("unsafe-budget-plugin-demo");
+        std::fs::write(&plugin, "#!/bin/sh\necho '{\"language\":\"demo-lang\"}'\n").unwrap();
+        std::fs::set_permissions(&plugin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let search_path = Some(tmp.path().as_os_str());
+
+        let analyzer = get_analyzer("demo", search_path, None).unwrap();
+        assert_eq!((analyzer.id(), analyzer.language()), ("demo", "demo-lang"));
+        let listed = list_analyzers(search_path, None);
+        let last = listed.last().unwrap();
+        assert_eq!(
+            (listed.len(), last.id.as_str(), last.path.as_deref()),
+            (5, "demo", Some(plugin.as_path()))
+        );
     }
 
     #[test]

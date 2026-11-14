@@ -923,3 +923,76 @@ exec sleep 30
     assert_eq!(language("fast"), "fast", "{plugins:?}");
     assert_eq!(language("slow"), "unknown", "{plugins:?}");
 }
+
+#[cfg(unix)]
+#[test]
+fn test_scan_runs_the_plugin_named_by_analyzer_from_path() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let bin = tmp.path().join("bin");
+    fs::create_dir(&bin).unwrap();
+    let plugin = bin.join("unsafe-budget-plugin-demo");
+    fs::write(
+        &plugin,
+        r#"#!/bin/sh
+echo '{"tool_version":"1.0.0","analyzer_id":"demo","language":"demo","scope":{"workspace_only":false,"include_deps":true,"features":[],"all_targets":false,"targets":[]},"units":[{"name":"app","kind":"workspace","unsafe_count":3}],"totals":{"workspace_unsafe":3,"deps_unsafe":0,"overall_unsafe":3}}'
+"#,
+    )
+    .unwrap();
+    fs::set_permissions(&plugin, fs::Permissions::from_mode(0o755)).unwrap();
+    let mut path = vec![bin];
+    path.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
+
+    let stdout = run_ok(
+        Command::new(env!("CARGO_BIN_EXE_unsafe-budget"))
+            .args(["scan", "--analyzer", "demo", "--format", "json"])
+            .current_dir(tmp.path())
+            .env("PATH", std::env::join_paths(path).unwrap()),
+    );
+    let result: serde_json::Value = serde_json::from_slice(&stdout).unwrap();
+    assert_eq!(result["analyzer_id"], "demo", "{result}");
+    assert_eq!(result["totals"]["overall_unsafe"], 3, "{result}");
+}
+
+#[cfg(unix)]
+#[test]
+fn test_a_path_entry_that_is_not_utf8_hides_no_plugin() {
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let bin = tmp.path().join("bin");
+    fs::create_dir(&bin).unwrap();
+    let plugin = bin.join("unsafe-budget-plugin-demo");
+    fs::write(
+        &plugin,
+        r#"#!/bin/sh
+if [ "$1" = --info ]; then echo '{"language":"demo"}'; exit 0; fi
+echo '{"tool_version":"1.0.0","analyzer_id":"demo","language":"demo","scope":{"workspace_only":false,"include_deps":true,"features":[],"all_targets":false,"targets":[]},"units":[{"name":"app","kind":"workspace","unsafe_count":3}],"totals":{"workspace_unsafe":3,"deps_unsafe":0,"overall_unsafe":3}}'
+"#,
+    )
+    .unwrap();
+    fs::set_permissions(&plugin, fs::Permissions::from_mode(0o755)).unwrap();
+    let not_utf8 = std::path::PathBuf::from(std::ffi::OsStr::from_bytes(b"/no/such\xffdir"));
+    let mut path = vec![not_utf8, bin];
+    path.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
+    let path = std::env::join_paths(path).unwrap();
+
+    let listed = run_ok(
+        Command::new(env!("CARGO_BIN_EXE_unsafe-budget"))
+            .args(["plugins", "--format", "json"])
+            .current_dir(tmp.path())
+            .env("PATH", &path),
+    );
+    let listed: Vec<serde_json::Value> = serde_json::from_slice(&listed).unwrap();
+    assert!(listed.iter().any(|p| p["id"] == "demo"), "{listed:?}");
+    let scanned = run_ok(
+        Command::new(env!("CARGO_BIN_EXE_unsafe-budget"))
+            .args(["scan", "--analyzer", "demo", "--format", "json"])
+            .current_dir(tmp.path())
+            .env("PATH", &path),
+    );
+    let scanned: serde_json::Value = serde_json::from_slice(&scanned).unwrap();
+    assert_eq!(scanned["totals"]["overall_unsafe"], 3, "{scanned}");
+}
