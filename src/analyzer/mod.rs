@@ -4,6 +4,7 @@ pub mod plugin;
 pub(crate) mod process;
 pub mod rustc;
 pub mod sarif;
+pub(crate) mod unit_name;
 
 use crate::error::{Error, Result};
 use crate::model::{Occurrence, ScanOpts, ScanResult, Scope, Totals, Unit, UnitKind};
