@@ -4,7 +4,8 @@
 //! ScanResult format. this allows unsafe-budget to apply budget logic
 //! to output from any SARIF-producing static analysis tool.
 
-use crate::analyzer::{go_geiger, Analyzer, SARIF};
+use crate::analyzer::unit_name::{dependency_unit_name, extract_unit_name};
+use crate::analyzer::{Analyzer, SARIF};
 use crate::error::{Error, Result};
 use crate::model::{Occurrence, ParseWarning, ScanOpts, ScanResult, Unit, UnitKind};
 use crate::sarif::{
@@ -434,125 +435,6 @@ fn infer_language(tool_name: &str) -> String {
     }
 }
 
-/// extract a unit name from an artifact's file path.
-///
-/// the directory before the `src` component nearest the file names the crate
-/// (`crate_name/src/lib.rs` → `crate_name`), falling back to the first
-/// directory component when there is none, or `"unknown"` for bare filenames.
-fn extract_unit_name(file: &str) -> String {
-    let path_str = file.strip_prefix("file://").unwrap_or(file);
-    let components = normal_components(path_str);
-
-    // need at least a directory and a filename.
-    if components.len() < 2 {
-        return "unknown".into();
-    }
-
-    let dirs = &components[..components.len() - 1];
-
-    match dirs.iter().rposition(|dir| dir == "src") {
-        Some(i) if i > 0 => dirs[i - 1].clone(),
-        _ => dirs[0].clone(),
-    }
-}
-
-/// the dependency a file under a dependency cache or `vendor/` belongs to; `None` for a workspace file.
-fn dependency_unit_name(located: &str) -> Option<String> {
-    let components = normal_components(located);
-    let (file_name, dirs) = components.split_last()?;
-    let is_go = Path::new(file_name)
-        .extension()
-        .is_some_and(|ext| ext == "go");
-    registry_crate(dirs)
-        .or_else(|| git_checkout_crate(dirs))
-        .or_else(|| go_geiger::cached_module(located))
-        .or_else(|| {
-            if is_go || in_go_vendor_tree(located) {
-                go_geiger::vendored_package(located)
-            } else {
-                vendored_crate(located)
-            }
-        })
-}
-
-/// whether the directory below the first `vendor/` is a go module host: `github.com`, not `lua5.4`.
-fn in_go_vendor_tree(located: &str) -> bool {
-    go_geiger::below_first_vendor(located)
-        .and_then(|below| below.split_once('/'))
-        .is_some_and(|(dir, _)| {
-            dir.rsplit_once('.')
-                .is_some_and(|(_, label)| label.starts_with(|c: char| c.is_ascii_lowercase()))
-                && !has_crate_version(dir)
-        })
-}
-
-/// `serde-1.0.200`: a `cargo vendor` crate directory with a `-<version>` suffix.
-fn has_crate_version(dir: &str) -> bool {
-    let before_dot = dir.split('.').next().unwrap_or(dir);
-    let Some(dash) = before_dot.rfind('-') else {
-        return false;
-    };
-    let mut parts = dir[dash + 1..].splitn(3, '.');
-    let number = |part: Option<&str>| {
-        part.is_some_and(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
-    };
-    number(parts.next())
-        && number(parts.next())
-        && parts
-            .next()
-            .is_some_and(|patch| patch.starts_with(|c: char| c.is_ascii_digit()))
-}
-
-fn normal_components(path: &str) -> Vec<String> {
-    Path::new(path)
-        .components()
-        .filter_map(|c| match c {
-            std::path::Component::Normal(s) => Some(s.to_string_lossy().to_string()),
-            _ => None,
-        })
-        .collect()
-}
-
-fn registry_crate(dirs: &[String]) -> Option<String> {
-    dirs.windows(4)
-        .find(|w| w[0] == "registry" && w[1] == "src" && strip_cargo_hash(&w[2]).is_some())
-        .map(|w| strip_crate_version(&w[3]).to_string())
-}
-
-fn git_checkout_crate(dirs: &[String]) -> Option<String> {
-    let start = dirs
-        .windows(3)
-        .position(|w| w[0] == "git" && w[1] == "checkouts" && strip_cargo_hash(&w[2]).is_some())?;
-    let [checkout, _rev, below @ ..] = &dirs[start + 2..] else {
-        return None;
-    };
-    match below.iter().rposition(|dir| dir == "src") {
-        Some(i) if i > 0 => Some(below[i - 1].clone()),
-        _ => strip_cargo_hash(checkout).map(str::to_string),
-    }
-}
-
-/// `my_crate-0123456789abcdef` → `my_crate`: cargo's `<name>-<16 hex digits>[-shallow]` directories.
-fn strip_cargo_hash(dir: &str) -> Option<&str> {
-    let dir = dir.strip_suffix("-shallow").unwrap_or(dir);
-    let (name, hash) = dir.rsplit_once('-')?;
-    (hash.len() == 16 && hash.bytes().all(|b| b.is_ascii_hexdigit())).then_some(name)
-}
-
-fn vendored_crate(located: &str) -> Option<String> {
-    let below = go_geiger::below_first_vendor(located)?;
-    below.split('/').next().map(str::to_string)
-}
-
-/// `serde-1.0.200` → `serde`: the version follows the last `-` before the first `.`.
-fn strip_crate_version(dir: &str) -> &str {
-    let before_dot = dir.split('.').next().unwrap_or(dir);
-    match before_dot.rfind('-') {
-        Some(i) if dir[i + 1..].starts_with(|c: char| c.is_ascii_digit()) => &dir[..i],
-        _ => dir,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -578,63 +460,6 @@ mod tests {
         ];
         for (tool, language) in cases {
             assert_eq!(infer_language(tool), language, "{tool}");
-        }
-    }
-
-    #[test]
-    fn test_extract_unit_name() {
-        let cases = [
-            ("src/lib.rs", "src"),
-            ("my_crate/src/lib.rs", "my_crate"),
-            ("my_crate/src/foo/bar.rs", "my_crate"),
-            ("file://project/my_crate/src/lib.rs", "my_crate"),
-            ("lib.rs", "unknown"),
-            ("crate_a/lib.rs", "crate_a"),
-            // the nearest src wins
-            ("/home/u/src/proj/crates/x/src/lib.rs", "x"),
-            ("/home/u/src/proj/src/a/b.rs", "proj"),
-        ];
-        for (path, name) in cases {
-            assert_eq!(extract_unit_name(path), name, "{path}");
-        }
-    }
-
-    #[test]
-    fn test_dependency_caches_are_read_from_their_layout_under_any_root() {
-        let registry = "/home/u/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f";
-        let cases = [
-            (format!("{registry}/serde-1.0.200/src/lib.rs"), Some("serde")),
-            (format!("{registry}/proc-macro2-1.0.86/build.rs"), Some("proc-macro2")),
-            (format!("{registry}/foo-2d-0.1.0-alpha.1/src/lib.rs"), Some("foo-2d")),
-            (
-                format!("{registry}/windows_x86_64_gnu-0.52.6/src/lib.rs"),
-                Some("windows_x86_64_gnu"),
-            ),
-            (
-                "/usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libc-0.2.155/src/unix/mod.rs".into(),
-                Some("libc"),
-            ),
-            (
-                "C:/cargo/registry/src/github.com-1ecc6299db9ec823/libc-0.2.155/src/lib.rs".into(),
-                Some("libc"),
-            ),
-            (
-                "/home/u/.cargo/registry/src/github.com-1ecc6299db9ec823-shallow/serde-1.0.200/src/lib.rs".into(),
-                Some("serde"),
-            ),
-            (
-                "/usr/local/cargo/git/checkouts/my_crate-fedcba9876543210/9f8e7d6/src/lib.rs".into(),
-                Some("my_crate"),
-            ),
-            ("crates/registry/src/backend-db/pg/mod.rs".into(), None),
-            (
-                "web/node_modules/.pnpm/socket.io@4.7.2/node_modules/socket.io/index.js".into(),
-                None,
-            ),
-            ("vendor-tools/gen.go".into(), None),
-        ];
-        for (path, name) in cases {
-            assert_eq!(dependency_unit_name(&path).as_deref(), name, "{path}");
         }
     }
 
@@ -2040,57 +1865,6 @@ mod tests {
                 dep("serde-1.0.200", 1),
             ]
         );
-    }
-
-    #[test]
-    fn test_the_first_directory_below_vendor_tells_a_go_tree_from_a_cargo_one() {
-        for (path, unit) in [
-            (
-                "/home/u/proj/vendor/github.com/foo/bar/bar.c",
-                "github.com/foo/bar",
-            ),
-            (
-                "/home/u/proj/vendor/gopkg.in/yaml.v3/yaml.h",
-                "gopkg.in/yaml.v3",
-            ),
-            (
-                "/home/u/proj/vendor/git-01.corp.example.com/x/y/y.s",
-                "git-01.corp.example.com/x/y",
-            ),
-            ("/home/u/proj/vendor/serde/src/de/mod.rs", "serde"),
-            (
-                "/home/u/proj/vendor/foo-sys/vendor/lua5.4/lapi.c",
-                "foo-sys",
-            ),
-            (
-                "/home/u/proj/vendor/serde-1.0.200/src/de/mod.rs",
-                "serde-1.0.200",
-            ),
-            (
-                "/home/u/proj/vendor/foo-0.1.0-alpha.1/src/lib.rs",
-                "foo-0.1.0-alpha.1",
-            ),
-            (
-                "/home/u/proj/vendor/windows_x86_64_gnu-0.48.5/lib/x.a",
-                "windows_x86_64_gnu-0.48.5",
-            ),
-            (
-                "/home/u/proj/vendor/foo-sys/vendor/github.com/a/b/b.c",
-                "foo-sys",
-            ),
-            (
-                "/home/u/proj/vendor/foo-1.0.0-beta.rc/src/lib.rs",
-                "foo-1.0.0-beta.rc",
-            ),
-            ("/home/u/proj/vendor/lua5.4/src/lapi.c", "lua5.4"),
-            (
-                "/home/u/proj/vendor/mbedtls-2.28/library/aes.c",
-                "mbedtls-2.28",
-            ),
-            ("/home/u/proj/vendor/x.c", "x.c"),
-        ] {
-            assert_eq!(dependency_unit_name(path).as_deref(), Some(unit), "{path}");
-        }
     }
 
     #[test]
