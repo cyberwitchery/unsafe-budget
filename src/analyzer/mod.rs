@@ -283,6 +283,7 @@ mod tests {
             all_targets: false,
             targets: vec![],
             manifest_path: None,
+            sarif_rules: None,
         }
     }
 
@@ -474,6 +475,7 @@ mod tests {
             all_targets: true,
             targets: vec!["wrong-target".into()],
             manifest_path: Some("/wrong/Cargo.toml".into()),
+            sarif_rules: None,
         };
         let out = normalize(
             "host",

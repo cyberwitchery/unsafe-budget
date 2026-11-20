@@ -97,6 +97,13 @@ pub struct Config {
     /// precedence for plugins. unset means no timeout.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_secs: Option<u64>,
+    /// rule ids that count as unsafe in SARIF from other tools.
+    ///
+    /// applies to the sarif analyzer only. unset counts every result that
+    /// has a location; unsafe-budget's own SARIF is always filtered to its
+    /// own rule.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sarif_rules: Option<Vec<String>>,
 }
 
 fn default_true() -> bool {
@@ -115,6 +122,7 @@ impl Default for Config {
             warnings: None,
             plugin_timeout_secs: None,
             timeout_secs: None,
+            sarif_rules: None,
         }
     }
 }
@@ -149,6 +157,11 @@ impl Config {
                     warnings.threshold
                 )));
             }
+        }
+        if self.sarif_rules.as_ref().is_some_and(Vec::is_empty) {
+            return Err(Error::Config(
+                "`sarif_rules` lists no rules: remove it to count every result".into(),
+            ));
         }
         Ok(())
     }
@@ -332,6 +345,7 @@ line = 7
                 all_targets: false,
                 targets: vec![],
                 manifest_path: None,
+                sarif_rules: None,
             },
             totals: Totals {
                 workspace_unsafe: 10,
@@ -494,6 +508,11 @@ threshold = 0.8
             ),
             ("workspace_only = false", None),
             (
+                "sarif_rules = []",
+                Some("`sarif_rules` lists no rules: remove it to count every result"),
+            ),
+            ("sarif_rules = [\"unsafe_code\"]", None),
+            (
                 "mode = \"caps\"",
                 Some("caps mode requires [caps] section in config"),
             ),
@@ -538,6 +557,7 @@ threshold = 0.8
                 all_targets: false,
                 targets: vec![],
                 manifest_path: None,
+                sarif_rules: None,
             },
             totals: Totals::default(),
             units: vec![BaselineUnit {

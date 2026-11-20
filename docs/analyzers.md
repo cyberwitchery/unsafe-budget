@@ -109,6 +109,9 @@ static analysis tool.
 
 **features**:
 - ingests SARIF output from any tool (clippy, go-geiger, semgrep, codeql, etc.)
+- counts every result with a location from another tool, whatever its rule;
+  `--sarif-rule <id>` (repeatable) or `sarif_rules` in the config counts only
+  the listed rule ids. unsafe-budget's own sarif always counts only its own rule
 - infers language from the SARIF tool driver name
 - groups results into units based on file paths
 - provides line-level occurrence details from SARIF locations; a location
@@ -117,14 +120,17 @@ static analysis tool.
 
 **usage**:
 ```bash
-# first, produce a sarif file with your tool of choice
-clippy-sarif > results.sarif
+# first, produce a sarif file with your tool of choice. `unsafe_code` is
+# allow-by-default, so turn it on
+cargo clippy --message-format=json -- -W unsafe_code | clippy-sarif > results.sarif
 
-# then analyze it with unsafe-budget
-unsafe-budget scan --analyzer sarif --manifest-path results.sarif
+# then analyze it with unsafe-budget. clippy-sarif writes rustc lints by name
+# (`unsafe_code`) and clippy lints as `clippy::<lint>`; without --sarif-rule,
+# every lint clippy reports counts as unsafe
+unsafe-budget scan --analyzer sarif --manifest-path results.sarif --sarif-rule unsafe_code
 
 # apply budget checking
-unsafe-budget check --analyzer sarif --manifest-path results.sarif
+unsafe-budget check --analyzer sarif --manifest-path results.sarif --sarif-rule unsafe_code
 
 # output as sarif again (round-trip)
 unsafe-budget scan --analyzer sarif --manifest-path results.sarif --format sarif --details

@@ -265,11 +265,13 @@ use the sarif analyzer to apply budget logic to output from any sarif-producing 
 
 ```yaml
 - name: run clippy and produce sarif
-  run: cargo clippy --message-format=json | clippy-sarif > clippy.sarif
+  run: cargo clippy --message-format=json -- -W unsafe_code | clippy-sarif > clippy.sarif
 
 - name: check unsafe budget from sarif
-  run: unsafe-budget check --analyzer sarif --manifest-path clippy.sarif
+  run: unsafe-budget check --analyzer sarif --manifest-path clippy.sarif --sarif-rule unsafe_code
 ```
+
+without `--sarif-rule` (or `sarif_rules` in the config), every result the tool reports counts as unsafe, so a clippy run charges every lint to the budget.
 
 ## tips
 

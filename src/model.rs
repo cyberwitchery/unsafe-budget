@@ -43,6 +43,9 @@ pub struct ScanOpts {
     /// (`cargo geiger`, `go-geiger`, `cargo check`). `None` leaves them
     /// unbounded.
     pub analyzer_timeout_secs: Option<u64>,
+    /// rule ids that count as unsafe in SARIF from other tools (sarif
+    /// analyzer). `None` counts every result that has a location.
+    pub sarif_rules: Option<Vec<String>>,
 }
 
 impl ScanOpts {
@@ -68,6 +71,8 @@ pub struct Scope {
     pub all_targets: bool,
     pub targets: Vec<String>,
     pub manifest_path: Option<PathBuf>,
+    /// the rule ids counted in SARIF from other tools, sorted, or `None` when every result counts.
+    pub sarif_rules: Option<Vec<String>>,
 }
 
 /// a stored [`Scope`]: `workspace_only` is written as `!include_deps`, and `true` reads as `include_deps = false`.
@@ -85,6 +90,8 @@ struct StoredScope {
     targets: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     manifest_path: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sarif_rules: Option<Vec<String>>,
 }
 
 impl From<StoredScope> for Scope {
@@ -97,6 +104,7 @@ impl From<StoredScope> for Scope {
             all_targets: stored.all_targets,
             targets: stored.targets,
             manifest_path: stored.manifest_path,
+            sarif_rules: stored.sarif_rules,
         }
     }
 }
@@ -112,6 +120,7 @@ impl From<Scope> for StoredScope {
             all_targets: scope.all_targets,
             targets: scope.targets,
             manifest_path: scope.manifest_path,
+            sarif_rules: scope.sarif_rules,
         }
     }
 }
@@ -165,6 +174,12 @@ impl Scope {
                 self.manifest_path, other.manifest_path
             ));
         }
+        if self.sarif_rules != other.sarif_rules {
+            diffs.push(format!(
+                "sarif_rules: baseline={:?}, current={:?}",
+                self.sarif_rules, other.sarif_rules
+            ));
+        }
 
         diffs
     }
@@ -180,6 +195,12 @@ impl From<&ScanOpts> for Scope {
             all_targets: opts.all_targets,
             targets: opts.targets.clone(),
             manifest_path: opts.manifest_path.clone(),
+            sarif_rules: opts.sarif_rules.as_ref().map(|rules| {
+                let mut rules = rules.clone();
+                rules.sort();
+                rules.dedup();
+                rules
+            }),
         }
     }
 }
@@ -297,6 +318,7 @@ impl Totals {
 ///         all_targets: false,
 ///         targets: vec![],
 ///         manifest_path: None,
+///         sarif_rules: None,
 ///     },
 ///     units: vec![
 ///         Unit {
@@ -465,6 +487,19 @@ mod tests {
     }
 
     #[test]
+    fn test_scope_records_sarif_rules_sorted_and_once() {
+        let opts = ScanOpts {
+            sarif_rules: Some(vec!["b".into(), "a".into(), "b".into()]),
+            ..Default::default()
+        };
+        assert_eq!(
+            Scope::from(&opts).sarif_rules,
+            Some(vec!["a".to_string(), "b".to_string()])
+        );
+        assert_eq!(Scope::from(&ScanOpts::default()).sarif_rules, None);
+    }
+
+    #[test]
     fn test_scope_from_scan_opts() {
         let opts = ScanOpts {
             include_deps: false,
@@ -526,6 +561,7 @@ mod tests {
             all_targets: false,
             targets: vec![],
             manifest_path: None,
+            sarif_rules: None,
         };
         assert!(a.diff_fields(&a.clone()).is_empty());
     }
@@ -540,6 +576,7 @@ mod tests {
             all_targets: false,
             targets: vec![],
             manifest_path: None,
+            sarif_rules: None,
         };
         let current = Scope {
             include_deps: false,
@@ -549,9 +586,10 @@ mod tests {
             all_targets: true,
             targets: vec!["aarch64-unknown-linux-gnu".into()],
             manifest_path: Some(PathBuf::from("Cargo.toml")),
+            sarif_rules: Some(vec!["unsafe_code".into()]),
         };
         let diffs = baseline.diff_fields(&current);
-        assert_eq!(diffs.len(), 7);
+        assert_eq!(diffs.len(), 8);
         assert!(diffs[0].contains("include_deps"));
         assert!(diffs[1].contains("features"));
         assert!(diffs[2].contains("all_features"));
@@ -559,6 +597,7 @@ mod tests {
         assert!(diffs[4].contains("all_targets"));
         assert!(diffs[5].contains("targets"));
         assert!(diffs[6].contains("manifest_path"));
+        assert!(diffs[7].contains("sarif_rules"));
     }
 
     #[test]
@@ -571,6 +610,7 @@ mod tests {
             all_targets: false,
             targets: vec![],
             manifest_path: None,
+            sarif_rules: None,
         };
         let mut current = baseline.clone();
         current.features = vec![];

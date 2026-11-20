@@ -170,6 +170,11 @@ fn build_scan_opts(args: &ScanArgs, config: &Config) -> ScanOpts {
             .or(config.plugin_timeout_secs)
             .or(general_timeout),
         analyzer_timeout_secs: general_timeout,
+        sarif_rules: if args.sarif_rules.is_empty() {
+            config.sarif_rules.clone()
+        } else {
+            Some(args.sarif_rules.clone())
+        },
     }
 }
 
@@ -237,6 +242,36 @@ mod tests {
                 expected,
                 "{flags:?} {timeout_secs:?} {plugin_timeout_secs:?}"
             );
+        }
+    }
+
+    #[test]
+    fn sarif_rules_come_from_the_flags_or_else_the_config() {
+        let rules = |names: &[&str]| Some(names.iter().map(|n| n.to_string()).collect());
+        // flags, config -> resolved
+        type Case<'a> = (&'a [&'a str], Option<Vec<String>>, Option<Vec<String>>);
+        let cases: [Case; 4] = [
+            (&[], None, None),
+            (&[], rules(&["a"]), rules(&["a"])),
+            (
+                &["--sarif-rule", "b", "--sarif-rule", "c"],
+                None,
+                rules(&["b", "c"]),
+            ),
+            (&["--sarif-rule", "b"], rules(&["a"]), rules(&["b"])),
+        ];
+        for (flags, sarif_rules, expected) in cases {
+            let argv: Vec<&str> = ["unsafe-budget", "scan"]
+                .iter()
+                .chain(flags)
+                .copied()
+                .collect();
+            let config = Config {
+                sarif_rules: sarif_rules.clone(),
+                ..Config::default()
+            };
+            let opts = build_scan_opts(&scan_args(&argv), &config);
+            assert_eq!(opts.sarif_rules, expected, "{flags:?} {sarif_rules:?}");
         }
     }
 }

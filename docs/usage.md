@@ -28,6 +28,7 @@ options:
 | `--config <path>` | path to config file |
 | `--timeout <secs>` | kill external analyzer/plugin subprocesses after this long |
 | `--plugin-timeout <secs>` | plugin-specific timeout, takes precedence over `--timeout` |
+| `--sarif-rule <id>` | sarif analyzer: count only results with this rule id from other tools; repeatable, replaces `sarif_rules` |
 
 ### check
 
@@ -81,6 +82,10 @@ ignore_units = ["test_helpers", "benches"]
 # kill external analyzers/plugins after N seconds (optional, unbounded by default)
 timeout_secs = 300
 plugin_timeout_secs = 300  # plugin-specific, takes precedence
+
+# sarif analyzer: rule ids that count in sarif from other tools (optional;
+# unset counts every result with a location)
+sarif_rules = ["unsafe_code"]
 
 # specific occurrences to exclude from counts
 [[ignore]]
