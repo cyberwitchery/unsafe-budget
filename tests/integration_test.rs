@@ -807,6 +807,43 @@ fn test_unusable_files_are_named_in_the_error() {
 }
 
 #[test]
+fn test_missing_config_path_is_an_error() {
+    let tmp = tempfile::tempdir().unwrap();
+    let input = tmp.path().join("in.sarif");
+    fs::write(
+        &input,
+        r#"{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"other"}},"results":[]}]}"#,
+    )
+    .unwrap();
+    let config = tmp.path().join("missing.toml");
+    let expected = format!("error: io error: {}: ", config.display());
+    for command in ["scan", "check", "update"] {
+        let output = unsafe_budget(tmp.path(), &input, &[command, "--analyzer", "sarif"])
+            .arg("--config")
+            .arg(&config)
+            .output()
+            .unwrap();
+        assert!(!output.status.success(), "{command}: {output:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains(&expected),
+            "{command}: {output:?}"
+        );
+    }
+    let output = Command::new(env!("CARGO_BIN_EXE_unsafe-budget"))
+        .args(["plugins", "--config"])
+        .arg(&config)
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "plugins: {output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains(&expected),
+        "plugins: {output:?}"
+    );
+    assert!(!tmp.path().join("unsafe-budget.lock").exists());
+}
+
+#[test]
 fn test_sarif_output_leaves_out_an_unknown_line_or_column() {
     let tmp = tempfile::tempdir().unwrap();
     let input = tmp.path().join("in.sarif");

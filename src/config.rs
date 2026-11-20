@@ -120,11 +120,8 @@ impl Default for Config {
 }
 
 impl Config {
-    /// load and validate config from file, or return defaults if not found.
+    /// load and validate config from file. a missing file is an error.
     pub fn load(path: &Path) -> Result<Self> {
-        if !path.exists() {
-            return Ok(Config::default());
-        }
         let content = fs::read_to_string(path).map_err(|e| Error::io(path.display(), e))?;
         let config: Config =
             toml::from_str(&content).map_err(|e| Error::toml_parse(path.display(), e))?;
@@ -156,9 +153,14 @@ impl Config {
         Ok(())
     }
 
-    /// load config from the standard location in a directory.
+    /// load config from `unsafe-budget.toml` in a directory, or return defaults
+    /// if there is none.
     pub fn load_from_dir(dir: &Path) -> Result<Self> {
-        Self::load(&dir.join("unsafe-budget.toml"))
+        let path = dir.join("unsafe-budget.toml");
+        if !path.exists() {
+            return Ok(Config::default());
+        }
+        Self::load(&path)
     }
 }
 
@@ -426,11 +428,20 @@ unsafe_count = 20
     }
 
     #[test]
-    fn test_config_load_missing_file_returns_defaults() {
+    fn test_config_load_missing_file_is_an_error() {
         use std::path::Path;
-        let result = Config::load(Path::new("/nonexistent/path/config.toml"));
-        assert!(result.is_ok());
-        let config = result.unwrap();
+        let err = Config::load(Path::new("/nonexistent/path/config.toml")).unwrap_err();
+        assert!(
+            err.to_string()
+                .starts_with("io error: /nonexistent/path/config.toml: "),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn test_config_load_from_dir_without_config_returns_defaults() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let config = Config::load_from_dir(dir.path()).unwrap();
         assert_eq!(config.mode, Mode::Ratchet);
     }
 

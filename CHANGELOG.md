@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- fix: `--config` naming a file that does not exist is an error. previously `scan`, `check`, `update` and `plugins` ran with the default config. in the library, `Config::load` fails on a missing file; `Config::load_from_dir` still returns the defaults when the directory has no `unsafe-budget.toml`.
 - the library's plugin discovery searches the directories its caller passes instead of reading `PATH`: `plugin::discover_plugins`, `analyzer::get_analyzer` and `analyzer::list_analyzers` take a search path in `PATH` syntax. the cli still searches `PATH`; a `PATH` that is not valid UTF-8 no longer hides every plugin.
 
 ## [0.6.0] - 2026-11-13
