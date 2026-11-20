@@ -449,6 +449,7 @@ mod tests {
                 all_targets: false,
                 targets: vec![],
                 manifest_path: None,
+                sarif_rules: None,
             },
             units: vec![
                 Unit {

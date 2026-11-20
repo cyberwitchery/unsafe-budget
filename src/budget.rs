@@ -275,6 +275,7 @@ mod tests {
                 all_targets: false,
                 targets: vec![],
                 manifest_path: None,
+                sarif_rules: None,
             },
             units,
             totals: Totals {
@@ -300,6 +301,7 @@ mod tests {
                 all_targets: false,
                 targets: vec![],
                 manifest_path: None,
+                sarif_rules: None,
             },
             totals: Totals::default(),
             units: units
@@ -575,6 +577,7 @@ mod tests {
             all_targets: false,
             targets: vec![],
             manifest_path: None,
+            sarif_rules: None,
         }
     }
 

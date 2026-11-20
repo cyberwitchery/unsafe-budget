@@ -85,6 +85,11 @@ pub struct ScanArgs {
     /// for plugins.
     #[arg(long)]
     pub timeout: Option<u64>,
+
+    /// rule id that counts as unsafe in SARIF from other tools (sarif
+    /// analyzer; repeatable; overrides config). default: every result counts
+    #[arg(long = "sarif-rule", value_name = "RULE_ID")]
+    pub sarif_rules: Vec<String>,
 }
 
 #[derive(Args)]

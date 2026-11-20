@@ -98,6 +98,9 @@ fn convert_sarif(sarif: &Sarif, opts: &ScanOpts) -> Result<ScanResult> {
                 }
                 continue;
             }
+            if !own_run && !counts_rule(result, opts) {
+                continue;
+            }
 
             let locations = result.locations.as_deref().unwrap_or(&[]);
             if locations.is_empty() {
@@ -391,6 +394,20 @@ fn run_language(run: &sarif::Run) -> String {
 }
 
 /// whether a run was written by unsafe-budget.
+/// whether a result from another tool counts under `--sarif-rule`: every
+/// result when no rules are listed, otherwise one whose rule id, given as
+/// `ruleId` or `rule.id`, is listed.
+fn counts_rule(result: &sarif::Result, opts: &ScanOpts) -> bool {
+    let Some(rules) = &opts.sarif_rules else {
+        return true;
+    };
+    let id = result
+        .rule_id
+        .as_deref()
+        .or_else(|| result.rule.as_ref().and_then(|rule| rule.id.as_deref()));
+    id.is_some_and(|id| rules.iter().any(|rule| rule == id))
+}
+
 fn is_own_run(run: &sarif::Run) -> bool {
     run.properties
         .as_ref()
@@ -549,6 +566,82 @@ mod tests {
                 )
                 .build()])
             .build()
+    }
+
+    fn with_rule(mut result: sarif::Result, rule: &str) -> sarif::Result {
+        result.rule_id = Some(rule.to_string());
+        result
+    }
+
+    fn with_rule_reference(mut result: sarif::Result, rule: &str) -> sarif::Result {
+        result.rule = Some(
+            sarif::ReportingDescriptorReference::builder()
+                .id(rule.to_string())
+                .build(),
+        );
+        result
+    }
+
+    fn filtered(rules: &[&str]) -> ScanOpts {
+        ScanOpts {
+            sarif_rules: Some(rules.iter().map(|r| r.to_string()).collect()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_convert_sarif_counts_only_the_listed_rules_of_other_tools() {
+        let sarif_log = make_sarif(vec![
+            with_rule(
+                make_sarif_result("src/lib.rs", 1, 1, "listed"),
+                "unsafe_code",
+            ),
+            with_rule(
+                make_sarif_result("src/lib.rs", 2, 1, "other"),
+                "clippy::needless_return",
+            ),
+            with_rule_reference(
+                make_sarif_result("src/lib.rs", 3, 1, "by reference"),
+                "unsafe_code",
+            ),
+            make_sarif_result("src/lib.rs", 4, 1, "no rule"),
+        ]);
+        // rules -> messages counted
+        let cases: [(Option<&[&str]>, Vec<&str>); 3] = [
+            (None, vec!["listed", "other", "by reference", "no rule"]),
+            (Some(&["unsafe_code"]), vec!["listed", "by reference"]),
+            (Some(&["something_else"]), vec![]),
+        ];
+        for (rules, expected) in cases {
+            let opts = rules.map_or_else(ScanOpts::default, filtered);
+            let result = convert_sarif(&sarif_log, &opts).unwrap();
+            let mut got: Vec<&str> = result
+                .details
+                .iter()
+                .filter_map(|o| o.message.as_deref())
+                .collect();
+            let mut expected = expected;
+            got.sort();
+            expected.sort();
+            assert_eq!(got, expected, "{rules:?}");
+            assert_eq!(
+                result.totals.workspace_unsafe,
+                expected.len() as u64,
+                "{rules:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_convert_sarif_rule_filter_leaves_own_runs_alone() {
+        let scan = convert_sarif(
+            &make_sarif(vec![make_sarif_result("src/lib.rs", 1, 1, "own")]),
+            &round_trip_opts(),
+        )
+        .unwrap();
+        let own = crate::sarif::scan_to_sarif(&scan);
+        let result = convert_sarif(&own, &filtered(&["something_else"])).unwrap();
+        assert_eq!(result.totals.workspace_unsafe, 1);
     }
 
     #[test]
