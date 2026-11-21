@@ -205,11 +205,15 @@ when `--analyzer auto` (the default):
 
 ## external plugins
 
-plugins are executables named `unsafe-budget-plugin-<id>` on PATH.
+plugins are executables named `unsafe-budget-plugin-<id>` on PATH. when two
+directories on PATH hold a plugin with the same id, the one earlier on PATH is
+used. a plugin whose id is a built-in analyzer's (`rustc_unsafe_lint`,
+`cargo_geiger`, `go_geiger`, `sarif`) is never run: the built-in wins.
 
 ### protocol
 
-plugins receive options via environment variables:
+the host runs a plugin as `unsafe-budget-plugin-<id> --format json`, so a plugin
+must accept that argument. it receives options via environment variables:
 
 | variable | description |
 |----------|-------------|
@@ -238,11 +242,12 @@ plugins output json to stdout:
 
 the host sanitizes this output: `analyzer_id` and `scope` are overwritten with
 its own values, units whose `kind` is `dep` are filtered out under `--no-deps`,
-and `totals` are recomputed from the surviving units. `tool_version`,
-`language`, `units`, and `details` are kept as reported.
-rows in `units` that name the same unit are added together, and a `workspace`
-row makes that unit workspace code. `scope`, `analyzer_id`, and `totals` must
-still be present for the JSON to parse.
+rows in `units` that name the same unit are added together (a `workspace` row
+makes that unit workspace code), and units are sorted by name. `details` keep
+only the entries whose unit survived, sorted, and `totals` are recomputed from
+the surviving units. `tool_version`, `language` and `parse_warnings` are kept
+as reported. `scope`, `analyzer_id`, and `totals` must still be present for
+the JSON to parse.
 
 each `details` entry has a `unit`, a `file`, a 1-indexed `line` and `col`, and
 an optional `message`. a `line` or `col` of `0` means the position is unknown:

@@ -3,11 +3,10 @@
 ## installation
 
 ```bash
-# from source
-cargo install --path .
+cargo install unsafe-budget
 
-# or build locally
-cargo build --release
+# or from a checkout
+cargo install --path .
 ```
 
 ## first scan
@@ -28,15 +27,15 @@ Analyzer: rustc_unsafe_lint
 Language: rust
 
 Totals:
-  Workspace: 5 unsafe
-  Dependencies: 42 unsafe
-  Overall: 47 unsafe
+  Workspace: 2 unsafe
+  Dependencies: 11 unsafe
+  Overall: 13 unsafe
 
 Per-unit breakdown:
   UNIT                           KIND           UNSAFE
   ----------------------------------------------------
-  libc                           dep            42
-  my_crate                       workspace       5
+  libc                           dep                11
+  my_crate                       workspace           2
 ```
 
 ## establish a baseline
