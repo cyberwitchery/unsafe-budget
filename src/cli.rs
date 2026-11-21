@@ -81,8 +81,8 @@ pub struct ScanArgs {
     pub plugin_timeout: Option<u64>,
 
     /// timeout in seconds for external analyzer/plugin subprocesses (overrides
-    /// config; default: no timeout). `--plugin-timeout` still takes precedence
-    /// for plugins.
+    /// `timeout_secs`; default: no timeout). for plugins, `--plugin-timeout` and
+    /// `plugin_timeout_secs` take precedence.
     #[arg(long)]
     pub timeout: Option<u64>,
 

@@ -8,7 +8,7 @@ an unsafe code budget gate for ci pipelines. tracks unsafe code usage in rust an
 
 ```bash
 # install
-cargo install --path .
+cargo install unsafe-budget
 
 # scan current project (auto-detects language)
 unsafe-budget scan
@@ -23,16 +23,14 @@ unsafe-budget check
 github actions can also run via the pre-built binary action:
 
 ```yaml
-- uses: cyberwitchery/unsafe-budget@92b73becc9c76134433ac0347d828fa87fdb3fa3 # v0.5.2
+- uses: cyberwitchery/unsafe-budget@cae2a755e7dbfa48f96f887b6012bf60d1446f2e # v0.6.0
   with:
     mode: check
-    version: v0.5.2
 ```
 
-the action now defaults to the package version in its own checkout. after
-upgrading to an action ref containing this change, omit `version` so
-dependabot only needs to update `uses:`. the v0.5.2 ref above still needs the
-explicit version. `version: latest` remains available as an override.
+the action installs the release that matches the ref it is pinned to, so
+dependabot only needs to update `uses:`. `version: latest` or a release tag
+overrides it.
 
 ## features
 
@@ -120,7 +118,7 @@ threshold = 0.8
 
 | id | language | backend |
 |----|----------|---------|
-| `rustc_unsafe_lint` | rust | `cargo check -vv` with `RUSTFLAGS=--force-warn=unsafe_code` |
+| `rustc_unsafe_lint` | rust | `cargo check -vv` with `--force-warn=unsafe_code` added to the rustflags cargo would use ([details](docs/analyzers.md#rustc_unsafe_lint)) |
 | `cargo_geiger` | rust | `cargo-geiger` |
 | `go_geiger` | go | `go-geiger` |
 | `sarif` | any | reads `.sarif` files |

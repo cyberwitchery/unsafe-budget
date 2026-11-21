@@ -15,19 +15,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: cyberwitchery/unsafe-budget@92b73becc9c76134433ac0347d828fa87fdb3fa3 # v0.5.2
+      - uses: cyberwitchery/unsafe-budget@cae2a755e7dbfa48f96f887b6012bf60d1446f2e # v0.6.0
         with:
           mode: check
-          version: v0.5.2
 ```
 
 the action downloads a pre-built release binary for the current runner and
 runs `unsafe-budget` directly (no `cargo install` required). pin the action to
-a commit. the action now reads its default binary version from the
-`Cargo.toml` in that action checkout, so dependabot can update the action and
-binary together by changing only `uses:`. omit `version` after upgrading to
-an action ref containing this change. older refs, including v0.5.2 in these
-examples, still need an explicit matching `version`.
+a commit. the action installs the release that matches that commit's
+`Cargo.toml`, so dependabot updates the action and the binary together by
+changing only `uses:`.
 
 inputs:
 
@@ -45,7 +42,10 @@ inputs:
   new lock under this artifact name (default: `unsafe-budget-lock`, empty
   disables it)
 
-the action's `lock` output is the path of that lock, empty without a violation.
+the upload happens only when `update` changed a committed `unsafe-budget.lock`.
+a repository without a committed lock, or a caps-mode violation, whose fix is
+the config rather than the lock, uploads nothing. the action's `lock` output is
+the path of the uploaded lock, empty otherwise.
 
 ### accepting a violation
 
@@ -68,10 +68,9 @@ not refused.
 example with extra flags:
 
 ```yaml
-- uses: cyberwitchery/unsafe-budget@92b73becc9c76134433ac0347d828fa87fdb3fa3 # v0.5.2
+- uses: cyberwitchery/unsafe-budget@cae2a755e7dbfa48f96f887b6012bf60d1446f2e # v0.6.0
   with:
     mode: check
-    version: v0.5.2
     args: --analyzer cargo_geiger --no-deps
 ```
 

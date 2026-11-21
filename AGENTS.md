@@ -47,4 +47,3 @@ this is a security tool. when modifying:
 - unit tests go in the same file as the code
 - integration tests use fixtures in `tests/fixtures/`
 - test both success and error cases
-- test with `--all-features` and without

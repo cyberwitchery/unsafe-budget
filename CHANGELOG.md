@@ -108,7 +108,7 @@
 ## [0.2.0] - 2026-02-19
 
 - publish pre-built release binaries for Linux/macOS/Windows on version tags, and ship a CycloneDX SBOM with each release.
-- add a GitHub composite action (`cyberwitchery/unsafe-budget@v1`) for CI use.
+- add a GitHub composite action (`uses: cyberwitchery/unsafe-budget@<ref>`) for CI use.
 - add optional near-budget threshold warnings (`[warnings].threshold`).
 - `Analyzer::id` and `Analyzer::language` now return `&str` instead of `&'static str` (relevant to custom analyzer/plugin authors).
 
@@ -126,6 +126,13 @@ initial release.
 - works standalone or as a cargo subcommand (`cargo unsafe-budget`).
 - text and JSON output; baseline file (`unsafe-budget.lock`) and configuration via `unsafe-budget.toml`.
 
+[0.6.0]: https://github.com/cyberwitchery/unsafe-budget/compare/v0.5.5...v0.6.0
+[0.5.5]: https://github.com/cyberwitchery/unsafe-budget/compare/v0.5.4...v0.5.5
+[0.5.4]: https://github.com/cyberwitchery/unsafe-budget/compare/v0.5.3...v0.5.4
+[0.5.3]: https://github.com/cyberwitchery/unsafe-budget/compare/v0.5.2...v0.5.3
+[0.5.2]: https://github.com/cyberwitchery/unsafe-budget/compare/v0.5.1...v0.5.2
+[0.5.1]: https://github.com/cyberwitchery/unsafe-budget/compare/v0.5.0...v0.5.1
+[0.5.0]: https://github.com/cyberwitchery/unsafe-budget/compare/v0.4.2...v0.5.0
 [0.4.2]: https://github.com/cyberwitchery/unsafe-budget/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/cyberwitchery/unsafe-budget/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/cyberwitchery/unsafe-budget/compare/v0.3.0...v0.4.0
@@ -133,4 +140,4 @@ initial release.
 [0.2.0]: https://github.com/cyberwitchery/unsafe-budget/releases/tag/v0.2.0
 [0.1.1]: https://github.com/cyberwitchery/unsafe-budget/releases/tag/v0.1.1
 [0.1.0]: https://github.com/cyberwitchery/unsafe-budget/releases/tag/v0.1.0
-[unreleased]: https://github.com/cyberwitchery/unsafe-budget/compare/v0.4.2...HEAD
+[unreleased]: https://github.com/cyberwitchery/unsafe-budget/compare/v0.6.0...HEAD
