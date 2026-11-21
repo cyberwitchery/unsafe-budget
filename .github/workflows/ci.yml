@@ -79,6 +79,9 @@ jobs:
   # check, and expect the failure plus the restored lock as an artifact.
   action-lock:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
     env:
       FIXTURE: tests/fixtures/sample_workspace
     steps:
@@ -101,10 +104,21 @@ jobs:
           mode: check
           version: latest
           working-directory: ${{ env.FIXTURE }}
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: unsafe-budget-lock
-          path: ${{ runner.temp }}/artifact
+      # the artifact service lags the upload: a download right after it can
+      # miss the artifact by name or by id. fetch it the way
+      # scripts/accept-unsafe.sh does, retrying for up to a minute.
+      - name: Download the lock
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for _ in $(seq 12); do
+            rm -rf "$RUNNER_TEMP/artifact"
+            if gh run download "$GITHUB_RUN_ID" -R "$GITHUB_REPOSITORY" --name unsafe-budget-lock --dir "$RUNNER_TEMP/artifact"; then
+              exit 0
+            fi
+            sleep 5
+          done
+          exit 1
       - name: Expect the violation and the restored lock
         env:
           OUTCOME: ${{ steps.check.outcome }}
